@@ -3,7 +3,8 @@
     "allow": [
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git -c user.name=\"Qonshu Dev\" -c user.email=\"alialieff4@gmail.com\" commit -q -m \"docs: milestone 1 tenant-foundation design spec\")"
+      "Bash(git -c user.name=\"Qonshu Dev\" -c user.email=\"alialieff4@gmail.com\" commit -q -m \"docs: milestone 1 tenant-foundation design spec\")",
+      "Bash(git -c user.name=\"Qonshu Dev\" -c user.email=\"alialieff4@gmail.com\" commit -q -m \"docs: milestone 1 implementation plan \\(12 TDD tasks\\)\")"
     ]
   }
 }
