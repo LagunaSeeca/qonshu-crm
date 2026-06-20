@@ -17,7 +17,7 @@ export async function toggleTask(db: PrismaClient, user: SessionUser, taskId: st
 export async function listTasks(db: PrismaClient, user: SessionUser, leadId: string): Promise<Task[]> {
   const lead = await getLead(db, user, leadId);
   if (!lead) return [];
-  return db.task.findMany({ where: { companyId: user.companyId!, leadId }, orderBy: [{ done: "asc" }, { dueDate: "asc" }] });
+  return db.task.findMany({ where: { companyId: user.companyId!, leadId }, orderBy: [{ done: "asc" }, { dueDate: { sort: "asc", nulls: "last" } }] });
 }
 
 export function isOverdue(task: Task): boolean {

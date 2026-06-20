@@ -38,4 +38,14 @@ describe("attachments", () => {
     const big = Buffer.alloc(10 * 1024 * 1024 + 1);
     await expect(addAttachment(testPrisma, user, l.id, { filename: "big.bin", mime: "application/octet-stream", bytes: big })).rejects.toThrow();
   });
+
+  it("denies cross-tenant download", async () => {
+    const A = await lead();
+    const bytes = Buffer.from("secret");
+    const att = await addAttachment(testPrisma, A.user, A.l.id, { filename: "s.txt", mime: "text/plain", bytes });
+    const c2 = await testPrisma.company.create({ data: { name: "B", slug: "b-at2" } });
+    const u2 = await testPrisma.user.create({ data: { companyId: c2.id, email: "u2@b.com", passwordHash: "x", name: "U2", role: "MEMBER" } });
+    const other = { id: u2.id, companyId: c2.id, role: "MEMBER" as const };
+    expect(await getAttachmentForDownload(testPrisma, other, att.id)).toBeNull();
+  });
 });

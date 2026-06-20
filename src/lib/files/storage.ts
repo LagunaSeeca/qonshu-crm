@@ -1,13 +1,15 @@
 import { mkdir, writeFile, readFile as fsRead, rm } from "fs/promises";
-import { join } from "path";
+import { join, basename } from "path";
 import { randomUUID } from "crypto";
 
 const root = () => process.env.UPLOADS_DIR ?? "uploads";
 
 export async function saveFile(companyId: string, leadId: string, filename: string, bytes: Buffer): Promise<{ diskPath: string; size: number }> {
+  if (/[\\/.]/.test(companyId) || /[\\/.]/.test(leadId)) throw new Error("invalid path segment");
   const dir = join(root(), companyId, leadId);
   await mkdir(dir, { recursive: true });
-  const diskPath = join(dir, `${randomUUID()}-${filename}`);
+  const safe = basename(filename);
+  const diskPath = join(dir, `${randomUUID()}-${safe}`);
   await writeFile(diskPath, bytes);
   return { diskPath, size: bytes.length };
 }
