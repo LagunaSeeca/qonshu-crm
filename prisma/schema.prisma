@@ -29,13 +29,19 @@ enum InviteStatus {
 }
 
 model Company {
-  id          String        @id @default(cuid())
-  name        String
-  slug        String        @unique
-  status      CompanyStatus @default(ACTIVE)
-  createdAt   DateTime      @default(now())
-  users       User[]
-  invitations Invitation[]
+  id             String        @id @default(cuid())
+  name           String
+  slug           String        @unique
+  status         CompanyStatus @default(ACTIVE)
+  shareAllLeads  Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  users          User[]
+  invitations    Invitation[]
+  stages         Stage[]
+  leads          Lead[]
+  activities     Activity[]
+  tasks          Task[]
+  attachments    Attachment[]
 }
 
 model User {
@@ -48,6 +54,7 @@ model User {
   role         Role
   status       UserStatus @default(ACTIVE)
   createdAt    DateTime   @default(now())
+  ownedLeads   Lead[]     @relation("LeadOwner")
 
   @@index([companyId])
 }
@@ -66,4 +73,111 @@ model Invitation {
 
   @@index([companyId])
   @@index([token])
+}
+
+enum StageType {
+  OPEN
+  WON
+  LOST
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum ActivityKind {
+  NOTE
+  CALL
+  MEETING
+  EMAIL
+  STAGE_CHANGE
+}
+
+model Stage {
+  id          String    @id @default(cuid())
+  companyId   String
+  company     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name        String
+  order       Int
+  type        StageType @default(OPEN)
+  probability Int       @default(0)
+  createdAt   DateTime  @default(now())
+  leads       Lead[]
+  @@index([companyId])
+}
+
+model Lead {
+  id                String    @id @default(cuid())
+  companyId         String
+  company           Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  title             String
+  contactName       String
+  email             String?
+  phone             String?
+  companyName       String?
+  source            String?
+  value             Decimal   @default(0)
+  currency          String    @default("USD")
+  priority          Priority  @default(MEDIUM)
+  stageId           String
+  stage             Stage     @relation(fields: [stageId], references: [id])
+  ownerId           String
+  owner             User      @relation("LeadOwner", fields: [ownerId], references: [id])
+  expectedCloseDate DateTime?
+  lostReason        String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  activities        Activity[]
+  tasks             Task[]
+  attachments       Attachment[]
+  @@index([companyId])
+  @@index([companyId, stageId])
+  @@index([companyId, ownerId])
+}
+
+model Activity {
+  id         String       @id @default(cuid())
+  companyId  String
+  company    Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  leadId     String
+  lead       Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  authorId   String?
+  kind       ActivityKind @default(NOTE)
+  body       String
+  outcome    String?
+  occurredAt DateTime     @default(now())
+  createdAt  DateTime     @default(now())
+  @@index([companyId, leadId])
+}
+
+model Task {
+  id         String   @id @default(cuid())
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  leadId     String
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  title      String
+  dueDate    DateTime?
+  done       Boolean  @default(false)
+  assigneeId String?
+  createdAt  DateTime @default(now())
+  @@index([companyId, leadId])
+  @@index([companyId, assigneeId])
+}
+
+model Attachment {
+  id           String   @id @default(cuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  leadId       String
+  lead         Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  filename     String
+  diskPath     String
+  size         Int
+  mime         String
+  uploadedById String
+  createdAt    DateTime @default(now())
+  @@index([companyId, leadId])
 }
