@@ -10,5 +10,8 @@ export function getUser(db: PrismaClient, ctx: TenantContext, id: string): Promi
 export async function setUserStatus(db: PrismaClient, ctx: TenantContext, id: string, status: UserStatus): Promise<User> {
   const found = await getUser(db, ctx, id);
   if (!found) throw new Error("user not in tenant");
-  return db.user.updateMany({ where: { id, companyId: ctx.companyId }, data: { status } }).then(() => found);
+  await db.user.updateMany({ where: { id, companyId: ctx.companyId }, data: { status } });
+  const updated = await getUser(db, ctx, id);
+  if (!updated) throw new Error("user not in tenant");
+  return updated;
 }

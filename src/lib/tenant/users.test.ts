@@ -34,4 +34,11 @@ describe("tenant user scoping", () => {
     const su: SessionUser = { id: "1", companyId: null, role: "SUPER_ADMIN" };
     expect(() => getTenantContext(su)).toThrow();
   });
+
+  it("setUserStatus returns the updated record with new status", async () => {
+    const { a, ua } = await seedTwoCompanies();
+    const ctx = getTenantContext({ id: ua.id, companyId: a.id, role: "COMPANY_ADMIN" });
+    const updated = await setUserStatus(testPrisma, ctx, ua.id, "INACTIVE");
+    expect(updated.status).toBe("INACTIVE");
+  });
 });
