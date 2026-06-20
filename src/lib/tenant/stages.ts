@@ -1,5 +1,6 @@
 import type { PrismaClient, Stage, StageType } from "@prisma/client";
 import type { TenantContext } from "./context";
+import { NotFoundError } from "@/lib/auth/guards";
 
 export class StageHasLeadsError extends Error {}
 
@@ -32,7 +33,7 @@ export async function createStage(db: PrismaClient, ctx: TenantContext, args: { 
 
 export async function updateStage(db: PrismaClient, ctx: TenantContext, id: string, data: { name?: string; type?: StageType; probability?: number }): Promise<Stage> {
   const found = await db.stage.findFirst({ where: { id, companyId: ctx.companyId } });
-  if (!found) throw new Error("stage not in tenant");
+  if (!found) throw new NotFoundError("stage not in tenant");
   return db.stage.update({ where: { id }, data });
 }
 
@@ -44,7 +45,7 @@ export async function reorderStages(db: PrismaClient, ctx: TenantContext, ordere
 
 export async function deleteStage(db: PrismaClient, ctx: TenantContext, id: string): Promise<void> {
   const found = await db.stage.findFirst({ where: { id, companyId: ctx.companyId } });
-  if (!found) throw new Error("stage not in tenant");
+  if (!found) throw new NotFoundError("stage not in tenant");
   const count = await db.lead.count({ where: { companyId: ctx.companyId, stageId: id } });
   if (count > 0) throw new StageHasLeadsError("stage has leads");
   await db.stage.delete({ where: { id } });

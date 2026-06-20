@@ -1,5 +1,6 @@
 import type { PrismaClient, Lead, Priority, Prisma } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
+import { NotFoundError } from "@/lib/auth/guards";
 import { leadVisibilityWhere } from "./visibility";
 import { removeLeadDir } from "@/lib/files/storage";
 
@@ -47,23 +48,23 @@ export async function updateLead(db: PrismaClient, user: SessionUser, id: string
   source: string | null; value: number | string; priority: Priority; ownerId: string; expectedCloseDate: Date | null;
 }>): Promise<Lead> {
   const found = await getLead(db, user, id);
-  if (!found) throw new Error("lead not in scope");
+  if (!found) throw new NotFoundError("lead not in scope");
   return db.lead.update({ where: { id }, data });
 }
 
 export async function deleteLead(db: PrismaClient, user: SessionUser, id: string): Promise<void> {
   const found = await getLead(db, user, id);
-  if (!found) throw new Error("lead not in scope");
+  if (!found) throw new NotFoundError("lead not in scope");
   await removeLeadDir(user.companyId!, id);
   await db.lead.delete({ where: { id } });
 }
 
 export async function moveLeadStage(db: PrismaClient, user: SessionUser, leadId: string, toStageId: string, lostReason?: string): Promise<Lead> {
   const lead = await getLead(db, user, leadId);
-  if (!lead) throw new Error("lead not in scope");
+  if (!lead) throw new NotFoundError("lead not in scope");
   const from = await db.stage.findFirst({ where: { id: lead.stageId, companyId: user.companyId! } });
   const to = await db.stage.findFirst({ where: { id: toStageId, companyId: user.companyId! } });
-  if (!to) throw new Error("target stage not in tenant");
+  if (!to) throw new NotFoundError("target stage not in tenant");
   const [updated] = await db.$transaction([
     db.lead.update({ where: { id: leadId }, data: { stageId: toStageId, lostReason: to.type === "LOST" ? (lostReason ?? null) : null } }),
     db.activity.create({ data: { companyId: user.companyId!, leadId, authorId: user.id, kind: "STAGE_CHANGE", body: `Moved from ${from?.name ?? "?"} to ${to.name}` } }),
