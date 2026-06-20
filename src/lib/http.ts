@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
+import { Prisma } from "@prisma/client";
 import { ForbiddenError } from "@/lib/auth/guards";
 export { ForbiddenError };
 
@@ -12,5 +13,8 @@ export function errorResponse(e: unknown): NextResponse {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   if (e instanceof ZodError)
     return NextResponse.json({ error: e.message }, { status: 400 });
+  if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+    return NextResponse.json({ error: "conflict" }, { status: 409 });
+  }
   return NextResponse.json({ error: "server_error" }, { status: 500 });
 }
