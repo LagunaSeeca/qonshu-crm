@@ -1,8 +1,10 @@
 "use client";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
 
 export default function Login() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
@@ -11,7 +13,7 @@ export default function Login() {
     e.preventDefault();
     const r = await signIn("credentials", { email, password, redirect: false });
     if (r?.error) setErr("Invalid credentials");
-    else window.location.href = "/dashboard";
+    else router.push("/dashboard");
   }
 
   return (
