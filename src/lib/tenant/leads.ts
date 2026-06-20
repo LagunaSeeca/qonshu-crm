@@ -57,3 +57,16 @@ export async function deleteLead(db: PrismaClient, user: SessionUser, id: string
   await removeLeadDir(user.companyId!, id);
   await db.lead.delete({ where: { id } });
 }
+
+export async function moveLeadStage(db: PrismaClient, user: SessionUser, leadId: string, toStageId: string, lostReason?: string): Promise<Lead> {
+  const lead = await getLead(db, user, leadId);
+  if (!lead) throw new Error("lead not in scope");
+  const from = await db.stage.findFirst({ where: { id: lead.stageId, companyId: user.companyId! } });
+  const to = await db.stage.findFirst({ where: { id: toStageId, companyId: user.companyId! } });
+  if (!to) throw new Error("target stage not in tenant");
+  const [updated] = await db.$transaction([
+    db.lead.update({ where: { id: leadId }, data: { stageId: toStageId, lostReason: to.type === "LOST" ? (lostReason ?? null) : null } }),
+    db.activity.create({ data: { companyId: user.companyId!, leadId, authorId: user.id, kind: "STAGE_CHANGE", body: `Moved from ${from?.name ?? "?"} to ${to.name}` } }),
+  ]);
+  return updated;
+}
