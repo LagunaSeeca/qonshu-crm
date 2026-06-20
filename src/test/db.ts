@@ -11,7 +11,15 @@ function createTestPrismaClient(): PrismaClient {
 export const testPrisma = createTestPrismaClient();
 
 export async function resetDb() {
-  await testPrisma.invitation.deleteMany();
-  await testPrisma.user.deleteMany();
-  await testPrisma.company.deleteMany();
+  // Use raw SQL to force a clean state
+  try {
+    await testPrisma.$executeRawUnsafe(`DELETE FROM "Invitation"`);
+    await testPrisma.$executeRawUnsafe(`DELETE FROM "User"`);
+    await testPrisma.$executeRawUnsafe(`DELETE FROM "Company"`);
+  } catch (e) {
+    // If raw SQL fails, try Prisma methods
+    await testPrisma.invitation.deleteMany().catch(() => {});
+    await testPrisma.user.deleteMany().catch(() => {});
+    await testPrisma.company.deleteMany().catch(() => {});
+  }
 }

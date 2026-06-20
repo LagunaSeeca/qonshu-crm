@@ -5,9 +5,11 @@ import { listUsers, getUser, setUserStatus } from "./users";
 import type { SessionUser } from "@/lib/auth/guards";
 
 async function seedTwoCompanies() {
-  const ts = `${Date.now()}-${Math.random().toString(36).substring(7)}`;
+  const ts = `users-${Date.now()}-${Math.random().toString(36).substring(7)}`;
   const a = await testPrisma.company.create({ data: { name: "A", slug: `a-${ts}` } });
   const b = await testPrisma.company.create({ data: { name: "B", slug: `b-${ts}` } });
+  // Ensure companies are readable before creating users
+  await testPrisma.company.findMany();
   const ua = await testPrisma.user.create({ data: { companyId: a.id, email: `ua-${ts}@a.com`, passwordHash: "x", name: "UA", role: "COMPANY_ADMIN" } });
   const ub = await testPrisma.user.create({ data: { companyId: b.id, email: `ub-${ts}@b.com`, passwordHash: "x", name: "UB", role: "MEMBER" } });
   return { a, b, ua, ub };
