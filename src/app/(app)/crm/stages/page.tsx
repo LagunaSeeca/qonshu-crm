@@ -3,6 +3,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
 import { getTenantContext } from "@/lib/tenant/context";
 import { listStages } from "@/lib/tenant/stages";
+import { getCompanySettings } from "@/lib/tenant/company";
 import { StageSettings } from "./StageSettings";
 
 export default async function StageSettingsPage() {
@@ -11,9 +12,9 @@ export default async function StageSettingsPage() {
   if (user.role !== "COMPANY_ADMIN") redirect("/crm");
 
   const ctx = getTenantContext(user);
-  const [stages, company] = await Promise.all([
+  const [stages, { shareAllLeads }] = await Promise.all([
     listStages(prisma, ctx),
-    prisma.company.findUnique({ where: { id: ctx.companyId } }),
+    getCompanySettings(prisma, ctx),
   ]);
 
   return (
@@ -25,7 +26,7 @@ export default async function StageSettingsPage() {
         probability: s.probability,
         order: s.order,
       }))}
-      shareAllLeads={company?.shareAllLeads ?? true}
+      shareAllLeads={shareAllLeads}
     />
   );
 }
