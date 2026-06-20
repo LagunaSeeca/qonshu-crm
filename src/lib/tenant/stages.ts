@@ -3,6 +3,7 @@ import type { TenantContext } from "./context";
 import { NotFoundError } from "@/lib/auth/guards";
 
 export class StageHasLeadsError extends Error {}
+export class LastStageError extends Error {}
 
 export const DEFAULT_STAGES: { name: string; type: StageType; probability: number }[] = [
   { name: "New", type: "OPEN", probability: 10 },
@@ -48,5 +49,7 @@ export async function deleteStage(db: PrismaClient, ctx: TenantContext, id: stri
   if (!found) throw new NotFoundError("stage not in tenant");
   const count = await db.lead.count({ where: { companyId: ctx.companyId, stageId: id } });
   if (count > 0) throw new StageHasLeadsError("stage has leads");
+  const remaining = await db.stage.count({ where: { companyId: ctx.companyId, type: found.type, id: { not: id } } });
+  if (remaining < 1) throw new LastStageError(`cannot delete the last ${found.type} stage`);
   await db.stage.delete({ where: { id } });
 }

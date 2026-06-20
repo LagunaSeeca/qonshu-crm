@@ -17,6 +17,12 @@ export async function createLead(db: PrismaClient, user: SessionUser, data: {
   companyName?: string; source?: string; value?: number | string; priority?: Priority;
   ownerId?: string; expectedCloseDate?: Date | null;
 }): Promise<Lead> {
+  const stage = await db.stage.findFirst({ where: { id: data.stageId, companyId: user.companyId! } });
+  if (!stage) throw new NotFoundError("stage not in tenant");
+  if (data.ownerId !== undefined) {
+    const o = await db.user.findFirst({ where: { id: data.ownerId, companyId: user.companyId! } });
+    if (!o) throw new NotFoundError("owner not in tenant");
+  }
   return db.lead.create({ data: {
     companyId: user.companyId!, title: data.title, contactName: data.contactName, stageId: data.stageId,
     email: data.email, phone: data.phone, companyName: data.companyName, source: data.source,
@@ -49,6 +55,10 @@ export async function updateLead(db: PrismaClient, user: SessionUser, id: string
 }>): Promise<Lead> {
   const found = await getLead(db, user, id);
   if (!found) throw new NotFoundError("lead not in scope");
+  if (data.ownerId !== undefined) {
+    const o = await db.user.findFirst({ where: { id: data.ownerId, companyId: user.companyId! } });
+    if (!o) throw new NotFoundError("owner not in tenant");
+  }
   return db.lead.update({ where: { id }, data });
 }
 

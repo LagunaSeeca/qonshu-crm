@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
 import { seedDefaultStages, listStages } from "./stages";
-import { createLead, listLeads, getLead } from "./leads";
+import { createLead, listLeads, getLead, updateLead } from "./leads";
 import type { SessionUser } from "@/lib/auth/guards";
+import { NotFoundError } from "@/lib/auth/guards";
 
 async function setup(shareAllLeads: boolean) {
   const id = Math.random().toString(36).slice(7);
@@ -40,5 +41,36 @@ describe("leads visibility + isolation", () => {
     const B = await setup(true);
     const lead = await createLead(testPrisma, A.su(A.m1), { title: "LA", contactName: "C", stageId: A.stage.id });
     expect(await getLead(testPrisma, B.su(B.m1), lead.id)).toBeNull();
+  });
+});
+
+describe("leads tenancy validation", () => {
+  beforeEach(resetDb);
+  afterAll(() => testPrisma.$disconnect());
+
+  it("createLead rejects a stageId from another company", async () => {
+    const A = await setup(true);
+    const B = await setup(true);
+    // B.stage belongs to B's tenant; A's user should not be able to use it
+    await expect(
+      createLead(testPrisma, A.su(A.m1), { title: "T", contactName: "C", stageId: B.stage.id }),
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  it("createLead rejects an ownerId from another company", async () => {
+    const A = await setup(true);
+    const B = await setup(true);
+    await expect(
+      createLead(testPrisma, A.su(A.m1), { title: "T", contactName: "C", stageId: A.stage.id, ownerId: B.m1.id }),
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  it("updateLead rejects an ownerId from another company", async () => {
+    const A = await setup(true);
+    const B = await setup(true);
+    const lead = await createLead(testPrisma, A.su(A.m1), { title: "T", contactName: "C", stageId: A.stage.id });
+    await expect(
+      updateLead(testPrisma, A.su(A.m1), lead.id, { ownerId: B.m1.id }),
+    ).rejects.toThrow(NotFoundError);
   });
 });

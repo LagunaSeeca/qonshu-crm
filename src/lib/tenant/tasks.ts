@@ -6,6 +6,10 @@ import { getLead } from "./leads";
 export async function addTask(db: PrismaClient, user: SessionUser, leadId: string, args: { title: string; dueDate?: Date | null; assigneeId?: string | null }): Promise<Task> {
   const lead = await getLead(db, user, leadId);
   if (!lead) throw new NotFoundError("lead not in scope");
+  if (args.assigneeId != null) {
+    const a = await db.user.findFirst({ where: { id: args.assigneeId, companyId: user.companyId! } });
+    if (!a) throw new NotFoundError("assignee not in tenant");
+  }
   return db.task.create({ data: { companyId: user.companyId!, leadId, title: args.title, dueDate: args.dueDate ?? null, assigneeId: args.assigneeId ?? null } });
 }
 
