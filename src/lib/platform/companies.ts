@@ -1,6 +1,7 @@
 import type { PrismaClient, Company, Invitation } from "@prisma/client";
 import { assertRole, type SessionUser } from "@/lib/auth/guards";
 import { createInvitation } from "@/lib/tenant/invitations";
+import { seedDefaultStages } from "@/lib/tenant/stages";
 
 export async function createCompany(
   db: PrismaClient, actor: SessionUser,
@@ -8,6 +9,7 @@ export async function createCompany(
 ): Promise<{ company: Company; invitation: Invitation }> {
   assertRole(actor, ["SUPER_ADMIN"]);
   const company = await db.company.create({ data: { name: args.name, slug: args.slug } });
+  await seedDefaultStages(db, company.id);
   const invitation = await createInvitation(db, { companyId: company.id }, {
     email: args.adminEmail, role: "COMPANY_ADMIN", invitedById: actor.id,
   });
