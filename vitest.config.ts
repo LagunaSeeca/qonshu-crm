@@ -4,6 +4,10 @@ import { fileURLToPath } from "node:url";
 
 export default defineConfig({
   plugins: [react()],
-  test: { environment: "jsdom", setupFiles: ["src/test/setup.ts"], globals: true },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["src/test/setup.ts"],
+    globals: true,
+  },
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
 });
