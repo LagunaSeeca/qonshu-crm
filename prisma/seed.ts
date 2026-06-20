@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { hashPassword } from "../src/lib/auth/password";
+import { seedDefaultStages } from "../src/lib/tenant/stages";
 
 function createPrismaClient(): PrismaClient {
   const url = process.env.DATABASE_URL;
@@ -32,7 +33,7 @@ async function main() {
     create: { name: "Demo Co", slug: "demo" },
   });
 
-  await prisma.user.upsert({
+  const admin = await prisma.user.upsert({
     where: { email: "admin@demo.co" },
     update: {},
     create: {
@@ -44,7 +45,7 @@ async function main() {
     },
   });
 
-  await prisma.user.upsert({
+  const member = await prisma.user.upsert({
     where: { email: "member@demo.co" },
     update: {},
     create: {
@@ -57,6 +58,108 @@ async function main() {
   });
 
   console.log("seeded: super@qonshu.dev / admin@demo.co / member@demo.co (password123)");
+
+  // Seed default stages
+  await seedDefaultStages(prisma, co.id);
+
+  // Fetch stages
+  const stages = await prisma.stage.findMany({
+    where: { companyId: co.id },
+    orderBy: { order: "asc" },
+  });
+
+  // Make demo leads idempotent: delete all demo leads first
+  await prisma.lead.deleteMany({
+    where: { companyId: co.id },
+  });
+
+  // Create ~4 demo leads across different stages
+  const demoLeads = [
+    {
+      title: "Acme Corp Deal",
+      contactName: "John Smith",
+      email: "john@acme.com",
+      companyName: "Acme Corporation",
+      value: 50000,
+      priority: "HIGH" as const,
+      stageId: stages[0]?.id, // New
+      ownerId: admin.id,
+    },
+    {
+      title: "TechStart Partnership",
+      contactName: "Sarah Johnson",
+      email: "sarah@techstart.com",
+      companyName: "TechStart Inc",
+      value: 75000,
+      priority: "HIGH" as const,
+      stageId: stages[2]?.id, // Qualified
+      ownerId: member.id,
+    },
+    {
+      title: "Global Industries RFP",
+      contactName: "Michael Chen",
+      email: "michael@global.com",
+      companyName: "Global Industries",
+      value: 125000,
+      priority: "MEDIUM" as const,
+      stageId: stages[3]?.id, // Proposal
+      ownerId: admin.id,
+    },
+    {
+      title: "StartupX Negotiation",
+      contactName: "Emma Davis",
+      email: "emma@startupx.com",
+      companyName: "StartupX",
+      value: 35000,
+      priority: "LOW" as const,
+      stageId: stages[4]?.id, // Negotiation
+      ownerId: member.id,
+    },
+  ];
+
+  for (const leadData of demoLeads) {
+    if (!leadData.stageId) continue;
+
+    const lead = await prisma.lead.create({
+      data: {
+        companyId: co.id,
+        title: leadData.title,
+        contactName: leadData.contactName,
+        email: leadData.email,
+        companyName: leadData.companyName,
+        value: leadData.value,
+        currency: "USD",
+        priority: leadData.priority,
+        stageId: leadData.stageId,
+        ownerId: leadData.ownerId,
+      },
+    });
+
+    // Create one Activity (NOTE)
+    await prisma.activity.create({
+      data: {
+        companyId: co.id,
+        leadId: lead.id,
+        authorId: leadData.ownerId,
+        kind: "NOTE",
+        body: `Initial contact with ${lead.contactName}. Promising opportunity.`,
+      },
+    });
+
+    // Create one Task with a due date
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + 7); // 7 days from now
+    await prisma.task.create({
+      data: {
+        companyId: co.id,
+        leadId: lead.id,
+        title: `Follow up with ${lead.contactName}`,
+        dueDate,
+      },
+    });
+  }
+
+  console.log(`seeded: demo CRM with 4 leads, activities, and tasks across stages`);
 }
 
 main().finally(() => prisma.$disconnect());

@@ -41,7 +41,7 @@ DATABASE_URL="postgresql://qonshu:qonshu@localhost:5433/qonshu?schema=public" np
 DATABASE_URL="postgresql://qonshu:qonshu@localhost:5433/qonshu?schema=public" npm run seed
 ```
 
-This creates three demo accounts (idempotent — safe to run multiple times):
+This creates three demo accounts and demo CRM data (idempotent — safe to run multiple times):
 
 | Email | Password | Role |
 |---|---|---|
@@ -57,7 +57,21 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with any demo account above.
 
-## Running Tests
+## Sales CRM
+
+The Sales CRM module provides lead tracking and pipeline management for each tenant.
+
+### Features
+
+- **Board View** (`/crm`) — Kanban board organized by customizable pipeline stages.
+- **List View** (`/crm/list`) — Searchable, filterable lead table with priority and value.
+- **Stage Admin** (`/crm/stages`) — Configure stages, set win/loss probability, reorder the pipeline.
+- **Visibility Control** — "Share all leads" toggle in company settings determines whether members see all leads or only their own.
+- **Activities** — Track notes, calls, meetings, emails, and automatic stage-change records per lead.
+- **Tasks** — Create and track tasks tied to leads with due dates; mark as done.
+- **Attachments** — Upload files to leads; stored locally under `uploads/` (gitignored). Set `UPLOADS_DIR` env var to override (used by tests).
+
+### Running Tests
 
 Tests require Postgres to be running (step 1 above). The suite runs serially (`fileParallelism: false`) to avoid DB conflicts.
 
@@ -65,4 +79,4 @@ Tests require Postgres to be running (step 1 above). The suite runs serially (`f
 npm test
 ```
 
-Expected output: 27 tests passing across 11 test files.
+Expected output: 50 tests passing across 11 test files.
