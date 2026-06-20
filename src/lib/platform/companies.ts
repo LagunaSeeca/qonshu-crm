@@ -8,10 +8,12 @@ export async function createCompany(
   args: { name: string; slug: string; adminEmail: string },
 ): Promise<{ company: Company; invitation: Invitation }> {
   assertRole(actor, ["SUPER_ADMIN"]);
-  const company = await db.company.create({ data: { name: args.name, slug: args.slug } });
-  await seedDefaultStages(db, company.id);
-  const invitation = await createInvitation(db, { companyId: company.id }, {
-    email: args.adminEmail, role: "COMPANY_ADMIN", invitedById: actor.id,
+  return db.$transaction(async (tx) => {
+    const company = await tx.company.create({ data: { name: args.name, slug: args.slug } });
+    await seedDefaultStages(tx as PrismaClient, company.id);
+    const invitation = await createInvitation(tx as PrismaClient, { companyId: company.id }, {
+      email: args.adminEmail, role: "COMPANY_ADMIN", invitedById: actor.id,
+    });
+    return { company, invitation };
   });
-  return { company, invitation };
 }
