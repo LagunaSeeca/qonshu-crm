@@ -7,6 +7,7 @@ export function UserAdmin({ initial }: { initial: Row[] }) {
   const [rows, setRows] = useState(initial);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("MEMBER");
+  const [msg, setMsg] = useState<string | null>(null);
 
   async function invite() {
     const r = await fetch("/api/invitations", {
@@ -16,7 +17,10 @@ export function UserAdmin({ initial }: { initial: Row[] }) {
     });
     if (r.ok) {
       setEmail("");
+      setMsg(null);
       alert("Invite sent (check server console for link)");
+    } else {
+      setMsg(r.status === 403 ? "Invite failed (forbidden)" : "Invite failed");
     }
   }
 
@@ -27,12 +31,17 @@ export function UserAdmin({ initial }: { initial: Row[] }) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ status: next }),
     });
-    if (r.ok) setRows((rs) => rs.map((x) => (x.id === id ? { ...x, status: next } : x)));
+    if (r.ok) {
+      setRows((rs) => rs.map((x) => (x.id === id ? { ...x, status: next } : x)));
+    } else {
+      setMsg(r.status === 403 ? "Status change failed (forbidden)" : "Status change failed");
+    }
   }
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">Users</h1>
+      {msg && <p className="text-red-600 text-sm">{msg}</p>}
       <div className="flex gap-2">
         <input
           className="border p-2 rounded"
