@@ -24,6 +24,10 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
   const [stages, setStages] = useState<Stage[]>(initialStages);
   const [shareAll, setShareAll] = useState(initialShare);
   const [deleteError, setDeleteError] = useState<Record<string, string>>({});
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [reorderError, setReorderError] = useState<string | null>(null);
+  const [saveEditError, setSaveEditError] = useState<Record<string, string>>({});
+  const [addError, setAddError] = useState<string | null>(null);
 
   // Inline edit state
   const [editing, setEditing] = useState<Record<string, Partial<Stage>>>({});
@@ -45,8 +49,11 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
       body: JSON.stringify(patch),
     });
     if (res.ok) {
+      setSaveEditError((prev) => { const n = { ...prev }; delete n[stage.id]; return n; });
       cancelEdit(stage.id);
       router.refresh();
+    } else {
+      setSaveEditError((prev) => ({ ...prev, [stage.id]: "Failed to save. Please try again." }));
     }
   }
 
@@ -69,11 +76,17 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
     if (swapIdx < 0 || swapIdx >= next.length) return;
     [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
     setStages(next);
-    await fetch("/api/stages/reorder", {
+    setReorderError(null);
+    const res = await fetch("/api/stages/reorder", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ orderedIds: next.map((s) => s.id) }),
     });
+    if (!res.ok) {
+      setReorderError("Failed to reorder stages. Please try again.");
+      setStages(stages);
+      return;
+    }
     router.refresh();
   }
 
@@ -86,29 +99,38 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setAdding(true);
+    setAddError(null);
     const res = await fetch("/api/stages", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: newName, type: newType, probability: newProb }),
     });
-    if (res.ok) {
-      const created = await res.json() as Stage;
-      setStages((prev) => [...prev, created]);
-      setNewName("");
-      setNewProb(0);
-    }
     setAdding(false);
+    if (!res.ok) {
+      setAddError("Failed to add stage. Please try again.");
+      return;
+    }
+    const created = await res.json() as Stage;
+    setStages((prev) => [...prev, created]);
+    setNewName("");
+    setNewProb(0);
     router.refresh();
   }
 
   async function handleShareToggle(e: React.ChangeEvent<HTMLInputElement>) {
     const val = e.target.checked;
     setShareAll(val);
-    await fetch("/api/company/settings", {
+    setShareError(null);
+    const res = await fetch("/api/company/settings", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ shareAllLeads: val }),
     });
+    if (!res.ok) {
+      setShareAll(!val);
+      setShareError("Failed to update setting. Please try again.");
+      return;
+    }
     router.refresh();
   }
 
@@ -118,22 +140,23 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
 
       {/* Visibility toggle */}
       <section className="bg-white border rounded p-4">
-        <label className="flex items-center gap-3 text-sm cursor-pointer">
+        <div className="flex items-center gap-3 text-sm">
           <input
             id="share-all-leads"
             type="checkbox"
             checked={shareAll}
             onChange={handleShareToggle}
-            className="h-4 w-4"
-            aria-label="Share all leads with everyone"
+            className="h-4 w-4 cursor-pointer"
           />
-          <span>Share all leads with everyone</span>
-        </label>
+          <label htmlFor="share-all-leads" className="cursor-pointer">Share all leads with everyone</label>
+        </div>
+        {shareError && <p className="text-sm text-red-600 mt-2">{shareError}</p>}
       </section>
 
       {/* Stage list */}
       <section className="bg-white border rounded p-4 space-y-3">
         <h2 className="font-medium text-sm">Pipeline Stages</h2>
+        {reorderError && <p className="text-sm text-red-600 mb-2">{reorderError}</p>}
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-gray-500 text-xs border-b">
@@ -216,6 +239,9 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
                     {deleteError[stage.id] && (
                       <span className="text-xs text-red-500 ml-1">{deleteError[stage.id]}</span>
                     )}
+                    {saveEditError[stage.id] && (
+                      <span className="text-xs text-red-500 ml-1">{saveEditError[stage.id]}</span>
+                    )}
                   </td>
                 </tr>
               );
@@ -258,6 +284,7 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
             {adding ? "Adding…" : "Add Stage"}
           </button>
         </form>
+        {addError && <p className="text-sm text-red-600 mt-2">{addError}</p>}
       </section>
     </div>
   );

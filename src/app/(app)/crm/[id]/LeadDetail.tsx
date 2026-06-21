@@ -44,32 +44,47 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
   const [companyName, setCompanyName] = useState(lead.companyName ?? "");
   const [value, setValue] = useState(String(lead.value));
   const [priority, setPriority] = useState(lead.priority);
+  const [stageId, setStageId] = useState(lead.stageId);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    await fetch(`/api/leads/${lead.id}`, {
+    setSaveError(null);
+    const res = await fetch(`/api/leads/${lead.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title, contactName, email: email || null, phone: phone || null, companyName: companyName || null, value: Number(value), priority }),
     });
     setSaving(false);
+    if (!res.ok) {
+      setSaveError("Failed to save. Please try again.");
+      return;
+    }
     router.refresh();
   }
 
   async function handleMove(e: React.ChangeEvent<HTMLSelectElement>) {
     const toStageId = e.target.value;
+    setStageId(toStageId);
+    setMoveError(null);
     const targetStage = stages.find((s) => s.id === toStageId);
     let lostReason: string | null = null;
     if (targetStage?.type === "LOST") {
       lostReason = window.prompt("Reason for losing this lead?") ?? null;
     }
-    await fetch(`/api/leads/${lead.id}/move`, {
+    const res = await fetch(`/api/leads/${lead.id}/move`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ toStageId, lostReason }),
     });
+    if (!res.ok) {
+      setMoveError("Failed to move stage. Please try again.");
+      setStageId(lead.stageId);
+      return;
+    }
     router.refresh();
   }
 
@@ -78,58 +93,82 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
   const [actBody, setActBody] = useState("");
   const [actOutcome, setActOutcome] = useState("");
   const [addingActivity, setAddingActivity] = useState(false);
+  const [activityError, setActivityError] = useState<string | null>(null);
 
   async function handleAddActivity(e: React.FormEvent) {
     e.preventDefault();
     setAddingActivity(true);
-    await fetch(`/api/leads/${lead.id}/activities`, {
+    setActivityError(null);
+    const res = await fetch(`/api/leads/${lead.id}/activities`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ kind: actKind, body: actBody, outcome: actOutcome || undefined }),
     });
+    setAddingActivity(false);
+    if (!res.ok) {
+      setActivityError("Failed to add activity. Please try again.");
+      return;
+    }
     setActBody("");
     setActOutcome("");
-    setAddingActivity(false);
     router.refresh();
   }
 
   // --- Section 3: Tasks ---
   const [taskTitle, setTaskTitle] = useState("");
   const [addingTask, setAddingTask] = useState(false);
+  const [taskError, setTaskError] = useState<string | null>(null);
 
   async function handleToggleTask(taskId: string, done: boolean) {
-    await fetch(`/api/leads/${lead.id}/tasks/${taskId}`, {
+    const res = await fetch(`/api/leads/${lead.id}/tasks/${taskId}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ done }),
     });
+    if (!res.ok) {
+      setTaskError("Failed to update task. Please try again.");
+      return;
+    }
+    setTaskError(null);
     router.refresh();
   }
 
   async function handleAddTask(e: React.FormEvent) {
     e.preventDefault();
     setAddingTask(true);
-    await fetch(`/api/leads/${lead.id}/tasks`, {
+    setTaskError(null);
+    const res = await fetch(`/api/leads/${lead.id}/tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: taskTitle }),
     });
-    setTaskTitle("");
     setAddingTask(false);
+    if (!res.ok) {
+      setTaskError("Failed to add task. Please try again.");
+      return;
+    }
+    setTaskTitle("");
     router.refresh();
   }
 
   // --- Attachments ---
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
+    setUploadError(null);
     const fd = new FormData();
     fd.append("file", file);
-    await fetch(`/api/leads/${lead.id}/attachments`, { method: "POST", body: fd });
+    const res = await fetch(`/api/leads/${lead.id}/attachments`, { method: "POST", body: fd });
     setUploading(false);
+    if (!res.ok) {
+      setUploadError("Failed to upload attachment. Please try again.");
+      e.target.value = "";
+      return;
+    }
     e.target.value = "";
     router.refresh();
   }
@@ -175,10 +214,11 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
           </label>
           <label className="col-span-2 flex flex-col gap-1 text-sm">
             Stage
-            <select className="border rounded px-2 py-1" value={lead.stageId} onChange={handleMove}>
+            <select className="border rounded px-2 py-1" value={stageId} onChange={handleMove}>
               {stages.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </label>
+          {moveError && <p className="col-span-2 text-sm text-red-600">{moveError}</p>}
           {lead.lostReason && (
             <p className="col-span-2 text-sm text-red-600">Lost reason: {lead.lostReason}</p>
           )}
@@ -186,6 +226,7 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
             <button className="bg-blue-600 text-white px-4 py-1.5 rounded text-sm" type="submit" disabled={saving}>
               {saving ? "Saving…" : "Save"}
             </button>
+            {saveError && <p className="text-sm text-red-600 mt-1">{saveError}</p>}
           </div>
         </form>
       </section>
@@ -230,6 +271,7 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
           <button className="bg-blue-600 text-white px-3 py-1 rounded text-sm" type="submit" disabled={addingActivity}>
             {addingActivity ? "Adding…" : "Add"}
           </button>
+          {activityError && <p className="text-sm text-red-600 mt-1">{activityError}</p>}
         </form>
       </section>
 
@@ -252,6 +294,7 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
             </li>
           ))}
         </ul>
+        {taskError && <p className="text-sm text-red-600">{taskError}</p>}
         <form onSubmit={handleAddTask} className="flex gap-2 border-t pt-4">
           <input
             className="border rounded px-2 py-1 text-sm flex-1"
@@ -289,6 +332,7 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
             <input type="file" onChange={handleUpload} disabled={uploading} className="text-sm" />
           </label>
           {uploading && <p className="text-xs text-gray-500 mt-1">Uploading…</p>}
+          {uploadError && <p className="text-sm text-red-600 mt-1">{uploadError}</p>}
         </div>
       </section>
     </div>
