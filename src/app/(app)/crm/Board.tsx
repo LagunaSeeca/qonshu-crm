@@ -1,8 +1,9 @@
 "use client";
+import React from "react";
 import { useRouter } from "next/navigation";
 import { DndContext, type DragEndEvent, useDroppable, useDraggable } from "@dnd-kit/core";
 
-type Stage = { id: string; name: string };
+type Stage = { id: string; name: string; probability: number };
 type Lead = { id: string; title: string; stageId: string; value: number; contactName: string };
 
 function LeadCard({ lead }: { lead: Lead }) {
@@ -25,7 +26,7 @@ function LeadCard({ lead }: { lead: Lead }) {
 
 function Column({ stage, leads }: { stage: Stage; leads: Lead[] }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
-  const total = leads.reduce((s, l) => s + l.value, 0);
+  const weighted = leads.reduce((s, l) => s + l.value * stage.probability / 100, 0);
   return (
     <div
       ref={setNodeRef}
@@ -33,7 +34,7 @@ function Column({ stage, leads }: { stage: Stage; leads: Lead[] }) {
     >
       <div className="font-semibold text-sm mb-1">{stage.name}</div>
       <div className="text-xs text-gray-500 mb-3">
-        {leads.length} lead{leads.length !== 1 ? "s" : ""} · {total.toLocaleString()}
+        {leads.length} lead{leads.length !== 1 ? "s" : ""} · weighted {weighted.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 })}
       </div>
       {leads.map((l) => (
         <LeadCard key={l.id} lead={l} />
@@ -44,22 +45,30 @@ function Column({ stage, leads }: { stage: Stage; leads: Lead[] }) {
 
 export function Board({ stages, leads }: { stages: Stage[]; leads: Lead[] }) {
   const router = useRouter();
+  const [dragError, setDragError] = React.useState<string | null>(null);
 
   async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     const leadId = String(active.id);
     const toStageId = String(over.id);
-    await fetch(`/api/leads/${leadId}/move`, {
+    const res = await fetch(`/api/leads/${leadId}/move`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ toStageId }),
     });
+    if (!res.ok) {
+      setDragError("Failed to move lead. Please try again.");
+      router.refresh();
+      return;
+    }
+    setDragError(null);
     router.refresh();
   }
 
   return (
     <DndContext onDragEnd={handleDragEnd}>
+      {dragError && <p className="text-sm text-red-600 mb-2">{dragError}</p>}
       <div className="flex gap-4 overflow-x-auto pb-4">
         {stages.map((stage) => (
           <Column key={stage.id} stage={stage} leads={leads.filter((l) => l.stageId === stage.id)} />

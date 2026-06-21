@@ -10,7 +10,7 @@ vi.mock("next/navigation", () => ({
 describe("Board", () => {
   it("renders a column per stage and cards in them", () => {
     render(<Board
-      stages={[{ id: "s1", name: "New" }, { id: "s2", name: "Won" }]}
+      stages={[{ id: "s1", name: "New", probability: 10 }, { id: "s2", name: "Won", probability: 100 }]}
       leads={[{ id: "l1", title: "Deal A", stageId: "s1", value: 100, contactName: "J" }]}
     />);
     expect(screen.getByText("New")).toBeInTheDocument();

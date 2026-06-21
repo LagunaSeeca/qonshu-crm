@@ -25,7 +25,7 @@ export default async function CrmBoardPage() {
         </div>
       </div>
       <Board
-        stages={stages.map((s) => ({ id: s.id, name: s.name }))}
+        stages={stages.map((s) => ({ id: s.id, name: s.name, probability: s.probability }))}
         leads={leads.map((l) => ({ id: l.id, title: l.title, stageId: l.stageId, value: Number(l.value), contactName: l.contactName }))}
       />
     </div>
