@@ -37,11 +37,16 @@ export async function listLeads(db: PrismaClient, user: SessionUser, opts?: {
   const where: Prisma.LeadWhereInput = { ...(await scopeWhere(db, user)) };
   if (opts?.stageId) where.stageId = opts.stageId;
   if (opts?.ownerId) where.ownerId = opts.ownerId;
-  if (opts?.q) where.OR = [
-    { title: { contains: opts.q, mode: "insensitive" } },
-    { contactName: { contains: opts.q, mode: "insensitive" } },
-    { companyName: { contains: opts.q, mode: "insensitive" } },
-  ];
+  if (opts?.q) {
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+      { OR: [
+        { title: { contains: opts.q, mode: "insensitive" } },
+        { contactName: { contains: opts.q, mode: "insensitive" } },
+        { companyName: { contains: opts.q, mode: "insensitive" } },
+      ] },
+    ];
+  }
   return db.lead.findMany({ where, orderBy: { [opts?.sort ?? "createdAt"]: "desc" }, skip: opts?.skip, take: opts?.take });
 }
 

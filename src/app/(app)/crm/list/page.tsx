@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
 import { getTenantContext } from "@/lib/tenant/context";
@@ -36,7 +37,7 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Leads</h1>
-        <a href="/crm" className="text-sm text-blue-600">Board view →</a>
+        <Link href="/crm" className="text-sm text-blue-600">Board view →</Link>
       </div>
       <form method="GET" className="flex gap-2">
         <input name="q" defaultValue={sp.q ?? ""} placeholder="Search leads..." className="border p-2 rounded text-sm w-64" />
