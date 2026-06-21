@@ -5,6 +5,8 @@ import { Sidebar } from "@/components/Sidebar";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await getSessionUser();
   if (!user) redirect("/login");
+  // Super Admin (no company) belongs in the platform area, not the tenant CRM.
+  if (!user.companyId) redirect("/platform/companies");
   return (
     <div className="flex">
       <Sidebar role={user.role} />
