@@ -65,6 +65,8 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
     } else if (res.ok) {
       setStages((prev) => prev.filter((s) => s.id !== id));
       router.refresh();
+    } else {
+      setDeleteError((prev) => ({ ...prev, [id]: "Failed to delete. Please try again." }));
     }
   }
 
