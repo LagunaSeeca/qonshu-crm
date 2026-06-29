@@ -12,11 +12,13 @@ describe("account schema", () => {
     await testPrisma.accountActivity.create({ data: { companyId: c.id, accountId: acc.id, authorId: u.id, kind: "MEETING", body: "kickoff" } });
     await testPrisma.accountTask.create({ data: { companyId: c.id, accountId: acc.id, title: "send deck" } });
     await testPrisma.accountAsk.create({ data: { companyId: c.id, accountId: acc.id, title: "need API key", authorId: u.id } });
+    await testPrisma.accountAttachment.create({ data: { companyId: c.id, accountId: acc.id, uploadedById: u.id, filename: "file.txt", diskPath: "/tmp/file", size: 100, mime: "text/plain" } });
     expect(acc.status).toBe("ACTIVE");
     expect(Number(acc.value)).toBe(5000);
     await testPrisma.account.delete({ where: { id: acc.id } });
     expect(await testPrisma.accountActivity.count({ where: { accountId: acc.id } })).toBe(0);
     expect(await testPrisma.accountTask.count({ where: { accountId: acc.id } })).toBe(0);
     expect(await testPrisma.accountAsk.count({ where: { accountId: acc.id } })).toBe(0);
+    expect(await testPrisma.accountAttachment.count({ where: { accountId: acc.id } })).toBe(0);
   });
 });
