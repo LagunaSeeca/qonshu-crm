@@ -1,9 +1,9 @@
-import type { PrismaClient, AccountActivity, ActivityKind } from "@prisma/client";
+import type { PrismaClient, AccountActivity, AccountActivityKind } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
 import { getAccount } from "./accounts";
 
-export async function addAccountActivity(db: PrismaClient, user: SessionUser, accountId: string, args: { kind: ActivityKind; body: string; outcome?: string; occurredAt?: Date }): Promise<AccountActivity> {
+export async function addAccountActivity(db: PrismaClient, user: SessionUser, accountId: string, args: { kind: AccountActivityKind; body: string; outcome?: string; occurredAt?: Date }): Promise<AccountActivity> {
   const account = await getAccount(db, user, accountId);
   if (!account) throw new NotFoundError("account not in scope");
   return db.accountActivity.create({ data: { companyId: user.companyId!, accountId, authorId: user.id, kind: args.kind, body: args.body, outcome: args.outcome, occurredAt: args.occurredAt ?? new Date() } });
