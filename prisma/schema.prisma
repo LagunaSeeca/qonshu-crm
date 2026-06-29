@@ -29,19 +29,24 @@ enum InviteStatus {
 }
 
 model Company {
-  id             String        @id @default(cuid())
-  name           String
-  slug           String        @unique
-  status         CompanyStatus @default(ACTIVE)
-  shareAllLeads  Boolean       @default(true)
-  createdAt      DateTime      @default(now())
-  users          User[]
-  invitations    Invitation[]
-  stages         Stage[]
-  leads          Lead[]
-  activities     Activity[]
-  tasks          Task[]
-  attachments    Attachment[]
+  id                  String              @id @default(cuid())
+  name                String
+  slug                String              @unique
+  status              CompanyStatus       @default(ACTIVE)
+  shareAllLeads       Boolean             @default(true)
+  createdAt           DateTime            @default(now())
+  users               User[]
+  invitations         Invitation[]
+  stages              Stage[]
+  leads               Lead[]
+  activities          Activity[]
+  tasks               Task[]
+  attachments         Attachment[]
+  accounts            Account[]
+  accountActivities   AccountActivity[]
+  accountTasks        AccountTask[]
+  accountAsks         AccountAsk[]
+  accountAttachments  AccountAttachment[]
 }
 
 model User {
@@ -180,4 +185,107 @@ model Attachment {
   uploadedById String
   createdAt    DateTime @default(now())
   @@index([companyId, leadId])
+}
+
+enum AccountStatus {
+  ACTIVE
+  AT_RISK
+  CHURNED
+}
+
+enum AccountActivityKind {
+  NOTE
+  CALL
+  MEETING
+  EMAIL
+}
+
+enum AskStatus {
+  OPEN
+  RESOLVED
+}
+
+model Account {
+  id                  String        @id @default(cuid())
+  companyId           String
+  company             Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name                String
+  website             String?
+  industry            String?
+  status              AccountStatus @default(ACTIVE)
+  accountManagerId    String
+  value               Decimal       @default(0)
+  currency            String        @default("USD")
+  primaryContactName  String?
+  primaryContactEmail String?
+  primaryContactPhone String?
+  sourceLeadId        String?       @unique
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  activities          AccountActivity[]
+  tasks               AccountTask[]
+  asks                AccountAsk[]
+  attachments         AccountAttachment[]
+  @@index([companyId])
+  @@index([companyId, status])
+  @@index([companyId, accountManagerId])
+}
+
+model AccountActivity {
+  id         String              @id @default(cuid())
+  companyId  String
+  company    Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  authorId   String?
+  kind       AccountActivityKind @default(NOTE)
+  body       String
+  outcome    String?
+  occurredAt DateTime            @default(now())
+  createdAt  DateTime            @default(now())
+  @@index([companyId, accountId])
+}
+
+model AccountTask {
+  id         String   @id @default(cuid())
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  title      String
+  dueDate    DateTime?
+  done       Boolean  @default(false)
+  assigneeId String?
+  createdAt  DateTime @default(now())
+  @@index([companyId, accountId])
+}
+
+model AccountAsk {
+  id         String    @id @default(cuid())
+  companyId  String
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  title      String
+  detail     String?
+  status     AskStatus @default(OPEN)
+  authorId   String?
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+  @@index([companyId, accountId])
+}
+
+model AccountAttachment {
+  id           String   @id @default(cuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId    String
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  filename     String
+  diskPath     String
+  size         Int
+  mime         String
+  uploadedById String
+  createdAt    DateTime @default(now())
+  @@index([companyId, accountId])
 }

@@ -11,6 +11,11 @@ function createTestPrismaClient(): PrismaClient {
 export const testPrisma = createTestPrismaClient();
 
 export async function resetDb() {
+  await testPrisma.accountAttachment.deleteMany();
+  await testPrisma.accountAsk.deleteMany();
+  await testPrisma.accountTask.deleteMany();
+  await testPrisma.accountActivity.deleteMany();
+  await testPrisma.account.deleteMany();
   await testPrisma.attachment.deleteMany();
   await testPrisma.task.deleteMany();
   await testPrisma.activity.deleteMany();
