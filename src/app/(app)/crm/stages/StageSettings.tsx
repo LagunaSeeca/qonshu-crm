@@ -171,15 +171,15 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
         <CardContent>
           <div className="flex items-center justify-between gap-4">
             <div>
-              <Label htmlFor="share-all-leads" className="text-sm font-medium text-foreground cursor-pointer">
+              <p id="share-all-leads-label" className="text-sm font-medium text-foreground">
                 Share all leads with everyone
-              </Label>
+              </p>
               <p className="text-xs text-muted-foreground mt-0.5">
                 When on, all team members can view every lead regardless of owner.
               </p>
             </div>
             <Switch
-              id="share-all-leads"
+              aria-labelledby="share-all-leads-label"
               checked={shareAll}
               onCheckedChange={handleShareToggle}
             />
