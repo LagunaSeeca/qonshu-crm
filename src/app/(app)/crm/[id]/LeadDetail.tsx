@@ -221,20 +221,54 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
 
   // Manual tabs — keeps all panels in DOM so tests can find text in inactive tabs
   const [activeTab, setActiveTab] = useState<"activity" | "tasks" | "files">("activity");
+  const [converting, setConverting] = useState(false);
 
   const memberMap = Object.fromEntries(members.map((m) => [m.id, m.name]));
   const currentStage = stages.find((s) => s.id === stageId);
 
+  async function handleConvert() {
+    setConverting(true);
+    try {
+      const res = await fetch("/api/accounts/from-lead", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ leadId: lead.id }),
+      });
+      if (res.status === 409) {
+        toast.error("Lead already converted");
+        return;
+      }
+      if (!res.ok) {
+        toast.error("Failed to convert lead");
+        return;
+      }
+      const created = await res.json();
+      toast.success("Converted to account");
+      router.push("/accounts/" + created.id);
+    } catch {
+      toast.error("Failed to convert lead");
+    } finally {
+      setConverting(false);
+    }
+  }
+
   return (
     <div className="max-w-7xl mx-auto p-6">
       {/* Page header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">{lead.title}</h1>
-        {lead.lostReason && (
-          <div className="flex items-center gap-1.5 mt-1 text-sm text-destructive">
-            <AlertCircle className="size-3.5" />
-            <span>Lost reason: {lead.lostReason}</span>
-          </div>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">{lead.title}</h1>
+          {lead.lostReason && (
+            <div className="flex items-center gap-1.5 mt-1 text-sm text-destructive">
+              <AlertCircle className="size-3.5" />
+              <span>Lost reason: {lead.lostReason}</span>
+            </div>
+          )}
+        </div>
+        {currentStage?.type === "WON" && (
+          <Button size="sm" onClick={handleConvert} disabled={converting}>
+            {converting ? "Converting…" : "Convert to Account"}
+          </Button>
         )}
       </div>
 
