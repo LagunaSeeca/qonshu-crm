@@ -1,0 +1,77 @@
+import type { PrismaClient, Account, AccountStatus, Prisma } from "@prisma/client";
+import type { SessionUser } from "@/lib/auth/guards";
+import { NotFoundError } from "@/lib/auth/guards";
+import { getLead } from "./leads";
+import { removeLeadDir } from "@/lib/files/storage";
+
+export class AlreadyConvertedError extends Error {}
+
+export function accountScopeWhere(user: SessionUser): { companyId: string } {
+  if (!user.companyId) throw new Error("no tenant context");
+  return { companyId: user.companyId };
+}
+
+export function createAccount(db: PrismaClient, user: SessionUser, data: {
+  name: string; website?: string; industry?: string; status?: AccountStatus;
+  accountManagerId?: string; value?: number | string; primaryContactName?: string;
+  primaryContactEmail?: string; primaryContactPhone?: string; sourceLeadId?: string;
+}): Promise<Account> {
+  return db.account.create({ data: {
+    companyId: user.companyId!, name: data.name, website: data.website, industry: data.industry,
+    status: data.status ?? "ACTIVE", accountManagerId: data.accountManagerId ?? user.id,
+    value: data.value ?? 0, primaryContactName: data.primaryContactName,
+    primaryContactEmail: data.primaryContactEmail, primaryContactPhone: data.primaryContactPhone,
+    sourceLeadId: data.sourceLeadId ?? null,
+  } });
+}
+
+export function listAccounts(db: PrismaClient, user: SessionUser, opts?: { status?: AccountStatus; accountManagerId?: string; q?: string }): Promise<Account[]> {
+  const where: Prisma.AccountWhereInput = { ...accountScopeWhere(user) };
+  if (opts?.status) where.status = opts.status;
+  if (opts?.accountManagerId) where.accountManagerId = opts.accountManagerId;
+  if (opts?.q) where.OR = [
+    { name: { contains: opts.q, mode: "insensitive" } },
+    { industry: { contains: opts.q, mode: "insensitive" } },
+  ];
+  return db.account.findMany({ where, orderBy: { updatedAt: "desc" } });
+}
+
+export function getAccount(db: PrismaClient, user: SessionUser, id: string): Promise<Account | null> {
+  return db.account.findFirst({ where: { id, ...accountScopeWhere(user) } });
+}
+
+export async function updateAccount(db: PrismaClient, user: SessionUser, id: string, data: Partial<{
+  name: string; website: string | null; industry: string | null; status: AccountStatus;
+  accountManagerId: string; value: number | string; primaryContactName: string | null;
+  primaryContactEmail: string | null; primaryContactPhone: string | null;
+}>): Promise<Account> {
+  const found = await getAccount(db, user, id);
+  if (!found) throw new NotFoundError("account not in scope");
+  if (data.accountManagerId) {
+    const mgr = await db.user.findFirst({ where: { id: data.accountManagerId, companyId: user.companyId! } });
+    if (!mgr) throw new NotFoundError("manager not in tenant");
+  }
+  return db.account.update({ where: { id }, data });
+}
+
+export async function deleteAccount(db: PrismaClient, user: SessionUser, id: string): Promise<void> {
+  const found = await getAccount(db, user, id);
+  if (!found) throw new NotFoundError("account not in scope");
+  await removeLeadDir(user.companyId!, `account-${id}`); // reuse storage dir-removal under uploads/<companyId>/account-<id>
+  await db.account.delete({ where: { id } });
+}
+
+export async function convertLeadToAccount(db: PrismaClient, user: SessionUser, leadId: string): Promise<Account> {
+  const lead = await getLead(db, user, leadId);
+  if (!lead) throw new NotFoundError("lead not in scope");
+  const stage = await db.stage.findFirst({ where: { id: lead.stageId, companyId: user.companyId! } });
+  if (!stage || stage.type !== "WON") throw new Error("lead is not in a Won stage");
+  const existing = await db.account.findFirst({ where: { companyId: user.companyId!, sourceLeadId: leadId } });
+  if (existing) throw new AlreadyConvertedError("lead already converted");
+  return createAccount(db, user, {
+    name: lead.companyName ?? lead.title, value: lead.value as unknown as number,
+    accountManagerId: lead.ownerId, primaryContactName: lead.contactName,
+    primaryContactEmail: lead.email ?? undefined, primaryContactPhone: lead.phone ?? undefined,
+    sourceLeadId: lead.id,
+  });
+}
