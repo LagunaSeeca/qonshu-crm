@@ -160,6 +160,103 @@ async function main() {
   }
 
   console.log(`seeded: demo CRM with 4 leads, activities, and tasks across stages`);
+
+  // Make demo accounts idempotent: delete all demo accounts first (cascades to activities/tasks/asks/attachments)
+  await prisma.account.deleteMany({
+    where: { companyId: co.id },
+  });
+
+  // Create 2 demo accounts
+  const demoAccounts = [
+    {
+      name: "Acme Enterprise",
+      industry: "Technology",
+      value: 250000,
+      status: "ACTIVE" as const,
+      primaryContactName: "Alice Williams",
+      primaryContactEmail: "alice@acme-ent.com",
+      accountManagerId: admin.id,
+    },
+    {
+      name: "TechFlow Solutions",
+      industry: "Software",
+      value: 180000,
+      status: "AT_RISK" as const,
+      primaryContactName: "Bob Martinez",
+      primaryContactEmail: "bob@techflow.com",
+      accountManagerId: member.id,
+    },
+  ];
+
+  for (let i = 0; i < demoAccounts.length; i++) {
+    const accountData = demoAccounts[i];
+
+    const account = await prisma.account.create({
+      data: {
+        companyId: co.id,
+        name: accountData.name,
+        industry: accountData.industry,
+        value: accountData.value,
+        currency: "USD",
+        status: accountData.status,
+        primaryContactName: accountData.primaryContactName,
+        primaryContactEmail: accountData.primaryContactEmail,
+        accountManagerId: accountData.accountManagerId,
+      },
+    });
+
+    // Create one AccountActivity (MEETING)
+    await prisma.accountActivity.create({
+      data: {
+        companyId: co.id,
+        accountId: account.id,
+        authorId: accountData.accountManagerId,
+        kind: "MEETING",
+        body: `Initial account review meeting with ${account.primaryContactName}. Discussed quarterly goals and initiatives.`,
+        outcome: "Positive engagement. Next review in 30 days.",
+      },
+    });
+
+    // Create one AccountTask with a due date
+    const taskDueDate = new Date();
+    taskDueDate.setDate(taskDueDate.getDate() + 14); // 14 days from now
+    await prisma.accountTask.create({
+      data: {
+        companyId: co.id,
+        accountId: account.id,
+        title: `Prepare quarterly business review for ${account.name}`,
+        dueDate: taskDueDate,
+      },
+    });
+
+    // Create asks: one OPEN, one RESOLVED
+    // First ask: OPEN
+    await prisma.accountAsk.create({
+      data: {
+        companyId: co.id,
+        accountId: account.id,
+        title: `Needs: Custom integration support`,
+        detail: `${account.primaryContactName} requested custom API integration capabilities.`,
+        status: "OPEN",
+        authorId: accountData.accountManagerId,
+      },
+    });
+
+    // Second ask: RESOLVED
+    await prisma.accountAsk.create({
+      data: {
+        companyId: co.id,
+        accountId: account.id,
+        title: `License renewal discussion`,
+        detail: `Follow up on annual licensing renewal and volume discount negotiation.`,
+        status: "RESOLVED",
+        resolvedAt: new Date(),
+        authorId: accountData.accountManagerId,
+      },
+    });
+  }
+
+  console.log(`seeded: 2 demo accounts with activities, tasks, and asks`);
 }
 
 main().finally(() => prisma.$disconnect());

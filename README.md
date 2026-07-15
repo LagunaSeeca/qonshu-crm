@@ -79,4 +79,21 @@ Tests require Postgres to be running (step 1 above). The suite runs serially (`f
 npm test
 ```
 
-Expected output: 50 tests passing across 11 test files.
+Expected output: 66 tests passing across 12 test files.
+
+## Account Management
+
+The Account Management module provides enterprise account tracking, activities, and customer health monitoring.
+
+### Features
+
+- **Accounts List** (`/accounts`) — Searchable table of active accounts with status, value, and manager.
+- **Convert to Account** — Convert a Won lead to a customer account from the lead detail view; sets primary contact and initial account manager.
+- **Account Detail** — Tabbed interface with:
+  - **Activity** — Track meetings, calls, emails, and notes with outcomes; sortable timeline.
+  - **Tasks** — Manage action items with due dates and completion tracking.
+  - **Asks** — Track customer asks and requests; mark as open or resolved.
+  - **Files** — Upload and download account-related documents; stored under `uploads/<companyId>/account-<id>/` (gitignored).
+  - **Analytics** — Placeholder for M4 health metrics and trends.
+- **Account Status** — Monitor account health: ACTIVE, AT_RISK, or CHURNED.
+- **Admin Delete** — Only COMPANY_ADMIN can delete an account; cascades to all related activities, tasks, asks, and files.
