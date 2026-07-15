@@ -3,6 +3,8 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { hashPassword } from "../src/lib/auth/password";
 import { seedDefaultStages } from "../src/lib/tenant/stages";
+import { syncAccountAnalytics } from "../src/lib/analytics/sync";
+import { MockPartnerAnalyticsSource } from "../src/lib/analytics/source";
 
 function createPrismaClient(): PrismaClient {
   const url = process.env.DATABASE_URL;
@@ -257,6 +259,24 @@ async function main() {
   }
 
   console.log(`seeded: 2 demo accounts with activities, tasks, and asks`);
+
+  // Seed mock analytics for each demo account
+  const source = new MockPartnerAnalyticsSource();
+  let totalAppUsers = 0;
+  let totalPayments = 0;
+
+  for (const accountData of demoAccounts) {
+    const account = await prisma.account.findFirst({
+      where: { companyId: co.id, name: accountData.name },
+    });
+    if (!account) continue;
+
+    const { users, payments } = await syncAccountAnalytics(prisma, account.id, co.id, source);
+    totalAppUsers += users;
+    totalPayments += payments;
+  }
+
+  console.log(`seeded: mock partner analytics — ${totalAppUsers} app users, ${totalPayments} payments across demo accounts`);
 }
 
 main().finally(() => prisma.$disconnect());

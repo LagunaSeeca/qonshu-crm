@@ -94,6 +94,26 @@ The Account Management module provides enterprise account tracking, activities, 
   - **Tasks** — Manage action items with due dates and completion tracking.
   - **Asks** — Track customer asks and requests; mark as open or resolved.
   - **Files** — Upload and download account-related documents; stored under `uploads/<companyId>/account-<id>/` (gitignored).
-  - **Analytics** — Placeholder for M4 health metrics and trends.
 - **Account Status** — Monitor account health: ACTIVE, AT_RISK, or CHURNED.
 - **Admin Delete** — Only COMPANY_ADMIN can delete an account; cascades to all related activities, tasks, asks, and files.
+
+## Mobile Analytics
+
+The Mobile Analytics module tracks app usage, payments, and user activity for partner applications integrated with customer accounts.
+
+### Features
+
+- **Analytics Tab** (`/accounts/:id/analytics`) — Comprehensive dashboard showing:
+  - **Date Range Selector** — Presets for DAILY, 7D, 30D, 90D, 1Y plus custom date picker.
+  - **KPI Cards** — Total app users, total payments, active users, and average payment amount.
+  - **Trend Chart** — Line chart showing payment volume and user activity over the selected range.
+  - **Payment Breakdown** — Pie charts for payment method (CARD/MANUAL/CASH) and category (APARTMENT/PARKING/NON_RESIDENTIAL/UTILITY).
+  - **Top Users** — Table of highest-spending app users with cumulative totals.
+  - **Transactions** — Paginated log of all payments with timestamp, amount, method, and category.
+- **Sync Mock Data** — Button to refresh analytics from the mock partner analytics source (idempotent).
+- **Data Tables** — Analytics stored in `PartnerAppUser` (linked to accounts, tracks debt and active status) and `PartnerPayment` (payment events with method and category).
+- **Extensibility** — The `PartnerAnalyticsSource` interface allows swapping the mock implementation for a real mobile API later.
+
+### Demo Data
+
+Run `npm run seed` to populate demo accounts with mock partner app users and payment history (90 days). The seed is idempotent and safe to re-run.
