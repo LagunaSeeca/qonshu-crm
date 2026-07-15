@@ -27,6 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Analytics } from "./Analytics";
 
 type Activity = { id: string; kind: string; body: string; outcome: string | null; occurredAt: string; authorId: string | null };
 type Task = { id: string; title: string; dueDate: string | null; done: boolean };
@@ -265,7 +266,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
     { key: "tasks", label: "Tasks" },
     { key: "asks", label: "Asks" },
     { key: "files", label: "Files" },
-    { key: "analytics", label: "Analytics", disabled: true },
+    { key: "analytics", label: "Analytics" },
   ];
 
   return (
@@ -691,23 +692,9 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
             </Card>
           </div>
 
-          {/* Analytics panel — M4 placeholder */}
+          {/* Analytics panel */}
           <div hidden={activeTab !== "analytics"}>
-            <Card>
-              <CardHeader className="border-b border-border pb-4">
-                <CardTitle className="text-base font-semibold flex items-center gap-2">
-                  <BarChart2 className="size-4 text-muted-foreground" />
-                  Analytics
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="pt-4">
-                <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground">
-                  <BarChart2 className="size-10 mb-3 opacity-30" />
-                  <p className="text-sm font-medium">Coming in a later milestone</p>
-                  <p className="text-xs mt-1 text-muted-foreground/60">Mobile analytics integration is planned for Milestone 4.</p>
-                </div>
-              </CardContent>
-            </Card>
+            <Analytics accountId={account.id} />
           </div>
         </div>
       </div>
