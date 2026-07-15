@@ -47,6 +47,8 @@ model Company {
   accountTasks        AccountTask[]
   accountAsks         AccountAsk[]
   accountAttachments  AccountAttachment[]
+  partnerAppUsers     PartnerAppUser[]
+  partnerPayments     PartnerPayment[]
 }
 
 model User {
@@ -226,6 +228,8 @@ model Account {
   tasks               AccountTask[]
   asks                AccountAsk[]
   attachments         AccountAttachment[]
+  partnerAppUsers     PartnerAppUser[]
+  partnerPayments     PartnerPayment[]
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, accountManagerId])
@@ -288,4 +292,51 @@ model AccountAttachment {
   uploadedById String
   createdAt    DateTime @default(now())
   @@index([companyId, accountId])
+}
+
+enum PaymentMethod {
+  CARD
+  MANUAL
+  CASH
+}
+enum PaymentCategory {
+  APARTMENT
+  PARKING
+  NON_RESIDENTIAL
+  UTILITY
+}
+
+model PartnerAppUser {
+  id         String   @id @default(cuid())
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  externalId String
+  name       String
+  active     Boolean  @default(true)
+  debt       Decimal  @default(0)
+  joinedAt   DateTime
+  createdAt  DateTime @default(now())
+  payments   PartnerPayment[]
+  @@unique([accountId, externalId])
+  @@index([companyId, accountId])
+  @@index([accountId, active])
+}
+
+model PartnerPayment {
+  id         String          @id @default(cuid())
+  companyId  String
+  company    Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  appUserId  String
+  appUser    PartnerAppUser  @relation(fields: [appUserId], references: [id], onDelete: Cascade)
+  occurredAt DateTime
+  amount     Decimal
+  method     PaymentMethod
+  category   PaymentCategory
+  createdAt  DateTime        @default(now())
+  @@index([companyId, accountId])
+  @@index([accountId, occurredAt])
 }
