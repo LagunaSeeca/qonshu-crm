@@ -117,3 +117,34 @@ The Mobile Analytics module tracks app usage, payments, and user activity for pa
 ### Demo Data
 
 Run `npm run seed` to populate demo accounts with mock partner app users and payment history (90 days). The seed is idempotent and safe to re-run.
+
+## Settlements
+
+The Settlements module tracks cash collected from partners and cash transfers to partners, maintaining a running balance of funds owed.
+
+### Features
+
+- **Company Settlements Page** (`/settlements`) — Company-wide settlement dashboard showing:
+  - Total funds collected across all partners.
+  - Total transfers made to partners.
+  - **Owed** balance (collected minus transferred).
+  - Per-partner breakdown with collected, transferred, and owed amounts.
+  - Partner cards linking to each account's settlement details.
+
+- **Settlement Tab** (`/accounts/:id/settlement`) — Account-specific settlement view with:
+  - Balance cards displaying collected, transferred, and owed totals for the account.
+  - Settlement registry — paginated log of all settlement entries (COLLECTED or TRANSFER) with timestamp, amount, method, and notes.
+  - **Add Entry** button (admin-only) to manually record a new settlement event.
+  - **Delete Entry** button (admin-only) to remove entries if needed.
+  - Members can view the registry but cannot add or delete entries.
+
+- **Manual Entry** — Entries are manually recorded by company admins; not derived from app payments (PartnerPayment).
+  - **COLLECTED** entries track cash received from partners (no method specified).
+  - **TRANSFER** entries track cash sent to partners (method: CASH or BANK_TRANSFER).
+  - Each entry records amount, date occurred, optional notes, and the admin who created it.
+
+- **Admin-Only Access** — Only COMPANY_ADMIN users can add or delete settlement entries. MEMBER users see the registry and balances but cannot modify.
+
+### Demo Data
+
+Run `npm run seed` to populate demo accounts with demo settlement entries (2 COLLECTED + 1 TRANSFER per account). The seed is idempotent and safe to re-run.

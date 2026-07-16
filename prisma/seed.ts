@@ -277,6 +277,71 @@ async function main() {
   }
 
   console.log(`seeded: mock partner analytics — ${totalAppUsers} app users, ${totalPayments} payments across demo accounts`);
+
+  // Seed demo settlement entries (idempotent)
+  await prisma.settlementEntry.deleteMany({
+    where: { companyId: co.id },
+  });
+
+  let totalSettlementEntries = 0;
+  let totalOwed = 0;
+
+  for (const accountData of demoAccounts) {
+    const account = await prisma.account.findFirst({
+      where: { companyId: co.id, name: accountData.name },
+    });
+    if (!account) continue;
+
+    // Create 2 COLLECTED entries and 1 TRANSFER entry
+    const now = new Date();
+
+    // First COLLECTED entry (older)
+    await prisma.settlementEntry.create({
+      data: {
+        companyId: co.id,
+        accountId: account.id,
+        type: "COLLECTED",
+        amount: 5000,
+        method: null,
+        occurredAt: new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000), // 14 days ago
+        note: `Payment received from ${account.primaryContactName}`,
+        createdById: admin.id,
+      },
+    });
+
+    // Second COLLECTED entry (more recent)
+    await prisma.settlementEntry.create({
+      data: {
+        companyId: co.id,
+        accountId: account.id,
+        type: "COLLECTED",
+        amount: 3200,
+        method: null,
+        occurredAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000), // 7 days ago
+        note: `Additional payment collected`,
+        createdById: admin.id,
+      },
+    });
+
+    // TRANSFER entry (CASH method)
+    await prisma.settlementEntry.create({
+      data: {
+        companyId: co.id,
+        accountId: account.id,
+        type: "TRANSFER",
+        amount: 4000,
+        method: "CASH",
+        occurredAt: new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000), // 3 days ago
+        note: `Cash transfer completed`,
+        createdById: admin.id,
+      },
+    });
+
+    totalSettlementEntries += 3;
+    totalOwed += 5000 + 3200 - 4000; // collected - transferred
+  }
+
+  console.log(`seeded: demo settlement entries — ${totalSettlementEntries} entries, ${totalOwed} total owed across demo accounts`);
 }
 
 main().finally(() => prisma.$disconnect());
