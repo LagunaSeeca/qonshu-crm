@@ -148,3 +148,29 @@ The Settlements module tracks cash collected from partners and cash transfers to
 ### Demo Data
 
 Run `npm run seed` to populate demo accounts with demo settlement entries (2 COLLECTED + 1 TRANSFER per account). The seed is idempotent and safe to re-run.
+
+## Dashboard & Reports
+
+The Dashboard & Reports module gives company-wide visibility into sales, activity, partner, and finance metrics for a selected period.
+
+### Features
+
+- **Dashboard** (`/dashboard`) — Landing page with a period selector (WEEKLY, BIWEEKLY, MONTHLY, YEARLY, or CUSTOM via two date inputs) and four labelled KPI groups, refetched on period change:
+  - **Sales** — Open leads, won this period, pipeline value, weighted pipeline value.
+  - **Activity** — Meetings done, open tasks, overdue tasks (highlighted in a warning color).
+  - **Partners** — Partner accounts, active/total app users, payments count, payments amount.
+  - **Finance** — Collected, transferred, and **Owed** (emphasized).
+- **Reports** (`/reports`) — Company-wide or per-partner report for a selected period:
+  - Same period selector as the dashboard (WEEKLY/BIWEEKLY/MONTHLY/YEARLY/CUSTOM).
+  - Partner filter — "All partners" or a single account.
+  - Period label, KPI summary (same four groups as the dashboard), and a partner-by-partner table (Partner, Payments, Payments Amount, Collected, Transferred, Owed).
+  - **Download CSV** — Exports the current report (KPI summary + partner rows) as a CSV file; the filename is derived from the period label.
+  - Empty state when there is no partner activity in the selected period.
+
+### API
+
+- `GET /api/dashboard?period=&from=&to=` — Dashboard KPIs for the resolved period.
+- `GET /api/reports?period=&from=&to=&accountId=` — Report for all partners or a single partner (`accountId` scopes to `PARTNER`).
+- `GET /api/reports/csv?period=&from=&to=&accountId=` — Same report as `text/csv` with a `Content-Disposition` filename derived from the period label.
+
+All three routes are session-guarded (401 when signed out) and return `400 {error:"invalid_range"}` for an invalid `CUSTOM` range (missing/reversed dates).
