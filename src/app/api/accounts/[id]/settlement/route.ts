@@ -16,7 +16,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 const Body = z.object({
   type: z.enum(["COLLECTED", "TRANSFER"]),
   amount: z.number().positive(),
-  method: z.enum(["CASH", "BANK_TRANSFER"]).optional(),
+  method: z.enum(["CASH", "BANK_TRANSFER", "MANUAL"]),
   occurredAt: z.string().min(1),
   note: z.string().optional(),
 });

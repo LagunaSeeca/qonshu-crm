@@ -6,15 +6,22 @@ import { getAccount } from "./accounts";
 const num = (d: { toNumber: () => number }) => d.toNumber();
 const sum = (rows: SettlementEntry[], t: SettlementType) =>
   rows.filter((r) => r.type === t).reduce((s, r) => s + num(r.amount), 0);
+const METHODS: SettlementMethod[] = ["CASH", "BANK_TRANSFER", "MANUAL"];
+const sumByMethod = (rows: SettlementEntry[], t: SettlementType): Record<SettlementMethod, number> => {
+  const byType = rows.filter((r) => r.type === t);
+  return Object.fromEntries(
+    METHODS.map((m) => [m, byType.filter((r) => r.method === m).reduce((s, r) => s + num(r.amount), 0)])
+  ) as Record<SettlementMethod, number>;
+};
 
 export async function addSettlementEntry(db: PrismaClient, user: SessionUser, accountId: string, args: {
-  type: SettlementType; amount: number; method?: SettlementMethod; occurredAt: Date; note?: string;
+  type: SettlementType; amount: number; method: SettlementMethod; occurredAt: Date; note?: string;
 }): Promise<SettlementEntry> {
   const acc = await getAccount(db, user, accountId);
   if (!acc) throw new NotFoundError("account not in scope");
   return db.settlementEntry.create({ data: {
     companyId: user.companyId!, accountId, type: args.type, amount: args.amount,
-    method: args.method ?? null, occurredAt: args.occurredAt, note: args.note ?? null, createdById: user.id,
+    method: args.method, occurredAt: args.occurredAt, note: args.note ?? null, createdById: user.id,
   } });
 }
 
@@ -30,7 +37,14 @@ export async function getAccountSettlement(db: PrismaClient, user: SessionUser, 
   const entries = await db.settlementEntry.findMany({ where: { companyId: user.companyId!, accountId }, orderBy: { occurredAt: "desc" } });
   const collected = sum(entries, "COLLECTED");
   const transferred = sum(entries, "TRANSFER");
-  return { collected, transferred, owed: collected - transferred, entries };
+  return {
+    collected,
+    transferred,
+    owed: collected - transferred,
+    collectedByMethod: sumByMethod(entries, "COLLECTED"),
+    transferredByMethod: sumByMethod(entries, "TRANSFER"),
+    entries,
+  };
 }
 
 export async function listCompanySettlements(db: PrismaClient, user: SessionUser) {

@@ -17,19 +17,25 @@ describe("settlements", () => {
 
   it("computes owed = collected - transferred", async () => {
     const { acc, user } = await setup("s1");
-    await addSettlementEntry(testPrisma, user, acc.id, { type: "COLLECTED", amount: 500, occurredAt: new Date() });
-    await addSettlementEntry(testPrisma, user, acc.id, { type: "COLLECTED", amount: 300, occurredAt: new Date() });
+    await addSettlementEntry(testPrisma, user, acc.id, { type: "COLLECTED", amount: 500, method: "CASH", occurredAt: new Date() });
+    await addSettlementEntry(testPrisma, user, acc.id, { type: "COLLECTED", amount: 300, method: "BANK_TRANSFER", occurredAt: new Date() });
     await addSettlementEntry(testPrisma, user, acc.id, { type: "TRANSFER", amount: 200, method: "CASH", occurredAt: new Date() });
     const s = await getAccountSettlement(testPrisma, user, acc.id);
     expect(s.collected).toBe(800);
     expect(s.transferred).toBe(200);
     expect(s.owed).toBe(600);
     expect(s.entries.length).toBe(3);
+    expect(s.collectedByMethod.CASH).toBe(500);
+    expect(s.collectedByMethod.BANK_TRANSFER).toBe(300);
+    expect(s.collectedByMethod.MANUAL).toBe(0);
+    expect(s.transferredByMethod.CASH).toBe(200);
+    expect(s.transferredByMethod.BANK_TRANSFER).toBe(0);
+    expect(s.transferredByMethod.MANUAL).toBe(0);
   });
 
   it("company summary totals match rows; cross-tenant isolated", async () => {
     const A = await setup("s2");
-    await addSettlementEntry(testPrisma, A.user, A.acc.id, { type: "COLLECTED", amount: 100, occurredAt: new Date() });
+    await addSettlementEntry(testPrisma, A.user, A.acc.id, { type: "COLLECTED", amount: 100, method: "CASH", occurredAt: new Date() });
     const B = await setup("s3");
     const sumA = await listCompanySettlements(testPrisma, A.user);
     expect(sumA.totals.collected).toBe(100);
@@ -41,7 +47,7 @@ describe("settlements", () => {
 
   it("delete updates totals", async () => {
     const { acc, user } = await setup("s4");
-    const e = await addSettlementEntry(testPrisma, user, acc.id, { type: "COLLECTED", amount: 50, occurredAt: new Date() });
+    const e = await addSettlementEntry(testPrisma, user, acc.id, { type: "COLLECTED", amount: 50, method: "MANUAL", occurredAt: new Date() });
     await deleteSettlementEntry(testPrisma, user, e.id);
     expect((await getAccountSettlement(testPrisma, user, acc.id)).collected).toBe(0);
   });

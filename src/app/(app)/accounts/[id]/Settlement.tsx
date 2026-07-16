@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/table";
 
 type EntryType = "COLLECTED" | "TRANSFER";
-type EntryMethod = "CASH" | "BANK_TRANSFER";
+type EntryMethod = "CASH" | "BANK_TRANSFER" | "MANUAL";
 
 type Entry = {
   id: string;
@@ -38,10 +38,14 @@ type Entry = {
   createdById: string;
 };
 
+type MethodBreakdown = { CASH: number; BANK_TRANSFER: number; MANUAL: number };
+
 type SettlementData = {
   collected: number;
   transferred: number;
   owed: number;
+  collectedByMethod: MethodBreakdown;
+  transferredByMethod: MethodBreakdown;
   entries: Entry[];
 };
 
@@ -111,7 +115,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
         body: JSON.stringify({
           type,
           amount: Number(amount),
-          method: type === "TRANSFER" ? method : undefined,
+          method,
           occurredAt: occurredAt || new Date().toISOString(),
           note: note || undefined,
         }),
@@ -164,6 +168,20 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
           </CardHeader>
           <CardContent>
             <div className="text-xl font-bold tabular-nums">{money(data?.collected ?? 0)}</div>
+            <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between">
+                <span>Cash</span>
+                <span className="tabular-nums">{money(data?.collectedByMethod?.CASH ?? 0)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Bank account</span>
+                <span className="tabular-nums">{money(data?.collectedByMethod?.BANK_TRANSFER ?? 0)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Manual</span>
+                <span className="tabular-nums">{money(data?.collectedByMethod?.MANUAL ?? 0)}</span>
+              </div>
+            </div>
           </CardContent>
         </Card>
         <Card size="sm">
@@ -173,6 +191,20 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
           </CardHeader>
           <CardContent>
             <div className="text-xl font-bold tabular-nums">{money(data?.transferred ?? 0)}</div>
+            <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between">
+                <span>Bank transfer</span>
+                <span className="tabular-nums">{money(data?.transferredByMethod?.BANK_TRANSFER ?? 0)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Cash</span>
+                <span className="tabular-nums">{money(data?.transferredByMethod?.CASH ?? 0)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Manual</span>
+                <span className="tabular-nums">{money(data?.transferredByMethod?.MANUAL ?? 0)}</span>
+              </div>
+            </div>
           </CardContent>
         </Card>
         <Card size="sm">
@@ -222,20 +254,21 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
                 </div>
               </div>
 
-              {type === "TRANSFER" && (
-                <div className="space-y-1.5">
-                  <Label>Method</Label>
-                  <Select value={method} onValueChange={(val) => { if (val) setMethod(val as EntryMethod); }}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="CASH">Cash</SelectItem>
-                      <SelectItem value="BANK_TRANSFER">Bank Transfer</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
+              <div className="space-y-1.5">
+                <Label>
+                  Method <span className="text-destructive">*</span>
+                </Label>
+                <Select value={method} onValueChange={(val) => { if (val) setMethod(val as EntryMethod); }}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="CASH">Cash</SelectItem>
+                    <SelectItem value="BANK_TRANSFER">Bank account</SelectItem>
+                    <SelectItem value="MANUAL">Manual</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
@@ -300,7 +333,13 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
                           <TypeBadge type={entry.type} />
                         </TableCell>
                         <TableCell className="text-muted-foreground">
-                          {entry.method === "BANK_TRANSFER" ? "Bank Transfer" : entry.method === "CASH" ? "Cash" : "—"}
+                          {entry.method === "BANK_TRANSFER"
+                            ? "Bank account"
+                            : entry.method === "CASH"
+                              ? "Cash"
+                              : entry.method === "MANUAL"
+                                ? "Manual"
+                                : "—"}
                         </TableCell>
                         <TableCell className="text-right tabular-nums font-medium">{money(entry.amount)}</TableCell>
                         <TableCell className="text-foreground">{entry.note ?? "—"}</TableCell>

@@ -292,38 +292,52 @@ async function main() {
     });
     if (!account) continue;
 
-    // Create 2 COLLECTED entries and 1 TRANSFER entry
+    // Create 3 COLLECTED entries (cash / bank transfer / manual) and 2 TRANSFER entries (cash / bank transfer)
     const now = new Date();
 
-    // First COLLECTED entry (older)
+    // COLLECTED — cash (oldest)
     await prisma.settlementEntry.create({
       data: {
         companyId: co.id,
         accountId: account.id,
         type: "COLLECTED",
         amount: 5000,
-        method: null,
-        occurredAt: new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000), // 14 days ago
-        note: `Payment received from ${account.primaryContactName}`,
+        method: "CASH",
+        occurredAt: new Date(now.getTime() - 21 * 24 * 60 * 60 * 1000), // 21 days ago
+        note: `Cash payment received from ${account.primaryContactName}`,
         createdById: admin.id,
       },
     });
 
-    // Second COLLECTED entry (more recent)
+    // COLLECTED — bank transfer
     await prisma.settlementEntry.create({
       data: {
         companyId: co.id,
         accountId: account.id,
         type: "COLLECTED",
         amount: 3200,
-        method: null,
-        occurredAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000), // 7 days ago
-        note: `Additional payment collected`,
+        method: "BANK_TRANSFER",
+        occurredAt: new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000), // 14 days ago
+        note: `Bank transfer payment collected`,
         createdById: admin.id,
       },
     });
 
-    // TRANSFER entry (CASH method)
+    // COLLECTED — manual
+    await prisma.settlementEntry.create({
+      data: {
+        companyId: co.id,
+        accountId: account.id,
+        type: "COLLECTED",
+        amount: 1500,
+        method: "MANUAL",
+        occurredAt: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000), // 7 days ago
+        note: `Manually recorded payment`,
+        createdById: admin.id,
+      },
+    });
+
+    // TRANSFER — cash
     await prisma.settlementEntry.create({
       data: {
         companyId: co.id,
@@ -337,8 +351,22 @@ async function main() {
       },
     });
 
-    totalSettlementEntries += 3;
-    totalOwed += 5000 + 3200 - 4000; // collected - transferred
+    // TRANSFER — bank transfer
+    await prisma.settlementEntry.create({
+      data: {
+        companyId: co.id,
+        accountId: account.id,
+        type: "TRANSFER",
+        amount: 1200,
+        method: "BANK_TRANSFER",
+        occurredAt: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000), // 1 day ago
+        note: `Bank transfer to partner completed`,
+        createdById: admin.id,
+      },
+    });
+
+    totalSettlementEntries += 5;
+    totalOwed += 5000 + 3200 + 1500 - (4000 + 1200); // collected - transferred
   }
 
   console.log(`seeded: demo settlement entries — ${totalSettlementEntries} entries, ${totalOwed} total owed across demo accounts`);

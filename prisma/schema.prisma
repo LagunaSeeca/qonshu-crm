@@ -350,6 +350,7 @@ enum SettlementType {
 enum SettlementMethod {
   CASH
   BANK_TRANSFER
+  MANUAL
 }
 
 model SettlementEntry {
@@ -360,7 +361,7 @@ model SettlementEntry {
   account     Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
   type        SettlementType
   amount      Decimal
-  method      SettlementMethod?
+  method      SettlementMethod
   occurredAt  DateTime
   note        String?
   createdById String
