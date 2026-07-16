@@ -9,7 +9,7 @@ const data = {
   owed: 600,
   collectedByMethod: { CASH: 500, BANK_TRANSFER: 300, MANUAL: 0 },
   transferredByMethod: { CASH: 200, BANK_TRANSFER: 0, MANUAL: 0 },
-  entries: [{ id: "e1", type: "COLLECTED", amount: 800, method: "CASH", occurredAt: new Date().toISOString(), note: "june", createdById: "u" }],
+  entries: [{ id: "e1", type: "COLLECTED" as const, amount: 800, method: "CASH" as const, occurredAt: new Date().toISOString(), note: "june", createdById: "u" }],
 };
 describe("Settlement", () => {
   it("renders balances + registry", () => {

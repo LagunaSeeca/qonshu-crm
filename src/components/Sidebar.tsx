@@ -11,6 +11,7 @@ import {
   Briefcase,
   Building,
   Landmark,
+  FileBarChart,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -20,6 +21,7 @@ const NAV = [
   { href: "/crm", label: "Sales CRM", icon: Briefcase },
   { href: "/accounts", label: "Accounts", icon: Building2 },
   { href: "/settlements", label: "Settlements", icon: Landmark },
+  { href: "/reports", label: "Reports", icon: FileBarChart },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 
