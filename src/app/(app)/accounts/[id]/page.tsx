@@ -71,6 +71,7 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
         size: att.size,
         mime: att.mime,
       }))}
+      isAdmin={user.role === "COMPANY_ADMIN"}
     />
   );
 }

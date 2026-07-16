@@ -10,6 +10,7 @@ import {
   BarChart3,
   Briefcase,
   Building,
+  Landmark,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -18,6 +19,7 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/crm", label: "Sales CRM", icon: Briefcase },
   { href: "/accounts", label: "Accounts", icon: Building2 },
+  { href: "/settlements", label: "Settlements", icon: Landmark },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 

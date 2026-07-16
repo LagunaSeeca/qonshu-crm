@@ -12,6 +12,7 @@ import {
   Paperclip,
   Upload,
   BarChart2,
+  Landmark,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Analytics } from "./Analytics";
+import { Settlement } from "./Settlement";
 
 type Activity = { id: string; kind: string; body: string; outcome: string | null; occurredAt: string; authorId: string | null };
 type Task = { id: string; title: string; dueDate: string | null; done: boolean };
@@ -55,6 +57,7 @@ type Props = {
   tasks: Task[];
   asks: Ask[];
   attachments: Attachment[];
+  isAdmin?: boolean;
 };
 
 const ACTIVITY_KINDS = ["NOTE", "CALL", "MEETING", "EMAIL"] as const;
@@ -92,9 +95,9 @@ function isOverdue(dueDate: string | null, done: boolean) {
   return new Date(dueDate) < new Date();
 }
 
-type TabKey = "activity" | "tasks" | "asks" | "files" | "analytics";
+type TabKey = "activity" | "tasks" | "asks" | "files" | "settlement" | "analytics";
 
-export function AccountDetail({ account, members, activities, tasks, asks, attachments }: Props) {
+export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false }: Props) {
   const router = useRouter();
 
   // Account fields
@@ -266,6 +269,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
     { key: "tasks", label: "Tasks" },
     { key: "asks", label: "Asks" },
     { key: "files", label: "Files" },
+    { key: "settlement", label: "Settlement" },
     { key: "analytics", label: "Analytics" },
   ];
 
@@ -389,6 +393,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
                 role="tab"
               >
                 {tab.key === "analytics" && <BarChart2 className="size-3" />}
+                {tab.key === "settlement" && <Landmark className="size-3" />}
                 {tab.label}
               </button>
             ))}
@@ -690,6 +695,11 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
                 </div>
               </CardContent>
             </Card>
+          </div>
+
+          {/* Settlement panel */}
+          <div hidden={activeTab !== "settlement"}>
+            <Settlement accountId={account.id} isAdmin={isAdmin} />
           </div>
 
           {/* Analytics panel */}
