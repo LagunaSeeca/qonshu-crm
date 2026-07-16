@@ -23,22 +23,25 @@ import {
 } from "@/components/ui/select";
 
 type Stage = { id: string; name: string };
+type Member = { id: string; name: string };
 
-export function LeadCreate({ stages }: { stages: Stage[] }) {
+export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?: Member[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [contactName, setContactName] = useState("");
+  const [phone, setPhone] = useState("");
   const [stageId, setStageId] = useState(stages[0]?.id ?? "");
-  const [value, setValue] = useState("");
+  const [ownerId, setOwnerId] = useState(members[0]?.id ?? "");
   const [priority, setPriority] = useState("MEDIUM");
   const [loading, setLoading] = useState(false);
 
   function reset() {
     setTitle("");
     setContactName("");
+    setPhone("");
     setStageId(stages[0]?.id ?? "");
-    setValue("");
+    setOwnerId(members[0]?.id ?? "");
     setPriority("MEDIUM");
   }
 
@@ -49,7 +52,14 @@ export function LeadCreate({ stages }: { stages: Stage[] }) {
       const r = await fetch("/api/leads", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title, contactName, stageId, value: value ? Number(value) : undefined, priority }),
+        body: JSON.stringify({
+          title,
+          contactName,
+          phone: phone || undefined,
+          stageId,
+          ownerId: ownerId || undefined,
+          priority,
+        }),
       });
       if (r.ok) {
         toast.success("Lead created");
@@ -99,6 +109,29 @@ export function LeadCreate({ stages }: { stages: Stage[] }) {
               required
             />
           </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="lc-phone">Contact phone</Label>
+            <Input
+              id="lc-phone"
+              type="tel"
+              placeholder="Contact phone number"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="lc-owner">Person in charge</Label>
+            <Select value={ownerId} onValueChange={(v) => { if (v !== null) setOwnerId(v); }}>
+              <SelectTrigger id="lc-owner">
+                <SelectValue placeholder="Assign to me" />
+              </SelectTrigger>
+              <SelectContent>
+                {members.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="lc-stage">Stage</Label>
@@ -126,18 +159,6 @@ export function LeadCreate({ stages }: { stages: Stage[] }) {
                 </SelectContent>
               </Select>
             </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="lc-value">Value (USD)</Label>
-            <Input
-              id="lc-value"
-              type="number"
-              min={0}
-              placeholder="0"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              className="tabular-nums"
-            />
           </div>
         </form>
         <DialogFooter className="pt-2">

@@ -88,7 +88,10 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
 
         {/* New Lead button */}
         <div className="ml-auto">
-          <LeadCreate stages={stages.map((s) => ({ id: s.id, name: s.name }))} />
+          <LeadCreate
+            stages={stages.map((s) => ({ id: s.id, name: s.name }))}
+            members={users.map((u) => ({ id: u.id, name: u.name ?? u.email }))}
+          />
         </div>
       </div>
 
