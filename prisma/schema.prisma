@@ -49,6 +49,7 @@ model Company {
   accountAttachments  AccountAttachment[]
   partnerAppUsers     PartnerAppUser[]
   partnerPayments     PartnerPayment[]
+  settlementEntries   SettlementEntry[]
 }
 
 model User {
@@ -230,6 +231,7 @@ model Account {
   attachments         AccountAttachment[]
   partnerAppUsers     PartnerAppUser[]
   partnerPayments     PartnerPayment[]
+  settlementEntries   SettlementEntry[]
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, accountManagerId])
@@ -339,4 +341,30 @@ model PartnerPayment {
   createdAt  DateTime        @default(now())
   @@index([companyId, accountId])
   @@index([accountId, occurredAt])
+}
+
+enum SettlementType {
+  COLLECTED
+  TRANSFER
+}
+enum SettlementMethod {
+  CASH
+  BANK_TRANSFER
+}
+
+model SettlementEntry {
+  id          String            @id @default(cuid())
+  companyId   String
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  type        SettlementType
+  amount      Decimal
+  method      SettlementMethod?
+  occurredAt  DateTime
+  note        String?
+  createdById String
+  createdAt   DateTime          @default(now())
+  @@index([companyId, accountId])
+  @@index([companyId, type])
 }
