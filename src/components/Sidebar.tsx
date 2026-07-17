@@ -29,6 +29,11 @@ const NAV = [
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 
+// Partner logins are read-only and scoped to a single account: they only ever see
+// Analytics, Settlements, and Service fees — everything else (CRM, accounts, reports, team
+// admin) is hidden from the nav entirely, not just gated on click.
+const PARTNER_NAV_HREFS = new Set(["/analytics", "/settlements", "/service-fees"]);
+
 interface SidebarProps {
   role: Role;
   companyName?: string | null;
@@ -36,6 +41,7 @@ interface SidebarProps {
 
 export function Sidebar({ role, companyName }: SidebarProps) {
   const pathname = usePathname();
+  const nav = role === "PARTNER_VIEWER" ? NAV.filter((item) => PARTNER_NAV_HREFS.has(item.href)) : NAV;
 
   function isActive(href: string) {
     if (!pathname) return false;
@@ -57,7 +63,7 @@ export function Sidebar({ role, companyName }: SidebarProps) {
 
       {/* Nav items */}
       <div className="flex flex-col gap-0.5 p-3 flex-1 overflow-y-auto">
-        {NAV.map(({ href, label, icon: Icon }) => (
+        {nav.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}
@@ -144,7 +150,9 @@ export function Sidebar({ role, companyName }: SidebarProps) {
                 ? "Super Admin"
                 : role === "COMPANY_ADMIN"
                   ? "Admin"
-                  : "Member"}
+                  : role === "PARTNER_VIEWER"
+                    ? "Partner"
+                    : "Member"}
             </Badge>
           </div>
         </div>

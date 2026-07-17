@@ -10,6 +10,7 @@ export async function GET() {
   try {
     const user = await getSessionUser();
     if (!user) throw new UnauthorizedError();
+    assertRole(user, ["COMPANY_ADMIN", "MEMBER"]);
     return NextResponse.json(await listFieldDefs(prisma, user));
   } catch (e) { return errorResponse(e); }
 }

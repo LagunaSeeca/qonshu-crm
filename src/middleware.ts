@@ -14,7 +14,12 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  return NextResponse.next();
+  // Surface the current pathname to Server Components (e.g. (app)/layout.tsx) via a request
+  // header — usePathname() only works in Client Components, so this is how the tenant layout
+  // knows which route a PARTNER_VIEWER is hitting in order to gate it.
+  const headers = new Headers(req.headers);
+  headers.set("x-pathname", req.nextUrl.pathname);
+  return NextResponse.next({ request: { headers } });
 }
 
 export const config = {
@@ -25,5 +30,9 @@ export const config = {
     "/analytics/:path*",
     "/users/:path*",
     "/platform/:path*",
+    "/work/:path*",
+    "/reports/:path*",
+    "/settlements/:path*",
+    "/service-fees/:path*",
   ],
 };

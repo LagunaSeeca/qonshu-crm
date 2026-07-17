@@ -24,6 +24,7 @@ const Patch = z.object({
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getSessionUser(); if (!user) throw new UnauthorizedError();
+    assertRole(user, ["COMPANY_ADMIN", "MEMBER"]);
     const d = Patch.parse(await req.json());
     const account = await updateAccount(prisma, user, (await params).id, d);
     return NextResponse.json(account);

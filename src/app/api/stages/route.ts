@@ -11,6 +11,7 @@ export async function GET() {
   try {
     const user = await getSessionUser();
     if (!user) throw new UnauthorizedError();
+    assertRole(user, ["COMPANY_ADMIN", "MEMBER"]);
     return NextResponse.json(await listStages(prisma, getTenantContext(user)));
   } catch (e) { return errorResponse(e); }
 }

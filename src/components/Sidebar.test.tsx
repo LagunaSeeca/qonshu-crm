@@ -24,4 +24,22 @@ describe("Sidebar", () => {
     render(<Sidebar role="COMPANY_ADMIN" />);
     expect(screen.queryByText("Companies")).toBeNull();
   });
+
+  it("PARTNER_VIEWER sees only Analytics, Settlements, Service fees", () => {
+    render(<Sidebar role="PARTNER_VIEWER" />);
+    expect(screen.getByText("Analytics")).toBeInTheDocument();
+    expect(screen.getByText("Settlements")).toBeInTheDocument();
+    expect(screen.getByText("Service fees")).toBeInTheDocument();
+    expect(screen.queryByText("Dashboard")).toBeNull();
+    expect(screen.queryByText("My Work")).toBeNull();
+    expect(screen.queryByText("Sales CRM")).toBeNull();
+    expect(screen.queryByText("Accounts")).toBeNull();
+    expect(screen.queryByText("Reports")).toBeNull();
+    expect(screen.queryByText("Users")).toBeNull();
+  });
+
+  it("PARTNER_VIEWER footer shows Partner badge", () => {
+    render(<Sidebar role="PARTNER_VIEWER" companyName="Demo Co" />);
+    expect(screen.getByText("Partner")).toBeInTheDocument();
+  });
 });
