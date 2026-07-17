@@ -13,6 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { AddSettlementEntry } from "./AddSettlementEntry";
 
 const money = (n: number) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -26,9 +27,14 @@ export default async function SettlementsPage() {
   return (
     <div className="space-y-6">
       {/* Page header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Settlements</h1>
-        <p className="text-sm text-muted-foreground mt-1">Company-wide bank-balance and cash-transfer registry</p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Settlements</h1>
+          <p className="text-sm text-muted-foreground mt-1">Company-wide bank-balance and cash-transfer registry</p>
+        </div>
+        {user.role === "COMPANY_ADMIN" && (
+          <AddSettlementEntry accounts={rows.map((r) => ({ id: r.accountId, name: r.accountName }))} />
+        )}
       </div>
 
       {/* Totals */}
