@@ -3,9 +3,14 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 export async function middleware(req: NextRequest) {
+  // On HTTPS (production) Auth.js writes a `__Secure-`prefixed session cookie. getToken only
+  // looks for that name when told the connection is secure — without this the token is never
+  // found in production and every authenticated page redirects to /login.
+  const isSecure = req.nextUrl.protocol === "https:";
   const token = await getToken({
     req,
     secret: process.env.AUTH_SECRET,
+    secureCookie: isSecure,
   });
 
   if (!token) {
