@@ -52,6 +52,7 @@ model Company {
   settlementEntries   SettlementEntry[]
   accountFieldDefs    AccountFieldDef[]
   accountFieldValues  AccountFieldValue[]
+  serviceFees         ServiceFee[]
 }
 
 model User {
@@ -231,6 +232,7 @@ model Account {
   partnerPayments     PartnerPayment[]
   settlementEntries   SettlementEntry[]
   fieldValues         AccountFieldValue[]
+  serviceFees         ServiceFee[]
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, accountManagerId])
@@ -410,5 +412,30 @@ model AccountFieldValue {
   value       String
   updatedAt   DateTime         @updatedAt
   @@unique([accountId, fieldDefId])
+  @@index([companyId, accountId])
+}
+
+enum ServiceFeeStatus {
+  UNPAID
+  PAID
+}
+
+model ServiceFee {
+  id          String            @id @default(cuid())
+  companyId   String
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  periodMonth DateTime
+  amount      Decimal
+  dueDate     DateTime?
+  status      ServiceFeeStatus  @default(UNPAID)
+  paidAt      DateTime?
+  method      SettlementMethod?
+  note        String?
+  createdById String
+  createdAt   DateTime          @default(now())
+  @@unique([accountId, periodMonth])
+  @@index([companyId, status])
   @@index([companyId, accountId])
 }
