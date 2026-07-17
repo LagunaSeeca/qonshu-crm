@@ -2,7 +2,15 @@
 import React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { DndContext, type DragEndEvent, useDroppable, useDraggable } from "@dnd-kit/core";
+import {
+  DndContext,
+  type DragEndEvent,
+  useDroppable,
+  useDraggable,
+  useSensor,
+  useSensors,
+  PointerSensor,
+} from "@dnd-kit/core";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +40,9 @@ function priorityBadge(priority?: string) {
 }
 
 function LeadCard({ lead }: { lead: Lead }) {
+  // Drag only starts after a few px of pointer movement (see Board's PointerSensor
+  // activationConstraint), so a plain click still reaches the nested <Link> below and
+  // opens the lead — press-and-drag still moves the card between stages.
   const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: lead.id, data: { stageId: lead.stageId } });
   const style = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)`, zIndex: 50 } : undefined;
   return (
@@ -42,15 +53,17 @@ function LeadCard({ lead }: { lead: Lead }) {
       {...attributes}
       className="cursor-grab active:cursor-grabbing"
     >
-      <Card className="mb-2 shadow-sm hover:shadow transition-shadow duration-150 border border-border">
-        <CardContent className="p-3">
-          <div className="font-medium text-sm text-foreground leading-snug mb-1">{lead.title}</div>
-          <div className="text-xs text-muted-foreground mb-2">{lead.contactName}</div>
-          <div className="flex items-center gap-2">
-            {priorityBadge(lead.priority)}
-          </div>
-        </CardContent>
-      </Card>
+      <Link href={`/crm/${lead.id}`} className="block">
+        <Card className="mb-2 shadow-sm hover:shadow transition-shadow duration-150 border border-border">
+          <CardContent className="p-3">
+            <div className="font-medium text-sm text-foreground leading-snug mb-1">{lead.title}</div>
+            <div className="text-xs text-muted-foreground mb-2">{lead.contactName}</div>
+            <div className="flex items-center gap-2">
+              {priorityBadge(lead.priority)}
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
     </div>
   );
 }
@@ -90,6 +103,9 @@ interface BoardProps {
 export function Board({ stages, leads, isAdmin, searchQuery }: BoardProps) {
   const router = useRouter();
   const [search, setSearch] = React.useState(searchQuery ?? "");
+  // Require ~8px of pointer movement before a drag activates, so a plain click on a
+  // card (which opens the lead via a nested <Link>) isn't swallowed as a drag start.
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
   const filteredLeads = search
     ? leads.filter(
@@ -167,7 +183,7 @@ export function Board({ stages, leads, isAdmin, searchQuery }: BoardProps) {
       </div>
 
       {/* Kanban columns */}
-      <DndContext onDragEnd={handleDragEnd}>
+      <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
         <div className="flex gap-4 overflow-x-auto pb-4">
           {stages.map((stage) => (
             <Column
