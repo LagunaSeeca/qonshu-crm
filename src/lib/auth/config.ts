@@ -10,6 +10,7 @@ import type { Session } from "@auth/core/types";
 interface AppToken extends JWT {
   companyId?: string | null;
   role?: SessionUser["role"];
+  accountId?: string | null;
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -32,12 +33,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const su = user as unknown as SessionUser;
         (token as AppToken).companyId = su.companyId;
         (token as AppToken).role = su.role;
+        (token as AppToken).accountId = su.accountId ?? null;
       }
       return token as AppToken;
     },
     session({ session, token }): Session {
       // Overwrite session.user entirely with our SessionUser shape so downstream
-      // consumers only see { id, companyId, role } — no stale name/email/image fields.
+      // consumers only see { id, companyId, role, accountId } — no stale name/email/image fields.
       // next-auth v5 beta types session.user as AdapterUser & User which is too strict
       // for JWT strategy — cast through unknown to avoid the incompatible union.
       const t = token as AppToken;
@@ -45,6 +47,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         id: t.sub ?? "",
         companyId: t.companyId ?? null,
         role: t.role as SessionUser["role"],
+        accountId: t.accountId ?? null,
       };
       (session as { user: unknown }).user = shaped;
       return session;

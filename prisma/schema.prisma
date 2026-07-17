@@ -10,6 +10,7 @@ enum Role {
   SUPER_ADMIN
   COMPANY_ADMIN
   MEMBER
+  PARTNER_VIEWER
 }
 
 enum CompanyStatus {
@@ -66,8 +67,11 @@ model User {
   status       UserStatus @default(ACTIVE)
   createdAt    DateTime   @default(now())
   ownedLeads   Lead[]     @relation("LeadOwner")
+  accountId    String?
+  account      Account?   @relation(fields: [accountId], references: [id])
 
   @@index([companyId])
+  @@index([accountId])
 }
 
 model Invitation {
@@ -79,6 +83,7 @@ model Invitation {
   token       String       @unique
   status      InviteStatus @default(PENDING)
   invitedById String
+  accountId   String?
   expiresAt   DateTime
   createdAt   DateTime     @default(now())
 
@@ -233,6 +238,7 @@ model Account {
   settlementEntries   SettlementEntry[]
   fieldValues         AccountFieldValue[]
   serviceFees         ServiceFee[]
+  partnerUsers        User[]
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, accountManagerId])

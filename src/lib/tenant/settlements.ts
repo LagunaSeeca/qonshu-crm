@@ -49,9 +49,12 @@ export async function getAccountSettlement(db: PrismaClient, user: SessionUser, 
 
 export async function listCompanySettlements(db: PrismaClient, user: SessionUser) {
   if (!user.companyId) throw new Error("no tenant context");
+  // Partner logins only ever see their own account's ledger — fail closed (sentinel that
+  // matches nothing) when the login has no accountId set.
+  const accountFilter = user.role === "PARTNER_VIEWER" ? (user.accountId ?? "__no_access__") : undefined;
   const [accounts, entries] = await Promise.all([
-    db.account.findMany({ where: { companyId: user.companyId }, orderBy: { name: "asc" } }),
-    db.settlementEntry.findMany({ where: { companyId: user.companyId } }),
+    db.account.findMany({ where: { companyId: user.companyId, ...(accountFilter ? { id: accountFilter } : {}) }, orderBy: { name: "asc" } }),
+    db.settlementEntry.findMany({ where: { companyId: user.companyId, ...(accountFilter ? { accountId: accountFilter } : {}) } }),
   ]);
   const rows = accounts.map((a) => {
     const mine = entries.filter((e) => e.accountId === a.id);

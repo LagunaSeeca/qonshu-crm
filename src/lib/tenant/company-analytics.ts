@@ -1,15 +1,43 @@
 import type { PrismaClient, PaymentMethod, PaymentCategory } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
-import { listAccounts } from "./accounts";
+import { NotFoundError } from "@/lib/auth/guards";
+import { listAccounts, getAccount } from "./accounts";
 
 const num = (d: { toNumber: () => number } | null | undefined) => (d ? d.toNumber() : 0);
 
-export async function getCompanyAnalytics(db: PrismaClient, user: SessionUser, range: { from: Date; to: Date }) {
+export async function getCompanyAnalytics(
+  db: PrismaClient,
+  user: SessionUser,
+  range: { from: Date; to: Date },
+  opts?: { accountId?: string },
+) {
   const companyId = user.companyId!;
+
+  // Resolve the single-account filter: for PARTNER_VIEWER it's forced to their own account
+  // (or a sentinel that matches nothing when unset — fail closed); for admin/member it's the
+  // optional company-filter param, validated through the getAccount chokepoint so an
+  // unknown/foreign id 404s upstream instead of silently returning company-wide data.
+  let targetAccountId: string | null = null;
+  if (user.role === "PARTNER_VIEWER") {
+    targetAccountId = user.accountId ?? "__no_access__";
+  } else if (opts?.accountId) {
+    const acc = await getAccount(db, user, opts.accountId);
+    if (!acc) throw new NotFoundError("account not in scope");
+    targetAccountId = opts.accountId;
+  }
+
   const [accounts, users, payments] = await Promise.all([
-    listAccounts(db, user),
-    db.partnerAppUser.findMany({ where: { companyId } }),
-    db.partnerPayment.findMany({ where: { companyId, occurredAt: { gte: range.from, lte: range.to } } }),
+    targetAccountId
+      ? db.account.findMany({ where: { id: targetAccountId, companyId } })
+      : listAccounts(db, user),
+    db.partnerAppUser.findMany({ where: targetAccountId ? { companyId, accountId: targetAccountId } : { companyId } }),
+    db.partnerPayment.findMany({
+      where: {
+        companyId,
+        occurredAt: { gte: range.from, lte: range.to },
+        ...(targetAccountId ? { accountId: targetAccountId } : {}),
+      },
+    }),
   ]);
 
   const totalDebt = users.reduce((s, u) => s + num(u.debt), 0);

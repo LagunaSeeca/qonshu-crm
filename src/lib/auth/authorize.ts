@@ -9,5 +9,5 @@ export async function authorizeCredentials(
   const user = await db.user.findUnique({ where: { email: creds.email } });
   if (!user || user.status !== "ACTIVE") return null;
   if (!(await verifyPassword(creds.password, user.passwordHash))) return null;
-  return { id: user.id, companyId: user.companyId, role: user.role };
+  return { id: user.id, companyId: user.companyId, role: user.role, accountId: user.accountId };
 }

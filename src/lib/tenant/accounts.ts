@@ -26,6 +26,11 @@ export function createAccount(db: PrismaClient, user: SessionUser, data: {
 }
 
 export function listAccounts(db: PrismaClient, user: SessionUser, opts?: { status?: AccountStatus; accountManagerId?: string; q?: string }): Promise<Account[]> {
+  // Partner logins are tied to exactly one account — fail closed when unset.
+  if (user.role === "PARTNER_VIEWER") {
+    if (!user.accountId) return Promise.resolve([]);
+    return db.account.findMany({ where: { id: user.accountId, ...accountScopeWhere(user) } });
+  }
   const where: Prisma.AccountWhereInput = { ...accountScopeWhere(user) };
   if (opts?.status) where.status = opts.status;
   if (opts?.accountManagerId) where.accountManagerId = opts.accountManagerId;
@@ -37,6 +42,12 @@ export function listAccounts(db: PrismaClient, user: SessionUser, opts?: { statu
 }
 
 export function getAccount(db: PrismaClient, user: SessionUser, id: string): Promise<Account | null> {
+  // THE CHOKEPOINT: every account-scoped read/write flows through this. A partner login
+  // requesting any account other than their own gets null -> 404 everywhere downstream.
+  // A partner with no accountId (data bug) gets nothing at all — fail closed.
+  if (user.role === "PARTNER_VIEWER" && (!user.accountId || user.accountId !== id)) {
+    return Promise.resolve(null);
+  }
   return db.account.findFirst({ where: { id, ...accountScopeWhere(user) } });
 }
 

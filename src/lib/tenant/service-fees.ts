@@ -76,7 +76,10 @@ export async function listCompanyServiceFees(db: PrismaClient, user: SessionUser
 }) {
   if (!user.companyId) throw new Error("no tenant context");
   const companyId = user.companyId;
-  const where: { companyId: string; status?: ServiceFeeStatus; periodMonth?: { gte?: Date; lte?: Date } } = { companyId };
+  // Partner logins only ever see their own account's fees — fail closed (sentinel that
+  // matches nothing) when the login has no accountId set.
+  const accountFilter = user.role === "PARTNER_VIEWER" ? (user.accountId ?? "__no_access__") : undefined;
+  const where: { companyId: string; accountId?: string; status?: ServiceFeeStatus; periodMonth?: { gte?: Date; lte?: Date } } = { companyId, ...(accountFilter ? { accountId: accountFilter } : {}) };
   if (opts?.status) where.status = opts.status;
   if (opts?.from || opts?.to) {
     where.periodMonth = {};
@@ -84,7 +87,7 @@ export async function listCompanyServiceFees(db: PrismaClient, user: SessionUser
     if (opts.to) where.periodMonth.lte = opts.to;
   }
   const [accounts, fees] = await Promise.all([
-    db.account.findMany({ where: { companyId }, orderBy: { name: "asc" } }),
+    db.account.findMany({ where: { companyId, ...(accountFilter ? { id: accountFilter } : {}) }, orderBy: { name: "asc" } }),
     db.serviceFee.findMany({ where }),
   ]);
   const rows = accounts.map((a) => {
