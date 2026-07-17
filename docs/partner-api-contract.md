@@ -10,9 +10,11 @@
 
 | We send | Example | Notes |
 |---|---|---|
-| `partner` | `"Acme Towers"` | The partner company. A stable **id** is better than a name — if you have one, we'll use it. |
+| `partner` | `"Acme Towers"` | The partner **company name** (agreed: match by name, not id). We enter the name manually on our side. |
 | `date_from` | `2026-07-01` | Start of the range (inclusive). |
 | `date_to` | `2026-07-31` | End of the range (inclusive). |
+
+> **Names must be stable and exact.** Since we match on the company name, treat it as a key — don't rename a partner without telling us. Match case-insensitively and ignore extra spaces. Unknown name → return `404` (so a mismatch is visible instead of silently showing zeros).
 
 ---
 
@@ -34,7 +36,7 @@
 | `total_installations` | number | How many users installed the app. |
 | `ios_installations` | number | Installed on iOS. |
 | `android_installations` | number | Installed on Android. |
-| `logged_in_users` | number | Installed **and** logged in at least once (proves real usage). |
+| `logged_in_users` | number | Number of users who **have an app token** — installed *and* logged in (proves real usage). Count only; we don't need token values. |
 
 ### C. Payments in the date range
 
@@ -124,14 +126,26 @@ GET /api/qonshu/partner-stats?partner=Acme+Towers&date_from=2026-07-01&date_to=2
 ## Format notes
 
 - Dates: ISO format — `2026-07-14T09:21:00Z` for times, `2026-07-01` for the range.
-- Money: number with 2 decimals — `149.90`.
-- If a partner has no data for the range: return the same structure with `0`s and an empty `payments` list (not an error).
+- Money: number with 2 decimals — `149.90`. Always positive (no refunds / negative amounts).
+- **Cancelled payments: exclude them.** Cancellations are handled on your side — a cancelled payment must not appear in `payments` or count toward any total.
+- No data for the range → same structure with `0`s and an empty `payments` list (not an error).
+- Unknown partner name → `404`.
 - If the `payments` list is very long, paginate it — but keep the totals above complete for the whole range.
+- We call this repeatedly and always use the latest response, so cancellations/corrections on your side flow into the CRM automatically. Please keep it read-only and safe to call often.
 
-## Please confirm
+## Agreed decisions
 
-1. Do the **method** values (card / manual / cash) and **category** values (apartment / parking / non-residential / utility) match your system? If you have more, send the full list.
-2. Can you give us **`logged_in_users`** (installed *and* logged in)? That's how we measure real usage, not just downloads.
-3. How do you handle **refunds / cancelled payments** — are they excluded, or sent as negative amounts?
-4. Do you have a **partner id** we should send instead of the company name?
-5. Can you also give us a **list of partners** (`id` + `name`), so we can match them to our records?
+| Question | Decision |
+|---|---|
+| Payment methods | **Confirmed** — CARD, MANUAL, CASH |
+| Payment categories | **Confirmed** — APARTMENT, PARKING, NON_RESIDENTIAL, UTILITY |
+| Logged-in users | **Yes** — count of users holding an app token |
+| Refunds | **None exist** — no negative amounts |
+| Cancelled payments | Handled on your side; excluded from the response. Our side updates automatically on the next call. |
+| Partner identifier | **Company name** (no id); entered manually on our side — keep names stable and exact |
+
+## Still needed from you
+
+1. **Base URL** (staging + production) and how we **authenticate** (e.g. a token in a header).
+2. The **exact list of partner company names** as they appear in your system, so we enter them without typos.
+3. A **sample response** from staging for one real partner, to validate against real data before go-live.

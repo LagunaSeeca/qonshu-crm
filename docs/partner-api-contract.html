@@ -56,7 +56,7 @@
   <div class="brand">Qonshu CRM</div>
   <h1>Partner App API — Data Requirements</h1>
   <p class="sub">What the CRM needs from the mobile-app backend</p>
-  <div class="meta">Version 1.0 &nbsp;·&nbsp; 17 July 2026 &nbsp;·&nbsp; For: Backend team (Django)</div>
+  <div class="meta">Version 1.1 &nbsp;·&nbsp; 17 July 2026 &nbsp;·&nbsp; For: Backend team (Django)</div>
 </header>
 
 <h2>1. Overview</h2>
@@ -80,10 +80,17 @@
 <pre>GET /api/qonshu/partner-stats?partner=Acme+Towers&amp;date_from=2026-07-01&amp;date_to=2026-07-31</pre>
 <table>
   <tr><th class="f">Parameter</th><th class="f">Example</th><th>Notes</th></tr>
-  <tr><td class="f"><code>partner</code></td><td class="f">Acme Towers</td><td>The partner company. If you have a stable partner <strong>id</strong>, we'd rather send that than the name.</td></tr>
+  <tr><td class="f"><code>partner</code></td><td class="f">Acme Towers</td><td>The partner <strong>company name</strong> (agreed: we match by name, not id). We enter the name on our side manually to match yours.</td></tr>
   <tr><td class="f"><code>date_from</code></td><td class="f">2026-07-01</td><td>Start of the range (inclusive).</td></tr>
   <tr><td class="f"><code>date_to</code></td><td class="f">2026-07-31</td><td>End of the range (inclusive).</td></tr>
 </table>
+<div class="note">
+  <strong>Important — names must be stable and exact.</strong> Because we match on the company name, please treat it as a key:
+  don't rename a partner without telling us, and keep spelling/spacing consistent. If a name changes on your side,
+  that partner's analytics go empty in the CRM until we update it.
+  Matching should be case-insensitive and ignore leading/trailing spaces.
+  If a partner name is unknown, return <code>404</code> so we can spot the mismatch rather than silently show zeros.
+</div>
 
 <h2>3. Response</h2>
 
@@ -102,7 +109,7 @@
   <tr><td class="f"><code>total_installations</code></td><td class="f">number</td><td>How many users installed the app.</td></tr>
   <tr><td class="f"><code>ios_installations</code></td><td class="f">number</td><td>Installed on iOS.</td></tr>
   <tr><td class="f"><code>android_installations</code></td><td class="f">number</td><td>Installed on Android.</td></tr>
-  <tr><td class="f"><code>logged_in_users</code></td><td class="f">number</td><td>Installed <strong>and</strong> logged in at least once — this is how we measure real usage, not just downloads.</td></tr>
+  <tr><td class="f"><code>logged_in_users</code></td><td class="f">number</td><td>Number of users who <strong>have an app token</strong> — i.e. they installed <em>and</em> logged in. This is how we measure real usage, not just downloads. <em>(Send the count only — we don't need the token values.)</em></td></tr>
 </table>
 
 <h3>C. Payments in the date range</h3>
@@ -182,22 +189,34 @@
 <table>
   <tr><th class="f">Topic</th><th>Rule</th></tr>
   <tr><td class="f">Dates</td><td>ISO format — <code>2026-07-01</code> for the range, <code>2026-07-14T09:21:00Z</code> for timestamps.</td></tr>
-  <tr><td class="f">Money</td><td>Number with 2 decimals — <code>149.90</code>.</td></tr>
+  <tr><td class="f">Money</td><td>Number with 2 decimals — <code>149.90</code>. Always positive (no refunds/negative amounts).</td></tr>
+  <tr><td class="f">Cancelled payments</td><td><strong>Exclude them.</strong> Cancellations are handled on your side — a cancelled payment must not appear in <code>payments</code> and must not be counted in any total.</td></tr>
   <tr><td class="f">No data</td><td>Return the same structure with <code>0</code>s and an empty <code>payments</code> list — not an error.</td></tr>
+  <tr><td class="f">Unknown partner</td><td>Return <code>404</code> (so a name mismatch is visible instead of silently showing zeros).</td></tr>
   <tr><td class="f">Long lists</td><td>If <code>payments</code> is very long, paginate it — but keep the totals complete for the whole range.</td></tr>
+  <tr><td class="f">Repeat calls</td><td>We call this endpoint repeatedly and always use the latest response, so cancellations and corrections on your side appear in the CRM automatically. Please keep it read-only and safe to call often.</td></tr>
 </table>
 
-<h2>6. Please confirm</h2>
+<h2>6. Agreed decisions</h2>
+<table>
+  <tr><th class="f">Question</th><th>Decision</th></tr>
+  <tr><td class="f">Payment methods</td><td><strong>Confirmed</strong> — <code>CARD</code>, <code>MANUAL</code>, <code>CASH</code> match your system.</td></tr>
+  <tr><td class="f">Payment categories</td><td><strong>Confirmed</strong> — <code>APARTMENT</code>, <code>PARKING</code>, <code>NON_RESIDENTIAL</code>, <code>UTILITY</code>.</td></tr>
+  <tr><td class="f">Logged-in users</td><td><strong>Yes</strong> — you provide the count of users holding an app token; that is our <code>logged_in_users</code>.</td></tr>
+  <tr><td class="f">Refunds</td><td><strong>None exist</strong> — no negative amounts.</td></tr>
+  <tr><td class="f">Cancelled payments</td><td>Handled <strong>on your side</strong>; excluded from the response. Our numbers update automatically on the next call.</td></tr>
+  <tr><td class="f">Partner identifier</td><td><strong>Company name</strong> (no id). Names entered manually on our side — please keep them stable and exact.</td></tr>
+</table>
+
+<h2>7. Still needed from you</h2>
 <ol>
-  <li>Do the <strong>method</strong> values (card / manual / cash) and <strong>category</strong> values (apartment / parking / non-residential / utility) match your system? If you have more, please send the full list.</li>
-  <li>Can you provide <strong><code>logged_in_users</code></strong> — users who installed <em>and</em> logged in? This is our key usage metric.</li>
-  <li>How do you handle <strong>refunds / cancelled payments</strong> — excluded, or sent as negative amounts?</li>
-  <li>Is there a <strong>partner id</strong> we should send instead of the company name?</li>
-  <li>Can you also expose a <strong>list of partners</strong> (id + name), so we can match them to our records automatically?</li>
+  <li>The <strong>base URL</strong> (staging + production) and how we should <strong>authenticate</strong> (e.g. a token we send in a header).</li>
+  <li>The <strong>exact list of partner company names</strong> as they appear in your system, so we can enter them on our side without typos.</li>
+  <li>A <strong>sample response</strong> from staging for one real partner (even a few rows), so we can validate against real data before go-live.</li>
 </ol>
 
 <footer>
-  Qonshu CRM · Partner App API Data Requirements · v1.0 · 17 July 2026
+  Qonshu CRM · Partner App API Data Requirements · v1.1 · 17 July 2026
 </footer>
 
 </body>
