@@ -5,8 +5,7 @@ import { getCompanyAnalytics } from "./company-analytics";
 import { listCompanySettlements, addSettlementEntry } from "./settlements";
 import { listCompanyServiceFees, addServiceFee } from "./service-fees";
 import { leadVisibilityWhere } from "./visibility";
-import { createInvitation, InvalidInvitationRoleError } from "./invitations";
-import { getTenantContext } from "./context";
+import { createUser, InvalidUserRoleError } from "./users";
 import { ForbiddenError } from "@/lib/auth/guards";
 import type { SessionUser } from "@/lib/auth/guards";
 
@@ -131,47 +130,37 @@ describe("partner portal security", () => {
     expect(() => leadVisibilityWhere(partnerUser, false)).toThrow(ForbiddenError);
   });
 
-  it("invite validation: PARTNER_VIEWER without accountId is rejected", async () => {
-    const { c, admin } = await seed("pp-inv1");
-    const ctx = getTenantContext({ id: admin.id, companyId: c.id, role: "COMPANY_ADMIN" });
+  it("direct creation: PARTNER_VIEWER without accountId is rejected", async () => {
+    const { adminUser } = await seed("pp-inv1");
     await expect(
-      createInvitation(testPrisma, ctx, { email: "nopartner@a.com", role: "PARTNER_VIEWER", invitedById: admin.id }),
-    ).rejects.toThrow(InvalidInvitationRoleError);
+      createUser(testPrisma, adminUser, { name: "No Partner", email: "nopartner@a.com", password: "pw123456", role: "PARTNER_VIEWER" }),
+    ).rejects.toThrow(InvalidUserRoleError);
   });
 
-  it("invite validation: PARTNER_VIEWER with an accountId from another company is rejected", async () => {
-    const { c, admin } = await seed("pp-inv2");
+  it("direct creation: PARTNER_VIEWER with an accountId from another company is rejected", async () => {
+    const { adminUser } = await seed("pp-inv2");
     const other = await seed("pp-inv2-other");
-    const ctx = getTenantContext({ id: admin.id, companyId: c.id, role: "COMPANY_ADMIN" });
     await expect(
-      createInvitation(testPrisma, ctx, {
-        email: "cross@a.com",
-        role: "PARTNER_VIEWER",
-        accountId: other.acc1.id,
-        invitedById: admin.id,
+      createUser(testPrisma, adminUser, {
+        name: "Cross", email: "cross@a.com", password: "pw123456", role: "PARTNER_VIEWER", accountId: other.acc1.id,
       }),
-    ).rejects.toThrow(InvalidInvitationRoleError);
+    ).rejects.toThrow(InvalidUserRoleError);
   });
 
-  it("invite validation: a non-PARTNER_VIEWER role with an accountId is rejected", async () => {
-    const { c, admin, acc1 } = await seed("pp-inv3");
-    const ctx = getTenantContext({ id: admin.id, companyId: c.id, role: "COMPANY_ADMIN" });
+  it("direct creation: a non-PARTNER_VIEWER role with an accountId is rejected", async () => {
+    const { adminUser, acc1 } = await seed("pp-inv3");
     await expect(
-      createInvitation(testPrisma, ctx, { email: "x@a.com", role: "MEMBER", accountId: acc1.id, invitedById: admin.id }),
-    ).rejects.toThrow(InvalidInvitationRoleError);
+      createUser(testPrisma, adminUser, { name: "X", email: "x@a.com", password: "pw123456", role: "MEMBER", accountId: acc1.id }),
+    ).rejects.toThrow(InvalidUserRoleError);
   });
 
-  it("invite validation: PARTNER_VIEWER with a valid accountId in the same company succeeds", async () => {
-    const { c, admin, acc2 } = await seed("pp-inv4");
-    const ctx = getTenantContext({ id: admin.id, companyId: c.id, role: "COMPANY_ADMIN" });
-    const inv = await createInvitation(testPrisma, ctx, {
-      email: "goodpartner@a.com",
-      role: "PARTNER_VIEWER",
-      accountId: acc2.id,
-      invitedById: admin.id,
+  it("direct creation: PARTNER_VIEWER with a valid accountId in the same company succeeds", async () => {
+    const { adminUser, acc2 } = await seed("pp-inv4");
+    const created = await createUser(testPrisma, adminUser, {
+      name: "Good Partner", email: "goodpartner@a.com", password: "pw123456", role: "PARTNER_VIEWER", accountId: acc2.id,
     });
-    expect(inv.role).toBe("PARTNER_VIEWER");
-    expect(inv.accountId).toBe(acc2.id);
+    expect(created.role).toBe("PARTNER_VIEWER");
+    expect(created.accountId).toBe(acc2.id);
   });
 
   it("regression: COMPANY_ADMIN and MEMBER still see company-wide data across both accounts", async () => {
