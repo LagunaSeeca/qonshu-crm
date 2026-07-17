@@ -86,6 +86,13 @@ describe("partner portal security", () => {
     expect(a.partners[0].accountId).toBe(acc1.id);
     // the other account's huge numbers must never leak in
     expect(a.totals.paymentsAmount).not.toBe(5000);
+
+    // moneyFlow is scoped the same way: only acc1's payment/settlement activity appears.
+    const flowPaymentsIn = a.moneyFlow.reduce((s, f) => s + f.paymentsIn, 0);
+    const flowCollected = a.moneyFlow.reduce((s, f) => s + f.collected, 0);
+    expect(flowPaymentsIn).toBe(150);
+    expect(flowCollected).toBe(200);
+    expect(flowCollected).not.toBe(8000);
   });
 
   it("listCompanySettlements: PARTNER_VIEWER sees only their own account's ledger", async () => {

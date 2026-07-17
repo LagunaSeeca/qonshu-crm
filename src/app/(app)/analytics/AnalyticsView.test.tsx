@@ -22,7 +22,7 @@ const data = {
   },
   byMethod: [] as { method: string; count: number; amount: number }[],
   byCategory: [] as { category: string; count: number; amount: number }[],
-  trend: [] as { date: string; count: number; amount: number }[],
+  moneyFlow: [] as { date: string; paymentsIn: number; collected: number; transferred: number }[],
   partners: [
     { accountId: "a1", accountName: "Acme Partner", appUsers: 15, installs: 14, engagedUsers: 10, paymentsCount: 25, paymentsAmount: 18000 },
   ],
@@ -41,9 +41,28 @@ describe("AnalyticsView", () => {
     expect(link).toHaveAttribute("href", "/accounts/a1");
   });
 
-  it("renders empty states for trend and breakdowns without crashing", () => {
+  it("renders empty states for breakdowns without crashing", () => {
     render(<AnalyticsView initialData={data} initialPeriod="MONTHLY" />);
     expect(screen.getAllByText(/no data for this range/i).length).toBeGreaterThan(0);
+  });
+
+  it("renders the money-flow empty state and a legend for all three series once there's data", () => {
+    render(<AnalyticsView initialData={data} initialPeriod="MONTHLY" />);
+    expect(screen.getByText(/no activity in this range/i)).toBeInTheDocument();
+
+    const withFlow = {
+      ...data,
+      moneyFlow: [
+        { date: "2026-07-01", paymentsIn: 100, collected: 60, transferred: 20 },
+        { date: "2026-07-02", paymentsIn: 50, collected: 0, transferred: 10 },
+      ],
+    };
+    render(<AnalyticsView initialData={withFlow} initialPeriod="MONTHLY" />);
+    // May also appear as a direct on-chart label when it doesn't collide with a neighbor,
+    // so assert presence rather than a single match.
+    expect(screen.getAllByText("App payments in").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Collected to bank").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Cash transferred out").length).toBeGreaterThan(0);
   });
 
   it("shows an empty state when the company has no accounts", () => {

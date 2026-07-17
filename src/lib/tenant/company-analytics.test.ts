@@ -42,6 +42,17 @@ async function seedCompanyA() {
     data: { companyId: c.id, accountId: acc1.id, appUserId: au1.id, occurredAt: new Date("2026-06-15T10:00:00Z"), amount: "999", method: "CARD", category: "UTILITY" },
   });
 
+  // Settlement entries for the money-flow chart: collected (bank) + transferred (cash),
+  // spread across both accounts, plus an out-of-range (June) entry that must be excluded.
+  await testPrisma.settlementEntry.createMany({
+    data: [
+      { companyId: c.id, accountId: acc1.id, type: "COLLECTED", amount: "60", method: "BANK_TRANSFER", occurredAt: new Date("2026-07-05T09:00:00Z"), createdById: u.id },
+      { companyId: c.id, accountId: acc1.id, type: "TRANSFER", amount: "25", method: "CASH", occurredAt: new Date("2026-07-06T09:00:00Z"), createdById: u.id },
+      { companyId: c.id, accountId: acc2.id, type: "COLLECTED", amount: "15", method: "CASH", occurredAt: new Date("2026-07-10T09:00:00Z"), createdById: u.id },
+      { companyId: c.id, accountId: acc1.id, type: "COLLECTED", amount: "500", method: "BANK_TRANSFER", occurredAt: new Date("2026-06-20T09:00:00Z"), createdById: u.id },
+    ],
+  });
+
   return { c, user, acc1, acc2, au1, au2, au3 };
 }
 
@@ -92,6 +103,22 @@ describe("company analytics", () => {
     const trendTotal = a.trend.reduce((s, t) => s + t.amount, 0);
     expect(trendTotal).toBe(200);
 
+    // moneyFlow: a 31-day range buckets daily ("YYYY-MM-DD" keys); June entries excluded.
+    expect(a.moneyFlow.every((f) => f.date.startsWith("2026-07"))).toBe(true);
+    const flowPaymentsIn = a.moneyFlow.reduce((s, f) => s + f.paymentsIn, 0);
+    const flowCollected = a.moneyFlow.reduce((s, f) => s + f.collected, 0);
+    const flowTransferred = a.moneyFlow.reduce((s, f) => s + f.transferred, 0);
+    expect(flowPaymentsIn).toBe(200); // same in-range total as paymentsAmount
+    expect(flowCollected).toBe(75); // 60 (acc1) + 15 (acc2); June's 500 excluded
+    expect(flowTransferred).toBe(25);
+    // bucket for 2026-07-05 carries both au1's two card payments (130) and the 60 collected entry
+    const jul5 = a.moneyFlow.find((f) => f.date === "2026-07-05");
+    expect(jul5?.paymentsIn).toBe(130);
+    expect(jul5?.collected).toBe(60);
+    const jul6 = a.moneyFlow.find((f) => f.date === "2026-07-06");
+    expect(jul6?.paymentsIn).toBe(50);
+    expect(jul6?.transferred).toBe(25);
+
     // partners: per-account comparison, sorted desc by paymentsAmount
     expect(a.partners).toHaveLength(2);
     expect(a.partners[0].accountId).toBe(acc1.id);
@@ -123,6 +150,9 @@ describe("company analytics", () => {
     await testPrisma.partnerPayment.create({
       data: { companyId: cB.id, accountId: accB.id, appUserId: auB.id, occurredAt: new Date("2026-07-08T10:00:00Z"), amount: "5000", method: "CARD", category: "UTILITY" },
     });
+    await testPrisma.settlementEntry.create({
+      data: { companyId: cB.id, accountId: accB.id, type: "COLLECTED", amount: "3000", method: "BANK_TRANSFER", occurredAt: new Date("2026-07-08T10:00:00Z"), createdById: uB.id },
+    });
 
     const a = await getCompanyAnalytics(testPrisma, user, range);
     expect(a.totals.accounts).toBe(2);
@@ -130,11 +160,16 @@ describe("company analytics", () => {
     expect(a.partners.some((p) => p.accountName === "Company B Partner")).toBe(false);
     expect(a.totals.paymentsAmount).toBe(200); // company B's 5000 never counted
     expect(a.totals.totalDebt).toBe(55); // company B's 999 debt never counted
+    // company B's money-flow numbers (5000 in, 3000 collected) never leak into company A's buckets
+    expect(a.moneyFlow.reduce((s, f) => s + f.paymentsIn, 0)).toBe(200);
+    expect(a.moneyFlow.reduce((s, f) => s + f.collected, 0)).toBe(75);
 
     const b = await getCompanyAnalytics(testPrisma, userB, range);
     expect(b.totals.accounts).toBe(1);
     expect(b.totals.paymentsAmount).toBe(5000);
     expect(b.partners).toHaveLength(1);
     expect(b.partners[0].accountId).toBe(accB.id);
+    expect(b.moneyFlow.reduce((s, f) => s + f.paymentsIn, 0)).toBe(5000);
+    expect(b.moneyFlow.reduce((s, f) => s + f.collected, 0)).toBe(3000);
   });
 });

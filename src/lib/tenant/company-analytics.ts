@@ -5,6 +5,27 @@ import { listAccounts, getAccount } from "./accounts";
 
 const num = (d: { toNumber: () => number } | null | undefined) => (d ? d.toNumber() : 0);
 
+type FlowGranularity = "day" | "week" | "month";
+
+// Daily buckets read as noise past ~a month; step down as the range widens.
+function flowGranularity(from: Date, to: Date): FlowGranularity {
+  const days = Math.max(1, Math.ceil((to.getTime() - from.getTime()) / 86_400_000));
+  if (days <= 31) return "day";
+  if (days <= 120) return "week";
+  return "month";
+}
+
+// Bucket key is itself an ISO-sortable string: "YYYY-MM-DD" for day/week (week keyed by
+// its Monday), "YYYY-MM" for month.
+function flowBucketKey(d: Date, granularity: FlowGranularity): string {
+  if (granularity === "month") return d.toISOString().slice(0, 7);
+  if (granularity === "day") return d.toISOString().slice(0, 10);
+  const dow = d.getUTCDay(); // 0 = Sun .. 6 = Sat
+  const diffToMonday = (dow === 0 ? -6 : 1) - dow;
+  const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + diffToMonday));
+  return monday.toISOString().slice(0, 10);
+}
+
 export async function getCompanyAnalytics(
   db: PrismaClient,
   user: SessionUser,
@@ -26,12 +47,19 @@ export async function getCompanyAnalytics(
     targetAccountId = opts.accountId;
   }
 
-  const [accounts, users, payments] = await Promise.all([
+  const [accounts, users, payments, settlementEntries] = await Promise.all([
     targetAccountId
       ? db.account.findMany({ where: { id: targetAccountId, companyId } })
       : listAccounts(db, user),
     db.partnerAppUser.findMany({ where: targetAccountId ? { companyId, accountId: targetAccountId } : { companyId } }),
     db.partnerPayment.findMany({
+      where: {
+        companyId,
+        occurredAt: { gte: range.from, lte: range.to },
+        ...(targetAccountId ? { accountId: targetAccountId } : {}),
+      },
+    }),
+    db.settlementEntry.findMany({
       where: {
         companyId,
         occurredAt: { gte: range.from, lte: range.to },
@@ -67,6 +95,28 @@ export async function getCompanyAnalytics(
     trendMap.set(d, t);
   }
   const trend = [...trendMap.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([date, v]) => ({ date, count: v.count, amount: v.amount }));
+
+  // Money-flow: app payments in vs. settlement collected/transferred, bucketed together so
+  // all three series line up on the same date axis. Stock (owed/debt) is deliberately excluded —
+  // those are snapshots, not flows, and belong on the KPI tiles instead.
+  const granularity = flowGranularity(range.from, range.to);
+  const flowMap = new Map<string, { paymentsIn: number; collected: number; transferred: number }>();
+  const flowBucket = (key: string) => {
+    let b = flowMap.get(key);
+    if (!b) { b = { paymentsIn: 0, collected: 0, transferred: 0 }; flowMap.set(key, b); }
+    return b;
+  };
+  for (const p of payments) {
+    flowBucket(flowBucketKey(p.occurredAt, granularity)).paymentsIn += num(p.amount);
+  }
+  for (const e of settlementEntries) {
+    const b = flowBucket(flowBucketKey(e.occurredAt, granularity));
+    if (e.type === "COLLECTED") b.collected += num(e.amount);
+    else b.transferred += num(e.amount);
+  }
+  const moneyFlow = [...flowMap.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([date, v]) => ({ date, paymentsIn: v.paymentsIn, collected: v.collected, transferred: v.transferred }));
 
   const partners = accounts
     .map((a) => {
@@ -104,6 +154,7 @@ export async function getCompanyAnalytics(
     byMethod,
     byCategory,
     trend,
+    moneyFlow,
     partners,
   };
 }

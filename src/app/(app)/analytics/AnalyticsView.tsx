@@ -56,7 +56,7 @@ export type Totals = {
 };
 type MethodBreakdown = { method: string; count: number; amount: number };
 type CategoryBreakdown = { category: string; count: number; amount: number };
-type TrendPoint = { date: string; count: number; amount: number };
+type MoneyFlowPoint = { date: string; paymentsIn: number; collected: number; transferred: number };
 type PartnerRow = {
   accountId: string;
   accountName: string;
@@ -71,7 +71,7 @@ export type CompanyAnalyticsData = {
   totals: Totals;
   byMethod: MethodBreakdown[];
   byCategory: CategoryBreakdown[];
-  trend: TrendPoint[];
+  moneyFlow: MoneyFlowPoint[];
   partners: PartnerRow[];
 };
 
@@ -125,20 +125,56 @@ function buildQuery(period: PeriodType, from: string, to: string, accountId: str
   return sp;
 }
 
-function buildTrendPath(trend: TrendPoint[], width: number, height: number) {
-  const max = Math.max(...trend.map((t) => t.amount), 1);
+// Money-flow chart: three currency series sharing a single y-axis (never a second axis —
+// they're all the same unit). Colors are fixed hexes validated for colorblind separation +
+// contrast in both light and dark — never derived from the categorical token ramp.
+type MoneyFlowSeriesKey = "paymentsIn" | "collected" | "transferred";
+const MONEY_FLOW_SERIES: { key: MoneyFlowSeriesKey; label: string; color: string }[] = [
+  { key: "paymentsIn", label: "App payments in", color: "#0284C7" },
+  { key: "collected", label: "Collected to bank", color: "#16A34A" },
+  { key: "transferred", label: "Cash transferred out", color: "#7C3AED" },
+];
+
+function buildMoneyFlowPaths(points: MoneyFlowPoint[], width: number, height: number) {
+  const max = Math.max(1, ...points.flatMap((p) => [p.paymentsIn, p.collected, p.transferred]));
   const pad = height * 0.1;
   const usableH = height - pad * 2;
-  const stepX = trend.length > 1 ? width / (trend.length - 1) : 0;
-  const points = trend.map((t, i) => ({
-    x: trend.length > 1 ? i * stepX : width / 2,
-    y: pad + usableH - (t.amount / max) * usableH,
-  }));
-  const line = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-  const last = points[points.length - 1];
-  const first = points[0];
-  const area = `${line} L${last.x.toFixed(1)},${height} L${first.x.toFixed(1)},${height} Z`;
-  return { line, area };
+  const stepX = points.length > 1 ? width / (points.length - 1) : 0;
+  const xAt = (i: number) => (points.length > 1 ? i * stepX : width / 2);
+  const yAt = (v: number) => pad + usableH - (v / max) * usableH;
+  const lines = MONEY_FLOW_SERIES.map((s) => {
+    const d = points.map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p[s.key]).toFixed(1)}`).join(" ");
+    const last = points.length > 0 ? { x: xAt(points.length - 1), y: yAt(points[points.length - 1][s.key]) } : null;
+    return { ...s, d, last };
+  });
+  // Recessive horizontal gridlines at 0/25/50/75/100% of the shared scale.
+  const gridY = [0, 0.25, 0.5, 0.75, 1].map((f) => pad + usableH * f);
+  return { lines, gridY };
+}
+
+// Direct-label a series at its final point only when it won't collide with a neighbor —
+// legend below always carries identity regardless, so skipping a crowded label never
+// leaves a series unidentified (color is never the only cue).
+function pickDirectLabels(lines: { key: string; last: { x: number; y: number } | null }[], minGapPx: number): Set<string> {
+  const withLast = lines.filter((l): l is typeof l & { last: { x: number; y: number } } => l.last !== null);
+  const sorted = [...withLast].sort((a, b) => a.last.y - b.last.y);
+  const shown = new Set<string>();
+  let lastY: number | null = null;
+  for (const l of sorted) {
+    if (lastY === null || Math.abs(l.last.y - lastY) >= minGapPx) {
+      shown.add(l.key);
+      lastY = l.last.y;
+    }
+  }
+  return shown;
+}
+
+// Bucket keys are "YYYY-MM-DD" (day/week, week keyed by its Monday) or "YYYY-MM" (month).
+function formatBucketLabel(key: string): string {
+  if (key.length === 7) {
+    return new Date(`${key}-01T00:00:00Z`).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  }
+  return new Date(`${key}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 function BreakdownRows({
@@ -294,9 +330,15 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
     ...Object.fromEntries(accounts.map((a) => [a.id, a.name])),
   };
 
-  const trendGeo = data.trend.length > 0 ? buildTrendPath(data.trend, 400, 120) : null;
-  const trendTotal = data.trend.reduce((s, p) => s + p.amount, 0);
-  const trendSummary = `Payments trend: ${money(trendTotal)} total across ${data.trend.length} day${data.trend.length === 1 ? "" : "s"}`;
+  const moneyFlowGeo = data.moneyFlow.length > 0 ? buildMoneyFlowPaths(data.moneyFlow, 400, 130) : null;
+  const flowHasData = data.moneyFlow.some((f) => f.paymentsIn > 0 || f.collected > 0 || f.transferred > 0);
+  const flowTotals: Record<MoneyFlowSeriesKey, number> = {
+    paymentsIn: data.moneyFlow.reduce((s, f) => s + f.paymentsIn, 0),
+    collected: data.moneyFlow.reduce((s, f) => s + f.collected, 0),
+    transferred: data.moneyFlow.reduce((s, f) => s + f.transferred, 0),
+  };
+  const moneyFlowSummary = `Money flow: ${money(flowTotals.paymentsIn)} app payments in, ${money(flowTotals.collected)} collected to bank, ${money(flowTotals.transferred)} cash transferred out, across ${data.moneyFlow.length} bucket${data.moneyFlow.length === 1 ? "" : "s"}`;
+  const moneyFlowDirectLabels = moneyFlowGeo ? pickDirectLabels(moneyFlowGeo.lines, 14) : new Set<string>();
 
   return (
     <div className="space-y-6">
@@ -430,46 +472,86 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
         <KpiTile label="Utility Amount" value={money(t.utilityAmount)} icon={Zap} />
       </KpiGroup>
 
-      {/* Trend chart */}
+      {/* Money flow chart: app payments in vs. settlement collected/transferred. Debt/owed are
+          snapshots, not flows, so they stay on the KPI tiles above and are never plotted here. */}
       <Card>
         <CardHeader className="border-b border-border pb-4">
           <CardTitle className="text-base font-semibold flex items-center gap-2">
             <TrendingUp className="size-4 text-muted-foreground" />
-            Payments Trend
+            Money Flow
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-4">
-          {data.trend.length === 0 ? (
+          {!flowHasData ? (
             <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground">
               <TrendingUp className="size-8 mb-2 opacity-40" />
-              <p className="text-sm">No data for this range</p>
+              <p className="text-sm">No activity in this range</p>
             </div>
           ) : (
-            <div className="text-sky-600 dark:text-sky-400">
+            <div className="space-y-3">
               <svg
-                viewBox="0 0 400 120"
+                viewBox="0 0 400 130"
                 preserveAspectRatio="none"
-                className="w-full h-32"
+                className="w-full h-36"
                 role="img"
-                aria-label={trendSummary}
+                aria-label={moneyFlowSummary}
               >
-                <title>{trendSummary}</title>
-                {trendGeo && (
-                  <>
-                    <path d={trendGeo.area} fill="currentColor" fillOpacity={0.12} stroke="none" />
-                    <path
-                      d={trendGeo.line}
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                      vectorEffect="non-scaling-stroke"
-                      strokeLinejoin="round"
-                      strokeLinecap="round"
-                    />
-                  </>
-                )}
+                <title>{moneyFlowSummary}</title>
+                {moneyFlowGeo?.gridY.map((y, i) => (
+                  <line
+                    key={i}
+                    x1={0}
+                    x2={400}
+                    y1={y}
+                    y2={y}
+                    className="stroke-border"
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+                {moneyFlowGeo?.lines.map((s) => (
+                  <path
+                    key={s.key}
+                    d={s.d}
+                    fill="none"
+                    stroke={s.color}
+                    strokeWidth={2}
+                    vectorEffect="non-scaling-stroke"
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                ))}
+                {moneyFlowGeo?.lines
+                  .filter((s) => s.last && moneyFlowDirectLabels.has(s.key))
+                  .map((s) => (
+                    <g key={`label-${s.key}`}>
+                      <circle cx={s.last!.x} cy={s.last!.y} r={2.5} fill={s.color} />
+                      <text
+                        x={s.last!.x > 340 ? s.last!.x - 6 : s.last!.x + 6}
+                        y={s.last!.y}
+                        textAnchor={s.last!.x > 340 ? "end" : "start"}
+                        dominantBaseline="middle"
+                        className="fill-muted-foreground text-[9px]"
+                      >
+                        {s.label}
+                      </text>
+                    </g>
+                  ))}
               </svg>
-              <p className="text-xs text-muted-foreground mt-2 tabular-nums">{trendSummary}</p>
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span>{formatBucketLabel(data.moneyFlow[0].date)}</span>
+                <span>{formatBucketLabel(data.moneyFlow[data.moneyFlow.length - 1].date)}</span>
+              </div>
+              {/* Legend — mandatory for 3 series; identity is never color-alone. */}
+              <ul className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm pt-1">
+                {MONEY_FLOW_SERIES.map((s) => (
+                  <li key={s.key} className="flex items-center gap-1.5 text-foreground">
+                    <span className="size-2.5 rounded-full shrink-0" style={{ backgroundColor: s.color }} aria-hidden="true" />
+                    {s.label}
+                    <span className="text-muted-foreground tabular-nums">{money(flowTotals[s.key])}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </CardContent>
