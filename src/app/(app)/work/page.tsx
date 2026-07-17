@@ -3,7 +3,11 @@ import Link from "next/link";
 import { ListTodo, CalendarCheck, MessageSquare, Calendar as CalendarIcon, CheckCircle2 } from "lucide-react";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
+import { getTenantContext } from "@/lib/tenant/context";
 import { getMyWork } from "@/lib/tenant/work";
+import { listLeads } from "@/lib/tenant/leads";
+import { listAccounts } from "@/lib/tenant/accounts";
+import { listUsers } from "@/lib/tenant/users";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -14,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { AddTask } from "./AddTask";
 
 function isOverdue(dueDate: Date | null) {
   if (!dueDate) return false;
@@ -28,16 +33,29 @@ export default async function WorkPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
-  const { tasks, meetings } = await getMyWork(prisma, user);
+  const ctx = getTenantContext(user);
+  const [{ tasks, meetings }, leads, accounts, members] = await Promise.all([
+    getMyWork(prisma, user),
+    listLeads(prisma, user),
+    listAccounts(prisma, user),
+    listUsers(prisma, ctx),
+  ]);
 
   return (
     <div className="space-y-6">
       {/* Page header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">My Work</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Open tasks and recent meetings across your leads and accounts
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">My Work</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Open tasks and recent meetings across your leads and accounts
+          </p>
+        </div>
+        <AddTask
+          leads={leads.map((l) => ({ id: l.id, title: l.title }))}
+          accounts={accounts.map((a) => ({ id: a.id, name: a.name }))}
+          members={members.map((m) => ({ id: m.id, name: m.name, email: m.email }))}
+        />
       </div>
 
       {/* Tasks */}
