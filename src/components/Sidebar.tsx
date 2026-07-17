@@ -12,12 +12,14 @@ import {
   Building,
   Landmark,
   FileBarChart,
+  ListTodo,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/work", label: "My Work", icon: ListTodo },
   { href: "/crm", label: "Sales CRM", icon: Briefcase },
   { href: "/accounts", label: "Accounts", icon: Building2 },
   { href: "/settlements", label: "Settlements", icon: Landmark },
