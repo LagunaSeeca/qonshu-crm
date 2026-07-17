@@ -24,8 +24,13 @@ import {
 import { UserPlus, Loader2 } from "lucide-react";
 
 type Row = { id: string; email: string; name: string; role: string; status: string };
+type Account = { id: string; name: string };
 
-const ROLE_LABELS: Record<string, string> = { MEMBER: "Member", COMPANY_ADMIN: "Company Admin" };
+const ROLE_LABELS: Record<string, string> = {
+  MEMBER: "Member",
+  COMPANY_ADMIN: "Company Admin",
+  PARTNER_VIEWER: "Partner (read-only)",
+};
 
 function roleBadge(role: string) {
   if (role === "COMPANY_ADMIN") return <Badge variant="default">{role}</Badge>;
@@ -37,25 +42,33 @@ function statusBadge(status: string) {
   return <Badge variant="outline" className="text-muted-foreground">Inactive</Badge>;
 }
 
-export function UserAdmin({ initial }: { initial: Row[] }) {
+export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts?: Account[] }) {
   const [rows, setRows] = useState(initial);
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("MEMBER");
+  const [accountId, setAccountId] = useState("");
   const [inviting, setInviting] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
+
+  function resetForm() {
+    setEmail("");
+    setRole("MEMBER");
+    setAccountId("");
+  }
 
   async function invite() {
     setInviting(true);
     try {
+      const body: { email: string; role: string; accountId?: string } = { email, role };
+      if (role === "PARTNER_VIEWER") body.accountId = accountId;
       const r = await fetch("/api/invitations", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, role }),
+        body: JSON.stringify(body),
       });
       if (r.ok) {
-        setEmail("");
-        setRole("MEMBER");
+        resetForm();
         setOpen(false);
         toast.success("Invite sent — check server console for link");
       } else {
@@ -159,22 +172,56 @@ export function UserAdmin({ initial }: { initial: Row[] }) {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="invite-role">Role</Label>
-              <Select items={ROLE_LABELS} value={role} onValueChange={(v) => setRole(v ?? "MEMBER")}>
+              <Select
+                items={ROLE_LABELS}
+                value={role}
+                onValueChange={(v) => {
+                  setRole(v ?? "MEMBER");
+                  setAccountId("");
+                }}
+              >
                 <SelectTrigger id="invite-role">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="MEMBER">Member</SelectItem>
                   <SelectItem value="COMPANY_ADMIN">Company Admin</SelectItem>
+                  <SelectItem value="PARTNER_VIEWER">Partner (read-only)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+            {role === "PARTNER_VIEWER" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="invite-account">Partner account <span aria-hidden="true">*</span></Label>
+                {accounts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No accounts to assign yet — create one first.</p>
+                ) : (
+                  <Select
+                    items={Object.fromEntries(accounts.map((a) => [a.id, a.name]))}
+                    value={accountId}
+                    onValueChange={(v) => setAccountId(v ?? "")}
+                  >
+                    <SelectTrigger id="invite-account">
+                      <SelectValue placeholder="Select an account" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {accounts.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={invite} disabled={inviting || !email}>
+            <Button
+              onClick={invite}
+              disabled={inviting || !email || (role === "PARTNER_VIEWER" && !accountId)}
+            >
               {inviting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Send invite
             </Button>

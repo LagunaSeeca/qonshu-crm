@@ -20,6 +20,9 @@ export async function GET(req: NextRequest) {
       if (e instanceof RangeError) return NextResponse.json({ error: "invalid_range" }, { status: 400 });
       throw e;
     }
-    return NextResponse.json(await getCompanyAnalytics(prisma, user, { from: range.from, to: range.to }));
+    const accountId = sp.get("accountId") ?? undefined;
+    return NextResponse.json(
+      await getCompanyAnalytics(prisma, user, { from: range.from, to: range.to }, { accountId }),
+    );
   } catch (e) { return errorResponse(e); }
 }

@@ -22,6 +22,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -68,7 +75,16 @@ export type CompanyAnalyticsData = {
   partners: PartnerRow[];
 };
 
-type Props = { initialData: CompanyAnalyticsData; initialPeriod: PeriodType };
+type AccountOption = { id: string; name: string };
+
+type Props = {
+  initialData: CompanyAnalyticsData;
+  initialPeriod: PeriodType;
+  // Company-filter is admin/member only — partner logins are locked server-side to their
+  // own account, so both of these are omitted/empty for them and the filter never renders.
+  accounts?: AccountOption[];
+  showCompanyFilter?: boolean;
+};
 
 const METHOD_LABELS: Record<string, string> = { CARD: "Card", MANUAL: "Manual", CASH: "Cash" };
 const CATEGORY_LABELS: Record<string, string> = {
@@ -99,12 +115,13 @@ function colorFor(kind: "method" | "category", key: string) {
 const money = (n: number) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
-function buildQuery(period: PeriodType, from: string, to: string): URLSearchParams {
+function buildQuery(period: PeriodType, from: string, to: string, accountId: string): URLSearchParams {
   const sp = new URLSearchParams({ period });
   if (period === "CUSTOM") {
     sp.set("from", from);
     sp.set("to", to);
   }
+  if (accountId !== "ALL") sp.set("accountId", accountId);
   return sp;
 }
 
@@ -224,18 +241,19 @@ function KpiTile({
   );
 }
 
-export function AnalyticsView({ initialData, initialPeriod }: Props) {
+export function AnalyticsView({ initialData, initialPeriod, accounts = [], showCompanyFilter = false }: Props) {
   const [data, setData] = useState<CompanyAnalyticsData>(initialData);
   const [period, setPeriod] = useState<PeriodType>(initialPeriod);
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [accountId, setAccountId] = useState("ALL");
   const [loading, setLoading] = useState(false);
 
-  async function load(p: PeriodType, from?: string, to?: string) {
+  async function load(p: PeriodType, from: string, to: string, acct: string) {
+    if (p === "CUSTOM" && (!from || !to)) return;
     setLoading(true);
     try {
-      const sp = buildQuery(p, from ?? "", to ?? "");
-      if (p === "CUSTOM" && (!from || !to)) return;
+      const sp = buildQuery(p, from, to, acct);
       const res = await fetch(`/api/analytics?${sp}`);
       if (!res.ok) {
         toast.error("Failed to load analytics.");
@@ -253,7 +271,7 @@ export function AnalyticsView({ initialData, initialPeriod }: Props) {
     setPeriod(p);
     setCustomFrom("");
     setCustomTo("");
-    void load(p);
+    void load(p, "", "", accountId);
   }
 
   function handleCustomDate(which: "from" | "to", value: string) {
@@ -262,10 +280,19 @@ export function AnalyticsView({ initialData, initialPeriod }: Props) {
     if (which === "from") setCustomFrom(value);
     else setCustomTo(value);
     setPeriod("CUSTOM");
-    if (nextFrom && nextTo) void load("CUSTOM", nextFrom, nextTo);
+    if (nextFrom && nextTo) void load("CUSTOM", nextFrom, nextTo, accountId);
+  }
+
+  function handleAccount(val: string) {
+    setAccountId(val);
+    void load(period, customFrom, customTo, val);
   }
 
   const t = data.totals;
+  const accountItems: Record<string, string> = {
+    ALL: "All companies",
+    ...Object.fromEntries(accounts.map((a) => [a.id, a.name])),
+  };
 
   const trendGeo = data.trend.length > 0 ? buildTrendPath(data.trend, 400, 120) : null;
   const trendTotal = data.trend.reduce((s, p) => s + p.amount, 0);
@@ -321,6 +348,20 @@ export function AnalyticsView({ initialData, initialPeriod }: Props) {
             className="h-7 w-36 text-xs"
           />
         </div>
+
+        {showCompanyFilter && (
+          <Select items={accountItems} value={accountId} onValueChange={(v) => { if (v) handleAccount(v); }}>
+            <SelectTrigger size="sm" className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All companies</SelectItem>
+              {accounts.map((a) => (
+                <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </div>
 
       {/* KPI tiles */}
