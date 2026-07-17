@@ -1,62 +1,121 @@
-# Data Qonshu CRM needs from the app API
+# Qonshu CRM — what we need from the app API
 
-We need **two lists per partner**: their **app users**, and the **payments** those users made in the app. Read-only — we never write anything back.
-
----
-
-## 1. App users
-
-One row per app user of that partner.
-
-| Field | Type | Meaning |
-|---|---|---|
-| `external_id` | string | Your unique id for the user. Must never change. |
-| `name` | string | User's name (or a label like `Apt 12B` if names can't be shared). |
-| `active` | boolean | Is the user active in your system? |
-| `debt` | number | How much this user currently owes (0 if nothing). |
-| `joined_at` | datetime | When the user registered. |
-| `platform` | `IOS` / `ANDROID` / `UNKNOWN` | Which app they installed. |
-| `installed_at` | datetime or null | When they installed the app. null = never installed. |
-| `last_login_at` | datetime or null | Last time they logged into the app. null = never logged in. |
-
-Example:
-```json
-{
-  "external_id": "usr_10293",
-  "name": "Aysel Mammadova",
-  "active": true,
-  "debt": 120.50,
-  "joined_at": "2025-11-03T08:14:00Z",
-  "platform": "IOS",
-  "installed_at": "2025-11-03T08:10:00Z",
-  "last_login_at": "2026-07-14T19:02:11Z"
-}
-```
+**How it works:** we send you a **partner company** and a **date range**. You return that partner's numbers for that range.
 
 ---
 
-## 2. Payments
+## Request
 
-One row per payment a user made through the app.
+`GET /api/qonshu/partner-stats`
+
+| We send | Example | Notes |
+|---|---|---|
+| `partner` | `"Acme Towers"` | The partner company. A stable **id** is better than a name — if you have one, we'll use it. |
+| `date_from` | `2026-07-01` | Start of the range (inclusive). |
+| `date_to` | `2026-07-31` | End of the range (inclusive). |
+
+---
+
+## Response — what you return
+
+### A. Users
 
 | Field | Type | Meaning |
 |---|---|---|
-| `external_id` | string | Your unique id for the payment. |
-| `external_user_id` | string | Which user paid — must match a user's `external_id` above. |
-| `occurred_at` | datetime | When the payment happened. |
-| `amount` | number | Amount paid. |
+| `total_users` | number | All app users of this partner. |
+| `active_users` | number | Users currently active in your system. |
+| `engaged_users` | number | Users who made **at least one payment** in the date range. |
+| `total_debt` | number | Total money owed by this partner's users right now. |
+
+### B. Installations
+
+| Field | Type | Meaning |
+|---|---|---|
+| `total_installations` | number | How many users installed the app. |
+| `ios_installations` | number | Installed on iOS. |
+| `android_installations` | number | Installed on Android. |
+| `logged_in_users` | number | Installed **and** logged in at least once (proves real usage). |
+
+### C. Payments in the date range
+
+| Field | Type | Meaning |
+|---|---|---|
+| `total_payments_count` | number | How many payments were made. |
+| `total_payments_amount` | number | Total money paid. |
+| `amount_by_card` | number | Of that total, paid by card. |
+| `amount_by_manual` | number | Of that total, recorded manually. |
+| `amount_by_cash` | number | Of that total, paid in cash. |
+| `utility_payments_count` | number | How many utility payments. |
+| `utility_payments_amount` | number | Total utility amount. |
+| `apartment_payments_amount` | number | Total for apartments. |
+| `parking_payments_amount` | number | Total for parking. |
+| `non_residential_payments_amount` | number | Total for non-residential units. |
+
+> The four category amounts (utility / apartment / parking / non-residential) should add up to `total_payments_amount`. Same for the three method amounts (card / manual / cash).
+
+### D. Payments list
+
+The individual payments in that date range, so we can show the transactions table:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | Your id for the payment. |
+| `user_id` | string | Who paid. |
+| `user_name` | string | Their name (or a label). |
+| `date` | datetime | When the payment happened. |
+| `amount` | number | How much. |
 | `method` | `CARD` / `MANUAL` / `CASH` | How they paid. |
 | `category` | `APARTMENT` / `PARKING` / `NON_RESIDENTIAL` / `UTILITY` | What they paid for. |
 
-Example:
+---
+
+## Full example
+
+**Request**
+```
+GET /api/qonshu/partner-stats?partner=Acme+Towers&date_from=2026-07-01&date_to=2026-07-31
+```
+
+**Response**
 ```json
 {
-  "external_id": "pay_558210",
-  "external_user_id": "usr_10293",
-  "occurred_at": "2026-07-14T09:21:00Z",
-  "amount": 149.90,
-  "method": "CARD",
-  "category": "UTILITY"
+  "partner": "Acme Towers",
+  "date_from": "2026-07-01",
+  "date_to": "2026-07-31",
+
+  "total_users": 1342,
+  "active_users": 1180,
+  "engaged_users": 640,
+  "total_debt": 18420.75,
+
+  "total_installations": 1200,
+  "ios_installations": 520,
+  "android_installations": 680,
+  "logged_in_users": 900,
+
+  "total_payments_count": 3120,
+  "total_payments_amount": 154300.50,
+  "amount_by_card": 120400.00,
+  "amount_by_manual": 21900.50,
+  "amount_by_cash": 12000.00,
+
+  "utility_payments_count": 810,
+  "utility_payments_amount": 39200.00,
+  "apartment_payments_amount": 82100.50,
+  "parking_payments_amount": 21000.00,
+  "non_residential_payments_amount": 12000.00,
+
+  "payments": [
+    {
+      "id": "pay_558210",
+      "user_id": "usr_10293",
+      "user_name": "Aysel Mammadova",
+      "date": "2026-07-14T09:21:00Z",
+      "amount": 149.90,
+      "method": "CARD",
+      "category": "UTILITY"
+    }
+  ]
 }
 ```
 
@@ -64,13 +123,15 @@ Example:
 
 ## Format notes
 
-- Dates: ISO 8601 with timezone — `2026-07-14T09:21:00Z`
-- Money: number with 2 decimals — `149.90`
-- Payments endpoint should accept a `since` date so we can fetch only new payments.
-- Each list is per partner, so we need a partner id in the request (and ideally a list of partners with their ids and names).
+- Dates: ISO format — `2026-07-14T09:21:00Z` for times, `2026-07-01` for the range.
+- Money: number with 2 decimals — `149.90`.
+- If a partner has no data for the range: return the same structure with `0`s and an empty `payments` list (not an error).
+- If the `payments` list is very long, paginate it — but keep the totals above complete for the whole range.
 
 ## Please confirm
 
-- Do the `method` and `category` values match your system? If you have more, send us the full list.
-- Can you provide `last_login_at`? We use it to see who actually installed **and** logged in.
-- How do you represent refunds/cancelled payments?
+1. Do the **method** values (card / manual / cash) and **category** values (apartment / parking / non-residential / utility) match your system? If you have more, send the full list.
+2. Can you give us **`logged_in_users`** (installed *and* logged in)? That's how we measure real usage, not just downloads.
+3. How do you handle **refunds / cancelled payments** — are they excluded, or sent as negative amounts?
+4. Do you have a **partner id** we should send instead of the company name?
+5. Can you also give us a **list of partners** (`id` + `name`), so we can match them to our records?
