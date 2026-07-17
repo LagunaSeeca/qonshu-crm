@@ -50,6 +50,8 @@ model Company {
   partnerAppUsers     PartnerAppUser[]
   partnerPayments     PartnerPayment[]
   settlementEntries   SettlementEntry[]
+  accountFieldDefs    AccountFieldDef[]
+  accountFieldValues  AccountFieldValue[]
 }
 
 model User {
@@ -228,6 +230,7 @@ model Account {
   partnerAppUsers     PartnerAppUser[]
   partnerPayments     PartnerPayment[]
   settlementEntries   SettlementEntry[]
+  fieldValues         AccountFieldValue[]
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, accountManagerId])
@@ -374,4 +377,38 @@ model SettlementEntry {
   createdAt   DateTime          @default(now())
   @@index([companyId, accountId])
   @@index([companyId, type])
+}
+
+enum AccountFieldType {
+  TEXT
+  NUMBER
+  CURRENCY
+  DATE
+}
+
+model AccountFieldDef {
+  id        String              @id @default(cuid())
+  companyId String
+  company   Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  label     String
+  type      AccountFieldType
+  order     Int
+  createdAt DateTime            @default(now())
+  values    AccountFieldValue[]
+  @@unique([companyId, label])
+  @@index([companyId])
+}
+
+model AccountFieldValue {
+  id          String           @id @default(cuid())
+  companyId   String
+  company     Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  fieldDefId  String
+  fieldDef    AccountFieldDef  @relation(fields: [fieldDefId], references: [id], onDelete: Cascade)
+  value       String
+  updatedAt   DateTime         @updatedAt
+  @@unique([accountId, fieldDefId])
+  @@index([companyId, accountId])
 }
