@@ -45,37 +45,50 @@ function statusBadge(status: string) {
 export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts?: Account[] }) {
   const [rows, setRows] = useState(initial);
   const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [role, setRole] = useState("MEMBER");
   const [accountId, setAccountId] = useState("");
-  const [inviting, setInviting] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
 
   function resetForm() {
+    setName("");
     setEmail("");
+    setPassword("");
     setRole("MEMBER");
     setAccountId("");
   }
 
-  async function invite() {
-    setInviting(true);
+  async function createUser() {
+    setCreating(true);
     try {
-      const body: { email: string; role: string; accountId?: string } = { email, role };
+      const body: { name: string; email: string; password: string; role: string; accountId?: string } = {
+        name, email, password, role,
+      };
       if (role === "PARTNER_VIEWER") body.accountId = accountId;
-      const r = await fetch("/api/invitations", {
+      const r = await fetch("/api/users", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
       if (r.ok) {
+        const created = await r.json();
+        setRows((rs) => [...rs, { id: created.id, email: created.email, name: created.name ?? "", role: created.role, status: created.status }]);
         resetForm();
         setOpen(false);
-        toast.success("Invite sent — check server console for link");
+        toast.success("User created — share the email/password with them directly");
+      } else if (r.status === 409) {
+        toast.error("A user with that email already exists");
+      } else if (r.status === 403) {
+        toast.error("Add user failed (forbidden)");
       } else {
-        toast.error(r.status === 403 ? "Invite failed (forbidden)" : "Invite failed");
+        const body = await r.json().catch(() => ({}));
+        toast.error(body?.error ?? "Add user failed");
       }
     } finally {
-      setInviting(false);
+      setCreating(false);
     }
   }
 
@@ -108,7 +121,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
         </div>
         <Button onClick={() => setOpen(true)}>
           <UserPlus className="mr-2 h-4 w-4" />
-          Invite user
+          Add user
         </Button>
       </div>
 
@@ -157,13 +170,22 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Invite user</DialogTitle>
+            <DialogTitle>Add user</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
-              <Label htmlFor="invite-email">Email address <span aria-hidden="true">*</span></Label>
+              <Label htmlFor="new-user-name">Name <span aria-hidden="true">*</span></Label>
               <Input
-                id="invite-email"
+                id="new-user-name"
+                placeholder="Jane Doe"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-user-email">Email address <span aria-hidden="true">*</span></Label>
+              <Input
+                id="new-user-email"
                 type="email"
                 placeholder="colleague@company.com"
                 value={email}
@@ -171,7 +193,18 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="invite-role">Role</Label>
+              <Label htmlFor="new-user-password">Password <span aria-hidden="true">*</span></Label>
+              <Input
+                id="new-user-password"
+                type="password"
+                placeholder="Min 8 characters"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                minLength={8}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-user-role">Role</Label>
               <Select
                 items={ROLE_LABELS}
                 value={role}
@@ -180,7 +213,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
                   setAccountId("");
                 }}
               >
-                <SelectTrigger id="invite-role">
+                <SelectTrigger id="new-user-role">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -192,7 +225,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
             </div>
             {role === "PARTNER_VIEWER" && (
               <div className="space-y-1.5">
-                <Label htmlFor="invite-account">Partner account <span aria-hidden="true">*</span></Label>
+                <Label htmlFor="new-user-account">Partner account <span aria-hidden="true">*</span></Label>
                 {accounts.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No accounts to assign yet — create one first.</p>
                 ) : (
@@ -201,7 +234,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
                     value={accountId}
                     onValueChange={(v) => setAccountId(v ?? "")}
                   >
-                    <SelectTrigger id="invite-account">
+                    <SelectTrigger id="new-user-account">
                       <SelectValue placeholder="Select an account" />
                     </SelectTrigger>
                     <SelectContent>
@@ -219,11 +252,11 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
               Cancel
             </Button>
             <Button
-              onClick={invite}
-              disabled={inviting || !email || (role === "PARTNER_VIEWER" && !accountId)}
+              onClick={createUser}
+              disabled={creating || !name || !email || password.length < 8 || (role === "PARTNER_VIEWER" && !accountId)}
             >
-              {inviting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Send invite
+              {creating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Create user
             </Button>
           </DialogFooter>
         </DialogContent>
