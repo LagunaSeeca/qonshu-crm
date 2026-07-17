@@ -10,7 +10,9 @@ import { Loader2 } from "lucide-react";
 export function CompanyCreate() {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
+  const [adminName, setAdminName] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function submit(e: React.FormEvent) {
@@ -20,13 +22,15 @@ export function CompanyCreate() {
       const r = await fetch("/api/platform/companies", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, slug, adminEmail }),
+        body: JSON.stringify({ name, slug, adminName, adminEmail, adminPassword }),
       });
       if (r.ok) {
-        toast.success("Company created — admin invite logged to server console");
+        toast.success("Company created — admin can log in with that email/password");
         setName("");
         setSlug("");
+        setAdminName("");
         setAdminEmail("");
+        setAdminPassword("");
       } else {
         const body = await r.json().catch(() => ({}));
         toast.error(body?.error ?? "Failed to create company");
@@ -44,7 +48,7 @@ export function CompanyCreate() {
             Platform Admin
           </p>
           <CardTitle className="text-2xl font-bold">New Company</CardTitle>
-          <CardDescription>Create a new tenant and invite the admin.</CardDescription>
+          <CardDescription>Create a new tenant and its admin account.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="flex flex-col gap-4">
@@ -69,6 +73,16 @@ export function CompanyCreate() {
               />
             </div>
             <div className="space-y-1.5">
+              <Label htmlFor="admin-name">Admin name <span aria-hidden="true">*</span></Label>
+              <Input
+                id="admin-name"
+                placeholder="Jane Doe"
+                value={adminName}
+                onChange={(e) => setAdminName(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="admin-email">Admin email <span aria-hidden="true">*</span></Label>
               <Input
                 id="admin-email"
@@ -76,6 +90,18 @@ export function CompanyCreate() {
                 placeholder="admin@acme.com"
                 value={adminEmail}
                 onChange={(e) => setAdminEmail(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="admin-password">Admin password <span aria-hidden="true">*</span></Label>
+              <Input
+                id="admin-password"
+                type="password"
+                placeholder="Min 8 characters"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                minLength={8}
                 required
               />
             </div>
