@@ -7,7 +7,7 @@ import { listCompanySettlements } from "./settlements";
 export type DashboardStats = {
   sales: { openLeads: number; wonInPeriod: number };
   activity: { meetingsDone: number; openTasks: number; overdueTasks: number };
-  partners: { accounts: number; activeAccounts: number; appUsers: number; activeAppUsers: number; engagedUsers: number; paymentsAmount: number };
+  partners: { accounts: number; activeAccounts: number; appUsers: number; activeAppUsers: number; engagedUsers: number; paymentsAmount: number; appInstalls: number; installsIos: number; installsAndroid: number };
   finance: { collected: number; transferred: number; owed: number };
 };
 
@@ -51,6 +51,9 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
       activeAppUsers: appUsers.filter((u2) => u2.active).length,
       engagedUsers,
       paymentsAmount: payments.reduce((s, p) => s + num(p.amount), 0),
+      appInstalls: appUsers.filter((u2) => u2.installedAt !== null).length,
+      installsIos: appUsers.filter((u2) => u2.installedAt !== null && u2.platform === "IOS").length,
+      installsAndroid: appUsers.filter((u2) => u2.installedAt !== null && u2.platform === "ANDROID").length,
     },
     finance: settlements.totals,
   };

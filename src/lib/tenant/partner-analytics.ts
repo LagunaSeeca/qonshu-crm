@@ -15,6 +15,9 @@ export async function getAccountAnalytics(db: PrismaClient, user: SessionUser, a
   ]);
   const totalDebt = users.reduce((s, u) => s + num(u.debt), 0);
   const activeUsers = users.filter((u) => u.active).length;
+  const installedUsers = users.filter((u) => u.installedAt !== null);
+  const installsTotal = installedUsers.length;
+  const activated = users.filter((u) => u.lastLoginAt !== null).length;
   const amount = (arr: typeof payments) => arr.reduce((s, p) => s + num(p.amount), 0);
   const util = payments.filter((p) => p.category === "UTILITY");
   const groupBy = <K extends string>(key: (p: typeof payments[number]) => K, keys: K[]) =>
@@ -27,9 +30,13 @@ export async function getAccountAnalytics(db: PrismaClient, user: SessionUser, a
   const paidByUser = new Map<string, number>();
   for (const p of payments) paidByUser.set(p.appUserId, (paidByUser.get(p.appUserId) ?? 0) + num(p.amount));
   const topUsers = users.map((u) => ({ name: u.name, paid: paidByUser.get(u.id) ?? 0, debt: num(u.debt) })).sort((a, b) => b.paid - a.paid).slice(0, 10);
+  const ios = installedUsers.filter((u) => u.platform === "IOS").length;
+  const android = installedUsers.filter((u) => u.platform === "ANDROID").length;
+  const activationRate = installsTotal > 0 ? Math.round((activated / installsTotal) * 1000) / 10 : 0;
   return {
     kpis: { activeUsers, totalUsers: users.length, totalDebt, paymentsCount: payments.length, paymentsAmount: amount(payments), utilityCount: util.length, utilityAmount: amount(util) },
     byMethod, byCategory, trend, topUsers,
+    installs: { total: installsTotal, ios, android, activated, activationRate },
   };
 }
 

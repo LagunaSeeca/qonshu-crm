@@ -55,4 +55,23 @@ describe("dashboard stats", () => {
     expect(s.partners.engagedUsers).toBe(2);
     expect(s.partners.paymentsAmount).toBe(35);
   });
+
+  it("counts company-wide app installs (iOS/Android split), all-time regardless of period", async () => {
+    const c = await testPrisma.company.create({ data: { name: "D", slug: "d-dash" } });
+    const u = await testPrisma.user.create({ data: { companyId: c.id, email: "u@d.com", passwordHash: "x", name: "U", role: "COMPANY_ADMIN" } });
+    const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const account = await testPrisma.account.create({ data: { companyId: c.id, name: "Acc", accountManagerId: u.id } });
+    await testPrisma.partnerAppUser.createMany({
+      data: [
+        { companyId: c.id, accountId: account.id, externalId: "i1", name: "iOS1", joinedAt: new Date("2020-01-01"), platform: "IOS", installedAt: new Date("2020-01-05") },
+        { companyId: c.id, accountId: account.id, externalId: "i2", name: "iOS2", joinedAt: new Date("2020-01-01"), platform: "IOS", installedAt: new Date("2020-01-06") },
+        { companyId: c.id, accountId: account.id, externalId: "a1", name: "Android1", joinedAt: new Date("2020-01-01"), platform: "ANDROID", installedAt: new Date("2020-01-07") },
+        { companyId: c.id, accountId: account.id, externalId: "n1", name: "NotInstalled", joinedAt: new Date("2020-01-01"), platform: "UNKNOWN" },
+      ],
+    });
+    const s = await getDashboardStats(testPrisma, user, range); // range is July 2026, install dates are 2020 — proves all-time
+    expect(s.partners.appInstalls).toBe(3);
+    expect(s.partners.installsIos).toBe(2);
+    expect(s.partners.installsAndroid).toBe(1);
+  });
 });
