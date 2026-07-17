@@ -9,6 +9,7 @@ const data = {
   byCategory: [] as { category: string; count: number; amount: number }[],
   trend: [] as { date: string; count: number; amount: number }[],
   topUsers: [] as { name: string; paid: number; debt: number }[],
+  installs: { total: 10, ios: 6, android: 4, activated: 7, activationRate: 70 },
 };
 
 describe("Analytics", () => {
@@ -21,5 +22,14 @@ describe("Analytics", () => {
   it("renders empty states for trend and breakdowns without crashing", () => {
     render(<Analytics accountId="a1" initialData={data} />);
     expect(screen.getAllByText(/no data for this range/i).length).toBeGreaterThan(0);
+  });
+
+  it("renders installs & activation tiles from initialData", () => {
+    render(<Analytics accountId="a1" initialData={data} />);
+    expect(screen.getByText(/installs & activation/i)).toBeInTheDocument();
+    expect(screen.getByText(/total installs/i)).toBeInTheDocument();
+    expect(screen.getByText("10")).toBeInTheDocument();
+    expect(screen.getByText(/activation rate/i)).toBeInTheDocument();
+    expect(screen.getByText("70%")).toBeInTheDocument();
   });
 });

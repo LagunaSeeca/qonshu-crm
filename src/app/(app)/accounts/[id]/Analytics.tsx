@@ -13,6 +13,11 @@ import {
   TrendingUp,
   ChevronLeft,
   ChevronRight,
+  Smartphone,
+  Apple,
+  Bot,
+  UserCheck,
+  Percent,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -52,6 +57,7 @@ type MethodBreakdown = { method: string; count: number; amount: number };
 type CategoryBreakdown = { category: string; count: number; amount: number };
 type TrendPoint = { date: string; count: number; amount: number };
 type TopUser = { name: string; paid: number; debt: number };
+type Installs = { total: number; ios: number; android: number; activated: number; activationRate: number };
 
 type AnalyticsData = {
   kpis: Kpis;
@@ -59,6 +65,7 @@ type AnalyticsData = {
   byCategory: CategoryBreakdown[];
   trend: TrendPoint[];
   topUsers: TopUser[];
+  installs: Installs;
 };
 
 type PaymentRow = {
@@ -339,6 +346,16 @@ export function Analytics({ accountId, initialData }: Props) {
       ]
     : [];
 
+  const installTiles = data
+    ? [
+        { label: "Total Installs", value: data.installs.total.toLocaleString(), icon: Smartphone },
+        { label: "iOS", value: data.installs.ios.toLocaleString(), icon: Apple },
+        { label: "Android", value: data.installs.android.toLocaleString(), icon: Bot },
+        { label: "Activated", value: data.installs.activated.toLocaleString(), icon: UserCheck },
+        { label: "Activation Rate", value: `${data.installs.activationRate}%`, icon: Percent },
+      ]
+    : [];
+
   const trendGeo = data && data.trend.length > 0 ? buildTrendPath(data.trend, 400, 120) : null;
   const trendTotal = data ? data.trend.reduce((s, t) => s + t.amount, 0) : 0;
   const trendSummary = data
@@ -428,6 +445,32 @@ export function Analytics({ accountId, initialData }: Props) {
               );
             })}
           </div>
+
+          {/* Installs & activation */}
+          <Card>
+            <CardHeader className="border-b border-border pb-4">
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
+                <Smartphone className="size-4 text-muted-foreground" />
+                Installs &amp; Activation
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+                {installTiles.map((t) => {
+                  const Icon = t.icon;
+                  return (
+                    <div key={t.label} className="flex flex-col gap-1.5 rounded-lg border border-border p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-muted-foreground">{t.label}</span>
+                        <Icon className="size-4 text-muted-foreground" />
+                      </div>
+                      <div className="text-xl font-bold tabular-nums">{t.value}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
 
           {/* Trend chart */}
           <Card>

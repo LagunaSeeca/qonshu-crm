@@ -274,6 +274,10 @@ export function ReportView({ accounts, initialReport }: Props) {
               />
               <SummaryRow label="Users engaged" value={k.partners.engagedUsers.toLocaleString()} />
               <SummaryRow label="Payments amount" value={money(k.partners.paymentsAmount)} />
+              <SummaryRow
+                label="App installs (iOS/Android)"
+                value={`${k.partners.appInstalls.toLocaleString()} (${k.partners.installsIos.toLocaleString()}/${k.partners.installsAndroid.toLocaleString()})`}
+              />
             </div>
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Finance</h3>
