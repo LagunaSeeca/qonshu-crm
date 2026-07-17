@@ -5,6 +5,8 @@ import { hashPassword } from "../src/lib/auth/password";
 import { seedDefaultStages } from "../src/lib/tenant/stages";
 import { syncAccountAnalytics } from "../src/lib/analytics/sync";
 import { MockPartnerAnalyticsSource } from "../src/lib/analytics/source";
+import { createFieldDef, setAccountFieldValue } from "../src/lib/tenant/account-fields";
+import type { SessionUser } from "../src/lib/auth/guards";
 
 function createPrismaClient(): PrismaClient {
   const url = process.env.DATABASE_URL;
@@ -360,6 +362,35 @@ async function main() {
   }
 
   console.log(`seeded: demo settlement entries — ${totalSettlementEntries} entries, ${totalOwed} total owed across demo accounts`);
+
+  // Seed demo custom fields (idempotent: clear the company's defs first, cascades their values)
+  await prisma.accountFieldDef.deleteMany({
+    where: { companyId: co.id },
+  });
+
+  const adminUser: SessionUser = { id: admin.id, companyId: co.id, role: "COMPANY_ADMIN" };
+  const totalAreaDef = await createFieldDef(prisma, adminUser, { label: "Total area", type: "NUMBER" });
+  const contractValueDef = await createFieldDef(prisma, adminUser, { label: "Contract value", type: "CURRENCY" });
+
+  const demoFieldValues: Record<string, { totalArea: string; contractValue: string }> = {
+    "Acme Enterprise": { totalArea: "12500", contractValue: "48000" },
+    "TechFlow Solutions": { totalArea: "8200", contractValue: "21000" },
+  };
+
+  let totalFieldValues = 0;
+  for (const accountData of demoAccounts) {
+    const account = await prisma.account.findFirst({
+      where: { companyId: co.id, name: accountData.name },
+    });
+    if (!account) continue;
+    const values = demoFieldValues[accountData.name];
+    if (!values) continue;
+    await setAccountFieldValue(prisma, adminUser, account.id, totalAreaDef.id, values.totalArea);
+    await setAccountFieldValue(prisma, adminUser, account.id, contractValueDef.id, values.contractValue);
+    totalFieldValues += 2;
+  }
+
+  console.log(`seeded: 2 demo custom fields (Total area, Contract value) with ${totalFieldValues} values across demo accounts`);
 }
 
 main().finally(() => prisma.$disconnect());

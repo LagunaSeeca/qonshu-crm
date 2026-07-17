@@ -1,4 +1,6 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
+import { Settings2 } from "lucide-react";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
 import { getTenantContext } from "@/lib/tenant/context";
@@ -56,7 +58,16 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
         </form>
 
         {/* New Account button */}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
+          {user.role === "COMPANY_ADMIN" && (
+            <Link
+              href="/accounts/fields"
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-muted text-sm font-medium hover:bg-muted/70 transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <Settings2 className="size-3.5" />
+              Custom fields
+            </Link>
+          )}
           <AccountCreate members={members.map((m) => ({ id: m.id, name: m.name, email: m.email }))} />
         </div>
       </div>

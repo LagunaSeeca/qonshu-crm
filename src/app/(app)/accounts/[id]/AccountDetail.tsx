@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/select";
 import { Analytics } from "./Analytics";
 import { Settlement } from "./Settlement";
+import { AccountFields } from "./AccountFields";
 
 type Activity = { id: string; kind: string; body: string; outcome: string | null; occurredAt: string; authorId: string | null };
 type Task = { id: string; title: string; dueDate: string | null; done: boolean };
@@ -285,7 +286,8 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
 
       {/* Two-column layout */}
       <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6 items-start">
-        {/* LEFT: Account fields card */}
+        {/* LEFT: Account fields card + custom fields (Details) card */}
+        <div className="space-y-6">
         <Card>
           <CardHeader className="border-b border-border pb-4">
             <CardTitle className="text-base font-semibold">Account Details</CardTitle>
@@ -365,6 +367,9 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
             </form>
           </CardContent>
         </Card>
+
+        <AccountFields accountId={account.id} isAdmin={isAdmin} />
+        </div>
 
         {/* RIGHT: Manual tabs — all panels stay in DOM */}
         <div className="w-full">
