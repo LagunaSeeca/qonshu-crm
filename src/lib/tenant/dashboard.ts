@@ -3,12 +3,13 @@ import type { SessionUser } from "@/lib/auth/guards";
 import { leadVisibilityWhere } from "./visibility";
 import { getCompanySettings } from "./company";
 import { listCompanySettlements } from "./settlements";
+import { listCompanyServiceFees } from "./service-fees";
 
 export type DashboardStats = {
   sales: { openLeads: number; wonInPeriod: number };
   activity: { meetingsDone: number; openTasks: number; overdueTasks: number };
   partners: { accounts: number; activeAccounts: number; appUsers: number; activeAppUsers: number; engagedUsers: number; paymentsAmount: number; appInstalls: number; installsIos: number; installsAndroid: number };
-  finance: { collected: number; transferred: number; owed: number };
+  finance: { collected: number; transferred: number; owed: number; serviceFeesOutstanding: number };
 };
 
 const num = (d: { toNumber: () => number }) => d.toNumber();
@@ -17,13 +18,14 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
   const companyId = user.companyId!;
   const { shareAllLeads } = await getCompanySettings(db, { companyId });
   const leadWhere = leadVisibilityWhere(user, shareAllLeads);
-  const [leads, stages, accounts, appUsers, payments, settlements] = await Promise.all([
+  const [leads, stages, accounts, appUsers, payments, settlements, serviceFees] = await Promise.all([
     db.lead.findMany({ where: leadWhere }),
     db.stage.findMany({ where: { companyId } }),
     db.account.findMany({ where: { companyId } }),
     db.partnerAppUser.findMany({ where: { companyId } }),
     db.partnerPayment.findMany({ where: { companyId, occurredAt: { gte: range.from, lte: range.to } } }),
     listCompanySettlements(db, user),
+    listCompanyServiceFees(db, user),
   ]);
   const stageById = new Map(stages.map((s) => [s.id, s]));
   const openLeads = leads.filter((l) => stageById.get(l.stageId)?.type === "OPEN");
@@ -55,6 +57,6 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
       installsIos: appUsers.filter((u2) => u2.installedAt !== null && u2.platform === "IOS").length,
       installsAndroid: appUsers.filter((u2) => u2.installedAt !== null && u2.platform === "ANDROID").length,
     },
-    finance: settlements.totals,
+    finance: { ...settlements.totals, serviceFeesOutstanding: serviceFees.totals.outstanding },
   };
 }

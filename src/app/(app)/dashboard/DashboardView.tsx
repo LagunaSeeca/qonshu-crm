@@ -16,6 +16,7 @@ import {
   ArrowUpCircle,
   Landmark,
   Download,
+  ReceiptText,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -39,7 +40,7 @@ export type DashboardStats = {
     installsIos: number;
     installsAndroid: number;
   };
-  finance: { collected: number; transferred: number; owed: number };
+  finance: { collected: number; transferred: number; owed: number; serviceFeesOutstanding: number };
 };
 
 type Props = { initialStats: DashboardStats; initialPeriod: PeriodType };
@@ -250,6 +251,12 @@ export function DashboardView({ initialStats, initialPeriod }: Props) {
         <KpiCard label="Collected" value={money(stats.finance.collected)} icon={ArrowDownCircle} href="/settlements" />
         <KpiCard label="Transferred" value={money(stats.finance.transferred)} icon={ArrowUpCircle} href="/settlements" />
         <KpiCard label="Owed" value={money(stats.finance.owed)} icon={Landmark} emphasize href="/settlements" />
+        <KpiCard
+          label="Service fees outstanding"
+          value={money(stats.finance.serviceFeesOutstanding)}
+          icon={ReceiptText}
+          href="/service-fees"
+        />
       </KpiGroup>
     </div>
   );

@@ -99,6 +99,7 @@ export function toCsv(report: Report): string {
     `Collected,${esc(k.finance.collected)}`,
     `Transferred,${esc(k.finance.transferred)}`,
     `Owed,${esc(k.finance.owed)}`,
+    `Service fees outstanding,${esc(k.finance.serviceFeesOutstanding)}`,
     "",
     "Partner,Payments,Payments Amount,Collected,Transferred,Owed",
     ...report.partnerRows.map((r) =>

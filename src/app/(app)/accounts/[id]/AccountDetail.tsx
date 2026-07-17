@@ -13,6 +13,7 @@ import {
   Upload,
   BarChart2,
   Landmark,
+  ReceiptText,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ import {
 } from "@/components/ui/select";
 import { Analytics } from "./Analytics";
 import { Settlement } from "./Settlement";
+import { ServiceFees } from "./ServiceFees";
 import { AccountFields } from "./AccountFields";
 
 type Activity = { id: string; kind: string; body: string; outcome: string | null; occurredAt: string; authorId: string | null };
@@ -97,7 +99,7 @@ function isOverdue(dueDate: string | null, done: boolean) {
   return new Date(dueDate) < new Date();
 }
 
-type TabKey = "activity" | "tasks" | "asks" | "files" | "settlement" | "analytics";
+type TabKey = "activity" | "tasks" | "asks" | "files" | "settlement" | "serviceFees" | "analytics";
 
 export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false }: Props) {
   const router = useRouter();
@@ -271,6 +273,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
     { key: "asks", label: "Asks" },
     { key: "files", label: "Files" },
     { key: "settlement", label: "Settlement" },
+    { key: "serviceFees", label: "Service fees" },
     { key: "analytics", label: "Analytics" },
   ];
 
@@ -394,6 +397,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
               >
                 {tab.key === "analytics" && <BarChart2 className="size-3" />}
                 {tab.key === "settlement" && <Landmark className="size-3" />}
+                {tab.key === "serviceFees" && <ReceiptText className="size-3" />}
                 {tab.label}
               </button>
             ))}
@@ -700,6 +704,11 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
           {/* Settlement panel */}
           <div hidden={activeTab !== "settlement"}>
             <Settlement accountId={account.id} isAdmin={isAdmin} />
+          </div>
+
+          {/* Service fees panel */}
+          <div hidden={activeTab !== "serviceFees"}>
+            <ServiceFees accountId={account.id} isAdmin={isAdmin} />
           </div>
 
           {/* Analytics panel */}

@@ -284,6 +284,7 @@ export function ReportView({ accounts, initialReport }: Props) {
               <SummaryRow label="Collected" value={money(k.finance.collected)} />
               <SummaryRow label="Transferred" value={money(k.finance.transferred)} />
               <SummaryRow label="Owed" value={money(k.finance.owed)} emphasize />
+              <SummaryRow label="Service fees outstanding" value={money(k.finance.serviceFeesOutstanding)} />
             </div>
           </div>
         </CardContent>

@@ -6,6 +6,7 @@ import { seedDefaultStages } from "../src/lib/tenant/stages";
 import { syncAccountAnalytics } from "../src/lib/analytics/sync";
 import { MockPartnerAnalyticsSource } from "../src/lib/analytics/source";
 import { createFieldDef, setAccountFieldValue } from "../src/lib/tenant/account-fields";
+import { addServiceFee, markFeePaid } from "../src/lib/tenant/service-fees";
 import type { SessionUser } from "../src/lib/auth/guards";
 
 function createPrismaClient(): PrismaClient {
@@ -391,6 +392,38 @@ async function main() {
   }
 
   console.log(`seeded: 2 demo custom fields (Total area, Contract value) with ${totalFieldValues} values across demo accounts`);
+
+  // Seed demo service fees (idempotent: clear the company's fees first)
+  await prisma.serviceFee.deleteMany({
+    where: { companyId: co.id },
+  });
+
+  const feeMonths = [2, 1, 0].map((monthsAgo) => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsAgo, 1));
+  });
+
+  let totalServiceFees = 0;
+  for (const accountData of demoAccounts) {
+    const account = await prisma.account.findFirst({
+      where: { companyId: co.id, name: accountData.name },
+    });
+    if (!account) continue;
+
+    // Two months ago and last month: billed and PAID. Current month: billed, still UNPAID.
+    const paidMonths = feeMonths.slice(0, 2);
+    const unpaidMonth = feeMonths[2];
+
+    for (const periodMonth of paidMonths) {
+      const fee = await addServiceFee(prisma, adminUser, account.id, { periodMonth, amount: 500 });
+      await markFeePaid(prisma, adminUser, fee.id, { method: "BANK_TRANSFER", paidAt: new Date(periodMonth.getTime() + 3 * 24 * 60 * 60 * 1000) });
+      totalServiceFees++;
+    }
+    await addServiceFee(prisma, adminUser, account.id, { periodMonth: unpaidMonth, amount: 500 });
+    totalServiceFees++;
+  }
+
+  console.log(`seeded: demo service fees — ${totalServiceFees} fees (2 paid + 1 unpaid per account) across demo accounts`);
 }
 
 main().finally(() => prisma.$disconnect());
