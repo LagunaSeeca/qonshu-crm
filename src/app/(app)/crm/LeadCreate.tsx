@@ -25,6 +25,8 @@ import {
 type Stage = { id: string; name: string };
 type Member = { id: string; name: string };
 
+const PRIORITY_LABELS: Record<string, string> = { LOW: "Low", MEDIUM: "Medium", HIGH: "High" };
+
 export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?: Member[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -35,6 +37,9 @@ export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?
   const [ownerId, setOwnerId] = useState(members[0]?.id ?? "");
   const [priority, setPriority] = useState("MEDIUM");
   const [loading, setLoading] = useState(false);
+
+  const ownerItems = Object.fromEntries(members.map((m) => [m.id, m.name]));
+  const stageItems = Object.fromEntries(stages.map((s) => [s.id, s.name]));
 
   function reset() {
     setTitle("");
@@ -121,7 +126,7 @@ export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="lc-owner">Person in charge</Label>
-            <Select value={ownerId} onValueChange={(v) => { if (v !== null) setOwnerId(v); }}>
+            <Select items={ownerItems} value={ownerId} onValueChange={(v) => { if (v !== null) setOwnerId(v); }}>
               <SelectTrigger id="lc-owner">
                 <SelectValue placeholder="Assign to me" />
               </SelectTrigger>
@@ -135,7 +140,7 @@ export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="lc-stage">Stage</Label>
-              <Select value={stageId} onValueChange={(v) => { if (v !== null) setStageId(v); }}>
+              <Select items={stageItems} value={stageId} onValueChange={(v) => { if (v !== null) setStageId(v); }}>
                 <SelectTrigger id="lc-stage">
                   <SelectValue placeholder="Select stage" />
                 </SelectTrigger>
@@ -148,7 +153,7 @@ export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="lc-priority">Priority</Label>
-              <Select value={priority} onValueChange={(v) => { if (v !== null) setPriority(v); }}>
+              <Select items={PRIORITY_LABELS} value={priority} onValueChange={(v) => { if (v !== null) setPriority(v); }}>
                 <SelectTrigger id="lc-priority">
                   <SelectValue />
                 </SelectTrigger>

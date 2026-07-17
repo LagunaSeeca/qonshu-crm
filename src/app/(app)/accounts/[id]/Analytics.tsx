@@ -94,6 +94,8 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 const METHOD_ORDER = ["CARD", "MANUAL", "CASH"];
 const CATEGORY_ORDER = ["APARTMENT", "PARKING", "NON_RESIDENTIAL", "UTILITY"];
+const METHOD_FILTER_ITEMS: Record<string, string> = { ALL: "All methods", ...METHOD_LABELS };
+const CATEGORY_FILTER_ITEMS: Record<string, string> = { ALL: "All categories", ...CATEGORY_LABELS };
 
 // Fixed categorical order, colorblind-safe validated (light: 600 steps; dark: violet steps
 // down to 500 to stay in the dark lightness band). Slots are assigned by position, never by
@@ -545,6 +547,7 @@ export function Analytics({ accountId, initialData }: Props) {
         <CardContent className="pt-4 space-y-4">
           <div className="flex flex-wrap items-center gap-2">
             <Select
+              items={METHOD_FILTER_ITEMS}
               value={methodFilter}
               onValueChange={(val) => {
                 if (val) handleMethodFilter(val);
@@ -561,6 +564,7 @@ export function Analytics({ accountId, initialData }: Props) {
               </SelectContent>
             </Select>
             <Select
+              items={CATEGORY_FILTER_ITEMS}
               value={categoryFilter}
               onValueChange={(val) => {
                 if (val) handleCategoryFilter(val);

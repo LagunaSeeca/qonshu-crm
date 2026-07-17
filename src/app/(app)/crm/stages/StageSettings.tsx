@@ -34,6 +34,7 @@ type Props = {
 };
 
 const STAGE_TYPES: StageType[] = ["OPEN", "WON", "LOST"];
+const STAGE_TYPE_LABELS: Record<string, string> = { OPEN: "Open", WON: "Won", LOST: "Lost" };
 
 function StageBadge({ type }: { type: StageType }) {
   switch (type) {
@@ -222,6 +223,7 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
                     <div className="w-28 shrink-0">
                       {ed ? (
                         <Select
+                          items={STAGE_TYPE_LABELS}
                           value={ed.type ?? stage.type}
                           onValueChange={(v) => {
                             if (v) setEditing((prev) => ({ ...prev, [stage.id]: { ...prev[stage.id], type: v as StageType } }));
@@ -232,7 +234,7 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
                           </SelectTrigger>
                           <SelectContent>
                             {STAGE_TYPES.map((t) => (
-                              <SelectItem key={t} value={t}>{t}</SelectItem>
+                              <SelectItem key={t} value={t}>{STAGE_TYPE_LABELS[t]}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -358,13 +360,13 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="new-stage-type">Type</Label>
-              <Select value={newType} onValueChange={(v) => { if (v) setNewType(v as StageType); }}>
+              <Select items={STAGE_TYPE_LABELS} value={newType} onValueChange={(v) => { if (v) setNewType(v as StageType); }}>
                 <SelectTrigger id="new-stage-type" className="w-28">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   {STAGE_TYPES.map((t) => (
-                    <SelectItem key={t} value={t}>{t}</SelectItem>
+                    <SelectItem key={t} value={t}>{STAGE_TYPE_LABELS[t]}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

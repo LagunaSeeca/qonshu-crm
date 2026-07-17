@@ -163,6 +163,10 @@ export function ReportView({ accounts, initialReport }: Props) {
 
   const k = report.kpis;
   const rows = report.partnerRows;
+  const accountItems: Record<string, string> = {
+    ALL: "All partners",
+    ...Object.fromEntries(accounts.map((a) => [a.id, a.name])),
+  };
 
   return (
     <div className="space-y-6">
@@ -210,7 +214,7 @@ export function ReportView({ accounts, initialReport }: Props) {
           />
         </div>
 
-        <Select value={accountId} onValueChange={(v) => { if (v) handleAccount(v); }}>
+        <Select items={accountItems} value={accountId} onValueChange={(v) => { if (v) handleAccount(v); }}>
           <SelectTrigger size="sm" className="w-44">
             <SelectValue />
           </SelectTrigger>

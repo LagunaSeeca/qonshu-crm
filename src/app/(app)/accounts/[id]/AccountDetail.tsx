@@ -62,6 +62,8 @@ type Props = {
 
 const ACTIVITY_KINDS = ["NOTE", "CALL", "MEETING", "EMAIL"] as const;
 const STATUSES = ["ACTIVE", "AT_RISK", "CHURNED"] as const;
+const STATUS_LABELS: Record<string, string> = { ACTIVE: "Active", AT_RISK: "At risk", CHURNED: "Churned" };
+const ACTIVITY_KIND_LABELS: Record<string, string> = { NOTE: "Note", CALL: "Call", MEETING: "Meeting", EMAIL: "Email" };
 
 function activityIcon(kind: string) {
   switch (kind) {
@@ -263,6 +265,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
   const [activeTab, setActiveTab] = useState<TabKey>("activity");
 
   const memberMap = Object.fromEntries(members.map((m) => [m.id, m.name]));
+  const managerItems = Object.fromEntries(members.map((m) => [m.id, m.name]));
 
   const tabs: { key: TabKey; label: string; disabled?: boolean }[] = [
     { key: "activity", label: "Activity" },
@@ -314,13 +317,13 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
 
               <div className="space-y-1.5">
                 <Label>Status</Label>
-                <Select value={status} onValueChange={(val) => { if (val) setStatus(val); }}>
+                <Select items={STATUS_LABELS} value={status} onValueChange={(val) => { if (val) setStatus(val); }}>
                   <SelectTrigger className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     {STATUSES.map((s) => (
-                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                      <SelectItem key={s} value={s}>{STATUS_LABELS[s]}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -328,7 +331,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
 
               <div className="space-y-1.5">
                 <Label>Account Manager</Label>
-                <Select value={accountManagerId} onValueChange={(val) => { if (val) setAccountManagerId(val); }}>
+                <Select items={managerItems} value={accountManagerId} onValueChange={(val) => { if (val) setAccountManagerId(val); }}>
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="Select manager…" />
                   </SelectTrigger>
@@ -438,13 +441,13 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
                   <p className="text-sm font-medium text-foreground">Add Activity</p>
                   <div className="space-y-1.5">
                     <Label>Kind</Label>
-                    <Select value={actKind} onValueChange={(val) => { if (val) setActKind(val); }}>
+                    <Select items={ACTIVITY_KIND_LABELS} value={actKind} onValueChange={(val) => { if (val) setActKind(val); }}>
                       <SelectTrigger className="w-full">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         {ACTIVITY_KINDS.map((k) => (
-                          <SelectItem key={k} value={k}>{k}</SelectItem>
+                          <SelectItem key={k} value={k}>{ACTIVITY_KIND_LABELS[k]}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>

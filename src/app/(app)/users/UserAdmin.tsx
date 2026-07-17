@@ -25,6 +25,8 @@ import { UserPlus, Loader2 } from "lucide-react";
 
 type Row = { id: string; email: string; name: string; role: string; status: string };
 
+const ROLE_LABELS: Record<string, string> = { MEMBER: "Member", COMPANY_ADMIN: "Company Admin" };
+
 function roleBadge(role: string) {
   if (role === "COMPANY_ADMIN") return <Badge variant="default">{role}</Badge>;
   return <Badge variant="secondary">{role}</Badge>;
@@ -157,7 +159,7 @@ export function UserAdmin({ initial }: { initial: Row[] }) {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="invite-role">Role</Label>
-              <Select value={role} onValueChange={(v) => setRole(v ?? "MEMBER")}>
+              <Select items={ROLE_LABELS} value={role} onValueChange={(v) => setRole(v ?? "MEMBER")}>
                 <SelectTrigger id="invite-role">
                   <SelectValue />
                 </SelectTrigger>

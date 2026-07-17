@@ -36,6 +36,8 @@ export function AccountCreate({ members }: { members: Member[] }) {
   const [accountManagerId, setAccountManagerId] = useState(members[0]?.id ?? "");
   const [loading, setLoading] = useState(false);
 
+  const managerItems = Object.fromEntries(members.map((m) => [m.id, m.name ?? m.email]));
+
   function reset() {
     setName("");
     setWebsite("");
@@ -152,7 +154,7 @@ export function AccountCreate({ members }: { members: Member[] }) {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="ac-manager">Account manager</Label>
-            <Select value={accountManagerId} onValueChange={(v) => { if (v !== null) setAccountManagerId(v); }}>
+            <Select items={managerItems} value={accountManagerId} onValueChange={(v) => { if (v !== null) setAccountManagerId(v); }}>
               <SelectTrigger id="ac-manager">
                 <SelectValue placeholder="Select manager" />
               </SelectTrigger>

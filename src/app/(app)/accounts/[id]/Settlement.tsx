@@ -58,6 +58,9 @@ type Props = {
 const money = (n: number) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
+const TYPE_LABELS: Record<string, string> = { COLLECTED: "Collected", TRANSFER: "Transfer" };
+const METHOD_LABELS: Record<string, string> = { CASH: "Cash", BANK_TRANSFER: "Bank account", MANUAL: "Manual" };
+
 function TypeBadge({ type }: { type: EntryType }) {
   if (type === "COLLECTED") {
     return (
@@ -229,7 +232,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>Type</Label>
-                  <Select value={type} onValueChange={(val) => { if (val) setType(val as EntryType); }}>
+                  <Select items={TYPE_LABELS} value={type} onValueChange={(val) => { if (val) setType(val as EntryType); }}>
                     <SelectTrigger className="w-full">
                       <SelectValue />
                     </SelectTrigger>
@@ -258,7 +261,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
                 <Label>
                   Method <span className="text-destructive">*</span>
                 </Label>
-                <Select value={method} onValueChange={(val) => { if (val) setMethod(val as EntryMethod); }}>
+                <Select items={METHOD_LABELS} value={method} onValueChange={(val) => { if (val) setMethod(val as EntryMethod); }}>
                   <SelectTrigger className="w-full">
                     <SelectValue />
                   </SelectTrigger>

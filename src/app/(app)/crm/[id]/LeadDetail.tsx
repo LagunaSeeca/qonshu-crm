@@ -59,6 +59,8 @@ type Props = {
 
 const ACTIVITY_KINDS = ["NOTE", "CALL", "MEETING", "EMAIL"] as const;
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH"] as const;
+const PRIORITY_LABELS: Record<string, string> = { LOW: "Low", MEDIUM: "Medium", HIGH: "High" };
+const ACTIVITY_KIND_LABELS: Record<string, string> = { NOTE: "Note", CALL: "Call", MEETING: "Meeting", EMAIL: "Email" };
 
 function activityIcon(kind: string) {
   switch (kind) {
@@ -224,6 +226,7 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
   const [converting, setConverting] = useState(false);
 
   const memberMap = Object.fromEntries(members.map((m) => [m.id, m.name]));
+  const stageItems = Object.fromEntries(stages.map((s) => [s.id, s.name]));
   const currentStage = stages.find((s) => s.id === stageId);
 
   async function handleConvert() {
@@ -314,13 +317,13 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
                 </div>
                 <div className="space-y-1.5">
                   <Label>Priority</Label>
-                  <Select value={priority} onValueChange={(val) => { if (val) setPriority(val); }}>
+                  <Select items={PRIORITY_LABELS} value={priority} onValueChange={(val) => { if (val) setPriority(val); }}>
                     <SelectTrigger className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {PRIORITIES.map((p) => (
-                        <SelectItem key={p} value={p}>{p}</SelectItem>
+                        <SelectItem key={p} value={p}>{PRIORITY_LABELS[p]}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -329,7 +332,7 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
 
               <div className="space-y-1.5">
                 <Label>Stage</Label>
-                <Select value={stageId} onValueChange={(val) => { if (val) handleMove(val); }}>
+                <Select items={stageItems} value={stageId} onValueChange={(val) => { if (val) handleMove(val); }}>
                   <SelectTrigger className="w-full">
                     <SelectValue />
                   </SelectTrigger>
@@ -422,13 +425,13 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
                   <p className="text-sm font-medium text-foreground">Add Activity</p>
                   <div className="space-y-1.5">
                     <Label>Kind</Label>
-                    <Select value={actKind} onValueChange={(val) => { if (val) setActKind(val); }}>
+                    <Select items={ACTIVITY_KIND_LABELS} value={actKind} onValueChange={(val) => { if (val) setActKind(val); }}>
                       <SelectTrigger className="w-full">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         {ACTIVITY_KINDS.map((k) => (
-                          <SelectItem key={k} value={k}>{k}</SelectItem>
+                          <SelectItem key={k} value={k}>{ACTIVITY_KIND_LABELS[k]}</SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
