@@ -19,7 +19,10 @@ function createPrismaClient(): PrismaClient {
 const prisma = createPrismaClient();
 
 async function main() {
-  const pw = await hashPassword("password123");
+  // Local dev keeps the convenient shared password; production MUST set SEED_PASSWORD
+  // to a strong value so the demo logins aren't a public back door.
+  const seedPassword = process.env.SEED_PASSWORD ?? "password123";
+  const pw = await hashPassword(seedPassword);
 
   await prisma.user.upsert({
     where: { email: "super@qonshu.dev" },
@@ -62,7 +65,7 @@ async function main() {
     },
   });
 
-  console.log("seeded: super@qonshu.dev / admin@demo.co / member@demo.co (password123)");
+  console.log(`seeded: super@qonshu.dev / admin@demo.co / member@demo.co (password: ${process.env.SEED_PASSWORD ? "from SEED_PASSWORD env" : "password123"})`);
 
   // Seed default stages
   await seedDefaultStages(prisma, co.id);
@@ -271,7 +274,7 @@ async function main() {
     },
   });
 
-  console.log(`seeded: partner@demo.co / password123 (read-only, scoped to ${firstDemoAccount.name})`);
+  console.log(`seeded: partner@demo.co (read-only, scoped to ${firstDemoAccount.name})`);
 
   // Seed mock analytics for each demo account
   const source = new MockPartnerAnalyticsSource();
