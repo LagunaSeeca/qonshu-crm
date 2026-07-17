@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Qonshu CRM — Partner App API Requirements</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: #0f172a; font-size: 10.5pt; line-height: 1.55; margin: 0;
+  }
+  header.cover { border-bottom: 3px solid #0f172a; padding-bottom: 14px; margin-bottom: 22px; }
+  .brand { font-size: 13pt; font-weight: 700; letter-spacing: .04em; color: #0369a1; text-transform: uppercase; }
+  h1 { font-size: 22pt; margin: 6px 0 4px; line-height: 1.2; }
+  .sub { color: #475569; font-size: 10pt; margin: 0; }
+  .meta { margin-top: 10px; font-size: 9pt; color: #64748b; }
+  h2 {
+    font-size: 13pt; margin: 26px 0 8px; padding-bottom: 5px;
+    border-bottom: 1px solid #e2e8f0; break-after: avoid;
+  }
+  h3 { font-size: 11pt; margin: 16px 0 6px; color: #0f172a; break-after: avoid; }
+  p { margin: 7px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 14px; font-size: 9.5pt; break-inside: avoid; }
+  th, td { border: 1px solid #e2e8f0; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f1f5f9; font-weight: 600; }
+  td.f, th.f { white-space: nowrap; }
+  code {
+    font-family: "Consolas", "SF Mono", Menlo, monospace; font-size: 9pt;
+    background: #f1f5f9; padding: 1px 5px; border-radius: 4px; color: #0f172a;
+  }
+  pre {
+    background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 6px;
+    font-family: "Consolas", "SF Mono", Menlo, monospace; font-size: 8.6pt; line-height: 1.5;
+    overflow: visible; white-space: pre-wrap; break-inside: avoid; margin: 8px 0 14px;
+  }
+  pre .k { color: #7dd3fc; }
+  .note {
+    background: #f0f9ff; border-left: 3px solid #0369a1; padding: 9px 12px;
+    margin: 10px 0 14px; font-size: 9.5pt; break-inside: avoid;
+  }
+  .flow { display: flex; gap: 10px; align-items: stretch; margin: 10px 0 16px; break-inside: avoid; }
+  .flow div {
+    flex: 1; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 12px; font-size: 9.5pt;
+  }
+  .flow .lbl { font-weight: 700; font-size: 8.5pt; text-transform: uppercase; letter-spacing: .05em; color: #0369a1; display: block; margin-bottom: 3px; }
+  .arrow { flex: 0 0 auto; display: flex; align-items: center; font-size: 15pt; color: #94a3b8; }
+  ol { margin: 8px 0 14px; padding-left: 20px; }
+  ol li { margin: 5px 0; }
+  footer { margin-top: 26px; border-top: 1px solid #e2e8f0; padding-top: 10px; font-size: 8.5pt; color: #94a3b8; }
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <div class="brand">Qonshu CRM</div>
+  <h1>Partner App API — Data Requirements</h1>
+  <p class="sub">What the CRM needs from the mobile-app backend</p>
+  <div class="meta">Version 1.0 &nbsp;·&nbsp; 17 July 2026 &nbsp;·&nbsp; For: Backend team (Django)</div>
+</header>
+
+<h2>1. Overview</h2>
+<p>
+  Qonshu CRM shows an <strong>Analytics</strong> view for every partner company that uses the mobile app.
+  To populate it, the CRM sends a <strong>partner</strong> and a <strong>date range</strong>, and expects that
+  partner's numbers for that range in return.
+</p>
+
+<div class="flow">
+  <div><span class="lbl">We send</span>Partner company<br>Date from → Date to</div>
+  <div class="arrow">→</div>
+  <div><span class="lbl">You return</span>User counts, installations, payment totals &amp; breakdowns, and the payments list</div>
+</div>
+
+<div class="note">
+  <strong>Read-only.</strong> The CRM never writes to your system. One endpoint is enough.
+</div>
+
+<h2>2. Request</h2>
+<pre>GET /api/qonshu/partner-stats?partner=Acme+Towers&amp;date_from=2026-07-01&amp;date_to=2026-07-31</pre>
+<table>
+  <tr><th class="f">Parameter</th><th class="f">Example</th><th>Notes</th></tr>
+  <tr><td class="f"><code>partner</code></td><td class="f">Acme Towers</td><td>The partner company. If you have a stable partner <strong>id</strong>, we'd rather send that than the name.</td></tr>
+  <tr><td class="f"><code>date_from</code></td><td class="f">2026-07-01</td><td>Start of the range (inclusive).</td></tr>
+  <tr><td class="f"><code>date_to</code></td><td class="f">2026-07-31</td><td>End of the range (inclusive).</td></tr>
+</table>
+
+<h2>3. Response</h2>
+
+<h3>A. Users</h3>
+<table>
+  <tr><th class="f">Field</th><th class="f">Type</th><th>Meaning</th></tr>
+  <tr><td class="f"><code>total_users</code></td><td class="f">number</td><td>All app users of this partner.</td></tr>
+  <tr><td class="f"><code>active_users</code></td><td class="f">number</td><td>Users currently active in your system.</td></tr>
+  <tr><td class="f"><code>engaged_users</code></td><td class="f">number</td><td>Users who made <strong>at least one payment</strong> within the date range.</td></tr>
+  <tr><td class="f"><code>total_debt</code></td><td class="f">number</td><td>Total amount currently owed by this partner's users.</td></tr>
+</table>
+
+<h3>B. Installations</h3>
+<table>
+  <tr><th class="f">Field</th><th class="f">Type</th><th>Meaning</th></tr>
+  <tr><td class="f"><code>total_installations</code></td><td class="f">number</td><td>How many users installed the app.</td></tr>
+  <tr><td class="f"><code>ios_installations</code></td><td class="f">number</td><td>Installed on iOS.</td></tr>
+  <tr><td class="f"><code>android_installations</code></td><td class="f">number</td><td>Installed on Android.</td></tr>
+  <tr><td class="f"><code>logged_in_users</code></td><td class="f">number</td><td>Installed <strong>and</strong> logged in at least once — this is how we measure real usage, not just downloads.</td></tr>
+</table>
+
+<h3>C. Payments in the date range</h3>
+<table>
+  <tr><th class="f">Field</th><th class="f">Type</th><th>Meaning</th></tr>
+  <tr><td class="f"><code>total_payments_count</code></td><td class="f">number</td><td>How many payments were made.</td></tr>
+  <tr><td class="f"><code>total_payments_amount</code></td><td class="f">number</td><td>Total money paid.</td></tr>
+  <tr><td class="f"><code>amount_by_card</code></td><td class="f">number</td><td>Of that total — paid by card.</td></tr>
+  <tr><td class="f"><code>amount_by_manual</code></td><td class="f">number</td><td>Of that total — recorded manually.</td></tr>
+  <tr><td class="f"><code>amount_by_cash</code></td><td class="f">number</td><td>Of that total — paid in cash.</td></tr>
+  <tr><td class="f"><code>utility_payments_count</code></td><td class="f">number</td><td>How many utility payments.</td></tr>
+  <tr><td class="f"><code>utility_payments_amount</code></td><td class="f">number</td><td>Total utility amount.</td></tr>
+  <tr><td class="f"><code>apartment_payments_amount</code></td><td class="f">number</td><td>Total for apartments.</td></tr>
+  <tr><td class="f"><code>parking_payments_amount</code></td><td class="f">number</td><td>Total for parking.</td></tr>
+  <tr><td class="f"><code>non_residential_payments_amount</code></td><td class="f">number</td><td>Total for non-residential units.</td></tr>
+</table>
+<div class="note">
+  The three <strong>method</strong> amounts (card + manual + cash) should add up to <code>total_payments_amount</code>.
+  The four <strong>category</strong> amounts (utility + apartment + parking + non-residential) should also add up to it.
+</div>
+
+<h3>D. Payments list</h3>
+<p>The individual payments in the range, so the CRM can show a transactions table.</p>
+<table>
+  <tr><th class="f">Field</th><th class="f">Type</th><th>Meaning</th></tr>
+  <tr><td class="f"><code>id</code></td><td class="f">string</td><td>Your id for the payment.</td></tr>
+  <tr><td class="f"><code>user_id</code></td><td class="f">string</td><td>Who paid.</td></tr>
+  <tr><td class="f"><code>user_name</code></td><td class="f">string</td><td>Their name (or a label, if names can't be shared).</td></tr>
+  <tr><td class="f"><code>date</code></td><td class="f">datetime</td><td>When the payment happened.</td></tr>
+  <tr><td class="f"><code>amount</code></td><td class="f">number</td><td>How much.</td></tr>
+  <tr><td class="f"><code>method</code></td><td class="f">enum</td><td><code>CARD</code> · <code>MANUAL</code> · <code>CASH</code></td></tr>
+  <tr><td class="f"><code>category</code></td><td class="f">enum</td><td><code>APARTMENT</code> · <code>PARKING</code> · <code>NON_RESIDENTIAL</code> · <code>UTILITY</code></td></tr>
+</table>
+
+<h2>4. Example</h2>
+<pre>{
+  <span class="k">"partner"</span>: "Acme Towers",
+  <span class="k">"date_from"</span>: "2026-07-01",
+  <span class="k">"date_to"</span>: "2026-07-31",
+
+  <span class="k">"total_users"</span>: 1342,
+  <span class="k">"active_users"</span>: 1180,
+  <span class="k">"engaged_users"</span>: 640,
+  <span class="k">"total_debt"</span>: 18420.75,
+
+  <span class="k">"total_installations"</span>: 1200,
+  <span class="k">"ios_installations"</span>: 520,
+  <span class="k">"android_installations"</span>: 680,
+  <span class="k">"logged_in_users"</span>: 900,
+
+  <span class="k">"total_payments_count"</span>: 3120,
+  <span class="k">"total_payments_amount"</span>: 154300.50,
+  <span class="k">"amount_by_card"</span>: 120400.00,
+  <span class="k">"amount_by_manual"</span>: 21900.50,
+  <span class="k">"amount_by_cash"</span>: 12000.00,
+
+  <span class="k">"utility_payments_count"</span>: 810,
+  <span class="k">"utility_payments_amount"</span>: 39200.00,
+  <span class="k">"apartment_payments_amount"</span>: 82100.50,
+  <span class="k">"parking_payments_amount"</span>: 21000.00,
+  <span class="k">"non_residential_payments_amount"</span>: 12000.00,
+
+  <span class="k">"payments"</span>: [
+    {
+      <span class="k">"id"</span>: "pay_558210",
+      <span class="k">"user_id"</span>: "usr_10293",
+      <span class="k">"user_name"</span>: "Aysel Mammadova",
+      <span class="k">"date"</span>: "2026-07-14T09:21:00Z",
+      <span class="k">"amount"</span>: 149.90,
+      <span class="k">"method"</span>: "CARD",
+      <span class="k">"category"</span>: "UTILITY"
+    }
+  ]
+}</pre>
+
+<h2>5. Format notes</h2>
+<table>
+  <tr><th class="f">Topic</th><th>Rule</th></tr>
+  <tr><td class="f">Dates</td><td>ISO format — <code>2026-07-01</code> for the range, <code>2026-07-14T09:21:00Z</code> for timestamps.</td></tr>
+  <tr><td class="f">Money</td><td>Number with 2 decimals — <code>149.90</code>.</td></tr>
+  <tr><td class="f">No data</td><td>Return the same structure with <code>0</code>s and an empty <code>payments</code> list — not an error.</td></tr>
+  <tr><td class="f">Long lists</td><td>If <code>payments</code> is very long, paginate it — but keep the totals complete for the whole range.</td></tr>
+</table>
+
+<h2>6. Please confirm</h2>
+<ol>
+  <li>Do the <strong>method</strong> values (card / manual / cash) and <strong>category</strong> values (apartment / parking / non-residential / utility) match your system? If you have more, please send the full list.</li>
+  <li>Can you provide <strong><code>logged_in_users</code></strong> — users who installed <em>and</em> logged in? This is our key usage metric.</li>
+  <li>How do you handle <strong>refunds / cancelled payments</strong> — excluded, or sent as negative amounts?</li>
+  <li>Is there a <strong>partner id</strong> we should send instead of the company name?</li>
+  <li>Can you also expose a <strong>list of partners</strong> (id + name), so we can match them to our records automatically?</li>
+</ol>
+
+<footer>
+  Qonshu CRM · Partner App API Data Requirements · v1.0 · 17 July 2026
+</footer>
+
+</body>
+</html>
