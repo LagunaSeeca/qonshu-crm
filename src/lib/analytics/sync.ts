@@ -6,8 +6,14 @@ export async function syncAccountAnalytics(db: PrismaClient, accountId: string, 
   for (const u of rawUsers) {
     await db.partnerAppUser.upsert({
       where: { accountId_externalId: { accountId, externalId: u.externalId } },
-      update: { name: u.name, active: u.active, debt: u.debt, joinedAt: u.joinedAt },
-      create: { companyId, accountId, externalId: u.externalId, name: u.name, active: u.active, debt: u.debt, joinedAt: u.joinedAt },
+      update: {
+        name: u.name, active: u.active, debt: u.debt, joinedAt: u.joinedAt,
+        platform: u.platform, installedAt: u.installedAt, lastLoginAt: u.lastLoginAt, appToken: u.appToken,
+      },
+      create: {
+        companyId, accountId, externalId: u.externalId, name: u.name, active: u.active, debt: u.debt, joinedAt: u.joinedAt,
+        platform: u.platform, installedAt: u.installedAt, lastLoginAt: u.lastLoginAt, appToken: u.appToken,
+      },
     });
   }
   const idByExternal = new Map((await db.partnerAppUser.findMany({ where: { accountId } })).map((u) => [u.externalId, u.id]));

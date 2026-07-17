@@ -304,19 +304,29 @@ enum PaymentCategory {
   UTILITY
 }
 
+enum AppPlatform {
+  IOS
+  ANDROID
+  UNKNOWN
+}
+
 model PartnerAppUser {
-  id         String   @id @default(cuid())
-  companyId  String
-  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  accountId  String
-  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  externalId String
-  name       String
-  active     Boolean  @default(true)
-  debt       Decimal  @default(0)
-  joinedAt   DateTime
-  createdAt  DateTime @default(now())
-  payments   PartnerPayment[]
+  id          String      @id @default(cuid())
+  companyId   String
+  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  externalId  String
+  name        String
+  active      Boolean     @default(true)
+  debt        Decimal     @default(0)
+  joinedAt    DateTime
+  platform    AppPlatform @default(UNKNOWN)
+  installedAt DateTime?
+  lastLoginAt DateTime?
+  appToken    String?
+  createdAt   DateTime    @default(now())
+  payments    PartnerPayment[]
   @@unique([accountId, externalId])
   @@index([companyId, accountId])
   @@index([accountId, active])

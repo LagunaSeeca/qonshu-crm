@@ -1,6 +1,16 @@
-import type { PaymentMethod, PaymentCategory } from "@prisma/client";
+import type { PaymentMethod, PaymentCategory, AppPlatform } from "@prisma/client";
 
-export type RawUser = { externalId: string; name: string; active: boolean; debt: number; joinedAt: Date };
+export type RawUser = {
+  externalId: string;
+  name: string;
+  active: boolean;
+  debt: number;
+  joinedAt: Date;
+  platform: AppPlatform;
+  installedAt: Date | null;
+  lastLoginAt: Date | null;
+  appToken: string | null;
+};
 export type RawPayment = { externalUserId: string; occurredAt: Date; amount: number; method: PaymentMethod; category: PaymentCategory };
 export interface PartnerAnalyticsSource {
   fetchUsers(accountId: string): Promise<RawUser[]>;
@@ -16,16 +26,29 @@ function seedFrom(id: string): () => number {
 }
 const METHODS: PaymentMethod[] = ["CARD", "MANUAL", "CASH"];
 const CATS: PaymentCategory[] = ["APARTMENT", "PARKING", "NON_RESIDENTIAL", "UTILITY"];
+const PLATFORMS: AppPlatform[] = ["IOS", "ANDROID"];
 
 export class MockPartnerAnalyticsSource implements PartnerAnalyticsSource {
   async fetchUsers(accountId: string): Promise<RawUser[]> {
     const rnd = seedFrom(accountId + ":u");
     const n = 8 + Math.floor(rnd() * 8);
-    return Array.from({ length: n }, (_, i) => ({
-      externalId: `${accountId}-u${i}`, name: `App User ${i + 1}`,
-      active: rnd() > 0.2, debt: Math.round(rnd() * 500 * 100) / 100,
-      joinedAt: new Date(Date.now() - Math.floor(rnd() * 365) * 86400000),
-    }));
+    return Array.from({ length: n }, (_, i) => {
+      const installedAt = new Date(Date.now() - Math.floor(rnd() * 365) * 86400000);
+      // Deliberate subset: only ~60% of installs ever log in, so activation rate is meaningful
+      // (installs alone don't prove usage) rather than trivially 100%.
+      const activated = rnd() < 0.6;
+      const lastLoginAt = activated
+        ? new Date(installedAt.getTime() + Math.floor(rnd() * 30) * 86400000)
+        : null;
+      const appToken = activated ? `tok_${accountId}_${i}_${Math.floor(rnd() * 1e9).toString(36)}` : null;
+      return {
+        externalId: `${accountId}-u${i}`, name: `App User ${i + 1}`,
+        active: rnd() > 0.2, debt: Math.round(rnd() * 500 * 100) / 100,
+        joinedAt: new Date(Date.now() - Math.floor(rnd() * 365) * 86400000),
+        platform: PLATFORMS[Math.floor(rnd() * PLATFORMS.length)],
+        installedAt, lastLoginAt, appToken,
+      };
+    });
   }
   async fetchPayments(accountId: string, since: Date): Promise<RawPayment[]> {
     const users = await this.fetchUsers(accountId);
