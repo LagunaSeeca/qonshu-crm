@@ -8,7 +8,8 @@ import { Topbar } from "@/components/Topbar";
 
 // Partner logins are read-only and tied to exactly one account — everywhere else in the
 // tenant app (CRM, accounts, reports, users…) is off-limits and bounces to /analytics.
-const PARTNER_ALLOWED_PREFIXES = ["/analytics", "/settlements", "/service-fees"];
+// /profile is the one exception: changing their own password is the only write a partner may perform.
+const PARTNER_ALLOWED_PREFIXES = ["/analytics", "/settlements", "/service-fees", "/profile"];
 
 function isPartnerAllowed(pathname: string): boolean {
   return PARTNER_ALLOWED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));

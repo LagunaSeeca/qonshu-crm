@@ -1,8 +1,9 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { signOut } from "next-auth/react";
-import { Sun, Moon, LogOut, ChevronDown } from "lucide-react";
+import { Sun, Moon, LogOut, ChevronDown, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -36,6 +37,7 @@ export function Topbar({
   userEmail,
 }: TopbarProps) {
   const { theme, setTheme } = useTheme();
+  const router = useRouter();
 
   function toggleTheme() {
     setTheme(theme === "dark" ? "light" : "dark");
@@ -102,6 +104,14 @@ export function Topbar({
                 </div>
               </DropdownMenuLabel>
             </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => router.push("/profile")}
+              className="cursor-pointer gap-2"
+            >
+              <KeyRound size={14} aria-hidden="true" />
+              Change password
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={handleSignOut}
