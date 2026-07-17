@@ -253,6 +253,26 @@ async function main() {
 
   console.log(`seeded: 2 demo accounts with activities, tasks, and asks`);
 
+  // Seed a demo partner login, tied to the first demo account (Acme Enterprise).
+  // PARTNER_VIEWER is read-only and scoped to exactly this one account.
+  const firstDemoAccount = await prisma.account.findFirstOrThrow({
+    where: { companyId: co.id, name: demoAccounts[0].name },
+  });
+  await prisma.user.upsert({
+    where: { email: "partner@demo.co" },
+    update: { accountId: firstDemoAccount.id, role: "PARTNER_VIEWER" },
+    create: {
+      companyId: co.id,
+      email: "partner@demo.co",
+      name: "Demo Partner",
+      passwordHash: pw,
+      role: "PARTNER_VIEWER",
+      accountId: firstDemoAccount.id,
+    },
+  });
+
+  console.log(`seeded: partner@demo.co / password123 (read-only, scoped to ${firstDemoAccount.name})`);
+
   // Seed mock analytics for each demo account
   const source = new MockPartnerAnalyticsSource();
   let totalAppUsers = 0;
