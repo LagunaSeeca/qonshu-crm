@@ -17,7 +17,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 const Patch = z.object({
   name: z.string().min(1).optional(), website: z.string().nullable().optional(),
   industry: z.string().nullable().optional(), status: z.enum(["ACTIVE","AT_RISK","CHURNED"]).optional(),
-  accountManagerId: z.string().optional(), value: z.number().nonnegative().optional(),
+  accountManagerId: z.string().optional(),
   primaryContactName: z.string().nullable().optional(), primaryContactEmail: z.string().email().nullable().optional(),
   primaryContactPhone: z.string().nullable().optional(),
 });

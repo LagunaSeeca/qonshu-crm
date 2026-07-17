@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
     const sp = req.nextUrl.searchParams;
     const leads = await listLeads(prisma, user, {
       stageId: sp.get("stageId") ?? undefined, ownerId: sp.get("ownerId") ?? undefined,
-      q: sp.get("q") ?? undefined, sort: (sp.get("sort") as "value" | "createdAt" | null) ?? undefined,
+      q: sp.get("q") ?? undefined, sort: (sp.get("sort") as "createdAt" | null) ?? undefined,
       skip: sp.get("skip") ? Number(sp.get("skip")) : undefined, take: sp.get("take") ? Number(sp.get("take")) : undefined,
     });
     return NextResponse.json(leads);
@@ -22,7 +22,7 @@ const Create = z.object({
   title: z.string().min(1), contactName: z.string().min(1), stageId: z.string().min(1),
   email: z.string().email().optional().or(z.literal("")), phone: z.string().optional(),
   companyName: z.string().optional(), source: z.string().optional(),
-  value: z.number().nonnegative().optional(), priority: z.enum(["LOW","MEDIUM","HIGH"]).optional(),
+  priority: z.enum(["LOW","MEDIUM","HIGH"]).optional(),
   ownerId: z.string().optional(), expectedCloseDate: z.string().datetime().optional(),
 });
 export async function POST(req: NextRequest) {

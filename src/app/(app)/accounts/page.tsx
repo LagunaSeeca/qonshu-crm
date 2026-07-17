@@ -26,7 +26,6 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
     name: a.name,
     status: a.status,
     managerName: a.accountManagerId ? (userMap[a.accountManagerId] ?? "—") : "—",
-    value: Number(a.value),
     industry: a.industry,
   }));
 

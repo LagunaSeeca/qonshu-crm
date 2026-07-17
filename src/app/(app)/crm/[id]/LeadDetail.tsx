@@ -42,7 +42,6 @@ type Lead = {
   email: string | null;
   phone: string | null;
   companyName: string | null;
-  value: number;
   priority: string;
   stageId: string;
   lostReason: string | null;
@@ -97,7 +96,6 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
   const [email, setEmail] = useState(lead.email ?? "");
   const [phone, setPhone] = useState(lead.phone ?? "");
   const [companyName, setCompanyName] = useState(lead.companyName ?? "");
-  const [value, setValue] = useState(String(lead.value));
   const [priority, setPriority] = useState(lead.priority);
   const [stageId, setStageId] = useState(lead.stageId);
   const [saving, setSaving] = useState(false);
@@ -108,7 +106,7 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
     const res = await fetch(`/api/leads/${lead.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title, contactName, email: email || null, phone: phone || null, companyName: companyName || null, value: Number(value), priority }),
+      body: JSON.stringify({ title, contactName, email: email || null, phone: phone || null, companyName: companyName || null, priority }),
     });
     setSaving(false);
     if (!res.ok) {
@@ -310,24 +308,18 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
                 <Input id="companyName" value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="value">Value ($)</Label>
-                  <Input id="value" type="number" min="0" value={value} onChange={(e) => setValue(e.target.value)} className="tabular-nums" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Priority</Label>
-                  <Select items={PRIORITY_LABELS} value={priority} onValueChange={(val) => { if (val) setPriority(val); }}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {PRIORITIES.map((p) => (
-                        <SelectItem key={p} value={p}>{PRIORITY_LABELS[p]}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="space-y-1.5">
+                <Label>Priority</Label>
+                <Select items={PRIORITY_LABELS} value={priority} onValueChange={(val) => { if (val) setPriority(val); }}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRIORITIES.map((p) => (
+                      <SelectItem key={p} value={p}>{PRIORITY_LABELS[p]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="space-y-1.5">

@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
 }
 const Create = z.object({ name: z.string().min(1), website: z.string().optional(), industry: z.string().optional(),
   status: z.enum(["ACTIVE","AT_RISK","CHURNED"]).optional(), accountManagerId: z.string().optional(),
-  value: z.number().nonnegative().optional(), primaryContactName: z.string().optional(),
+  primaryContactName: z.string().optional(),
   primaryContactEmail: z.string().email().optional().or(z.literal("")), primaryContactPhone: z.string().optional() });
 export async function POST(req: NextRequest) {
   try {

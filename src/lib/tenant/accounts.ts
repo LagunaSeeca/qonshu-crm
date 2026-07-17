@@ -13,13 +13,13 @@ export function accountScopeWhere(user: SessionUser): { companyId: string } {
 
 export function createAccount(db: PrismaClient, user: SessionUser, data: {
   name: string; website?: string; industry?: string; status?: AccountStatus;
-  accountManagerId?: string; value?: number | string; primaryContactName?: string;
+  accountManagerId?: string; primaryContactName?: string;
   primaryContactEmail?: string; primaryContactPhone?: string; sourceLeadId?: string;
 }): Promise<Account> {
   return db.account.create({ data: {
     companyId: user.companyId!, name: data.name, website: data.website, industry: data.industry,
     status: data.status ?? "ACTIVE", accountManagerId: data.accountManagerId ?? user.id,
-    value: data.value ?? 0, primaryContactName: data.primaryContactName,
+    primaryContactName: data.primaryContactName,
     primaryContactEmail: data.primaryContactEmail, primaryContactPhone: data.primaryContactPhone,
     sourceLeadId: data.sourceLeadId ?? null,
   } });
@@ -42,7 +42,7 @@ export function getAccount(db: PrismaClient, user: SessionUser, id: string): Pro
 
 export async function updateAccount(db: PrismaClient, user: SessionUser, id: string, data: Partial<{
   name: string; website: string | null; industry: string | null; status: AccountStatus;
-  accountManagerId: string; value: number | string; primaryContactName: string | null;
+  accountManagerId: string; primaryContactName: string | null;
   primaryContactEmail: string | null; primaryContactPhone: string | null;
 }>): Promise<Account> {
   const found = await getAccount(db, user, id);
@@ -69,7 +69,7 @@ export async function convertLeadToAccount(db: PrismaClient, user: SessionUser, 
   const existing = await db.account.findFirst({ where: { companyId: user.companyId!, sourceLeadId: leadId } });
   if (existing) throw new AlreadyConvertedError("lead already converted");
   return createAccount(db, user, {
-    name: lead.companyName ?? lead.title, value: lead.value as unknown as number,
+    name: lead.companyName ?? lead.title,
     accountManagerId: lead.ownerId, primaryContactName: lead.contactName,
     primaryContactEmail: lead.email ?? undefined, primaryContactPhone: lead.phone ?? undefined,
     sourceLeadId: lead.id,

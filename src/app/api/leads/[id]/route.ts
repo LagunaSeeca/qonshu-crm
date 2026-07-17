@@ -17,7 +17,7 @@ const Patch = z.object({
   title: z.string().min(1).optional(), contactName: z.string().min(1).optional(),
   email: z.string().email().nullable().optional(), phone: z.string().nullable().optional(),
   companyName: z.string().nullable().optional(), source: z.string().nullable().optional(),
-  value: z.number().nonnegative().optional(), priority: z.enum(["LOW","MEDIUM","HIGH"]).optional(),
+  priority: z.enum(["LOW","MEDIUM","HIGH"]).optional(),
   ownerId: z.string().optional(), expectedCloseDate: z.string().datetime().nullable().optional(),
 });
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

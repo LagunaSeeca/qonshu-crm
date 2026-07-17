@@ -14,7 +14,6 @@ export type LeadRow = {
   title: string;
   contactName: string;
   stageName: string;
-  value: number;
   priority: string;
   ownerName: string;
 };
@@ -86,7 +85,6 @@ export function LeadTable({ rows }: { rows: LeadRow[] }) {
             <TableHead className="font-semibold text-foreground">Stage</TableHead>
             <TableHead className="font-semibold text-foreground">Owner</TableHead>
             <TableHead className="font-semibold text-foreground">Priority</TableHead>
-            <TableHead className="text-right font-semibold text-foreground">Value</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -107,9 +105,6 @@ export function LeadTable({ rows }: { rows: LeadRow[] }) {
               <TableCell className="text-muted-foreground">{r.ownerName}</TableCell>
               <TableCell>
                 <PriorityBadge priority={r.priority} />
-              </TableCell>
-              <TableCell className="text-right tabular-nums font-medium">
-                {r.value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}
               </TableCell>
             </TableRow>
           ))}

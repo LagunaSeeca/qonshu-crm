@@ -30,7 +30,6 @@ export function AccountCreate({ members }: { members: Member[] }) {
   const [name, setName] = useState("");
   const [website, setWebsite] = useState("");
   const [industry, setIndustry] = useState("");
-  const [value, setValue] = useState("");
   const [primaryContactName, setPrimaryContactName] = useState("");
   const [primaryContactEmail, setPrimaryContactEmail] = useState("");
   const [accountManagerId, setAccountManagerId] = useState(members[0]?.id ?? "");
@@ -42,7 +41,6 @@ export function AccountCreate({ members }: { members: Member[] }) {
     setName("");
     setWebsite("");
     setIndustry("");
-    setValue("");
     setPrimaryContactName("");
     setPrimaryContactEmail("");
     setAccountManagerId(members[0]?.id ?? "");
@@ -59,7 +57,6 @@ export function AccountCreate({ members }: { members: Member[] }) {
           name,
           website: website || undefined,
           industry: industry || undefined,
-          value: value ? Number(value) : undefined,
           primaryContactName: primaryContactName || undefined,
           primaryContactEmail: primaryContactEmail || undefined,
           accountManagerId: accountManagerId || undefined,
@@ -110,28 +107,14 @@ export function AccountCreate({ members }: { members: Member[] }) {
               onChange={(e) => setWebsite(e.target.value)}
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="ac-industry">Industry</Label>
-              <Input
-                id="ac-industry"
-                placeholder="e.g. SaaS"
-                value={industry}
-                onChange={(e) => setIndustry(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="ac-value">Value (USD)</Label>
-              <Input
-                id="ac-value"
-                type="number"
-                min={0}
-                placeholder="0"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                className="tabular-nums"
-              />
-            </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ac-industry">Industry</Label>
+            <Input
+              id="ac-industry"
+              placeholder="e.g. SaaS"
+              value={industry}
+              onChange={(e) => setIndustry(e.target.value)}
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="ac-contact-name">Primary contact name</Label>

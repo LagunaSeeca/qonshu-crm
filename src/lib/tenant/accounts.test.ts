@@ -20,7 +20,7 @@ describe("accounts", () => {
 
   it("creates and lists accounts; cross-tenant getAccount is null", async () => {
     const A = await setup("a-acs");
-    const acc = await createAccount(testPrisma, A.user, { name: "Partner", value: 1000 });
+    const acc = await createAccount(testPrisma, A.user, { name: "Partner" });
     expect((await listAccounts(testPrisma, A.user)).length).toBe(1);
     const B = await setup("b-acs");
     expect(await getAccount(testPrisma, B.user, acc.id)).toBeNull();
@@ -29,12 +29,11 @@ describe("accounts", () => {
   it("converts a WON lead, carries fields, links sourceLeadId, keeps lead, blocks double-convert", async () => {
     const { stages, user } = await setup("a-conv");
     const won = stages.find((s) => s.type === "WON")!;
-    const lead = await createLead(testPrisma, user, { title: "BigCo deal", contactName: "Jane", companyName: "BigCo", stageId: stages[0].id, value: 7000 });
+    const lead = await createLead(testPrisma, user, { title: "BigCo deal", contactName: "Jane", companyName: "BigCo", stageId: stages[0].id });
     await moveLeadStage(testPrisma, user, lead.id, won.id);
     const acc = await convertLeadToAccount(testPrisma, user, lead.id);
     expect(acc.name).toBe("BigCo");
     expect(acc.sourceLeadId).toBe(lead.id);
-    expect(Number(acc.value)).toBe(7000);
     expect(await testPrisma.lead.findUnique({ where: { id: lead.id } })).not.toBeNull();
     await expect(convertLeadToAccount(testPrisma, user, lead.id)).rejects.toThrow(AlreadyConvertedError);
   });

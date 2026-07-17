@@ -7,7 +7,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 const base = {
-  lead: { id: "l1", title: "Acme", contactName: "Jane", email: "j@a.com", phone: "", companyName: "Acme", value: 1000, priority: "HIGH", stageId: "s1", lostReason: null },
+  lead: { id: "l1", title: "Acme", contactName: "Jane", email: "j@a.com", phone: "", companyName: "Acme", priority: "HIGH", stageId: "s1", lostReason: null },
   stages: [{ id: "s1", name: "New", type: "OPEN" }],
   activities: [{ id: "a1", kind: "NOTE", body: "called", outcome: null, occurredAt: new Date().toISOString(), authorId: "u" }],
   tasks: [{ id: "t1", title: "follow up", dueDate: null, done: false }],

@@ -82,7 +82,6 @@ async function main() {
       contactName: "John Smith",
       email: "john@acme.com",
       companyName: "Acme Corporation",
-      value: 50000,
       priority: "HIGH" as const,
       stageId: stages[0]?.id, // New
       ownerId: admin.id,
@@ -92,7 +91,6 @@ async function main() {
       contactName: "Sarah Johnson",
       email: "sarah@techstart.com",
       companyName: "TechStart Inc",
-      value: 75000,
       priority: "HIGH" as const,
       stageId: stages[2]?.id, // Qualified
       ownerId: member.id,
@@ -102,7 +100,6 @@ async function main() {
       contactName: "Michael Chen",
       email: "michael@global.com",
       companyName: "Global Industries",
-      value: 125000,
       priority: "MEDIUM" as const,
       stageId: stages[3]?.id, // Proposal
       ownerId: admin.id,
@@ -112,7 +109,6 @@ async function main() {
       contactName: "Emma Davis",
       email: "emma@startupx.com",
       companyName: "StartupX",
-      value: 35000,
       priority: "LOW" as const,
       stageId: stages[4]?.id, // Negotiation
       ownerId: member.id,
@@ -129,8 +125,6 @@ async function main() {
         contactName: leadData.contactName,
         email: leadData.email,
         companyName: leadData.companyName,
-        value: leadData.value,
-        currency: "USD",
         priority: leadData.priority,
         stageId: leadData.stageId,
         ownerId: leadData.ownerId,
@@ -173,7 +167,6 @@ async function main() {
     {
       name: "Acme Enterprise",
       industry: "Technology",
-      value: 250000,
       status: "ACTIVE" as const,
       primaryContactName: "Alice Williams",
       primaryContactEmail: "alice@acme-ent.com",
@@ -182,7 +175,6 @@ async function main() {
     {
       name: "TechFlow Solutions",
       industry: "Software",
-      value: 180000,
       status: "AT_RISK" as const,
       primaryContactName: "Bob Martinez",
       primaryContactEmail: "bob@techflow.com",
@@ -198,8 +190,6 @@ async function main() {
         companyId: co.id,
         name: accountData.name,
         industry: accountData.industry,
-        value: accountData.value,
-        currency: "USD",
         status: accountData.status,
         primaryContactName: accountData.primaryContactName,
         primaryContactEmail: accountData.primaryContactEmail,

@@ -43,7 +43,6 @@ type Account = {
   status: string;
   website: string | null;
   industry: string | null;
-  value: number;
   accountManagerId: string | null;
   primaryContactName: string | null;
   primaryContactEmail: string | null;
@@ -106,7 +105,6 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
   const [name, setName] = useState(account.name);
   const [website, setWebsite] = useState(account.website ?? "");
   const [industry, setIndustry] = useState(account.industry ?? "");
-  const [value, setValue] = useState(String(account.value));
   const [status, setStatus] = useState(account.status);
   const [accountManagerId, setAccountManagerId] = useState(account.accountManagerId ?? "");
   const [primaryContactName, setPrimaryContactName] = useState(account.primaryContactName ?? "");
@@ -124,7 +122,6 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
         name,
         website: website || null,
         industry: industry || null,
-        value: Number(value),
         status,
         accountManagerId: accountManagerId || undefined,
         primaryContactName: primaryContactName || null,
@@ -308,11 +305,6 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
               <div className="space-y-1.5">
                 <Label htmlFor="industry">Industry</Label>
                 <Input id="industry" value={industry} onChange={(e) => setIndustry(e.target.value)} placeholder="e.g. SaaS" />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="value">Value ($)</Label>
-                <Input id="value" type="number" min="0" value={value} onChange={(e) => setValue(e.target.value)} className="tabular-nums" />
               </div>
 
               <div className="space-y-1.5">

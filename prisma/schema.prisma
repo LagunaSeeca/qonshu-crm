@@ -126,8 +126,6 @@ model Lead {
   phone             String?
   companyName       String?
   source            String?
-  value             Decimal   @default(0)
-  currency          String    @default("USD")
   priority          Priority  @default(MEDIUM)
   stageId           String
   stage             Stage     @relation(fields: [stageId], references: [id])
@@ -217,8 +215,6 @@ model Account {
   industry            String?
   status              AccountStatus @default(ACTIVE)
   accountManagerId    String
-  value               Decimal       @default(0)
-  currency            String        @default("USD")
   primaryContactName  String?
   primaryContactEmail String?
   primaryContactPhone String?

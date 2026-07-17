@@ -14,7 +14,7 @@ async function scopeWhere(db: PrismaClient, user: SessionUser) {
 
 export async function createLead(db: PrismaClient, user: SessionUser, data: {
   title: string; contactName: string; stageId: string; email?: string; phone?: string;
-  companyName?: string; source?: string; value?: number | string; priority?: Priority;
+  companyName?: string; source?: string; priority?: Priority;
   ownerId?: string; expectedCloseDate?: Date | null;
 }): Promise<Lead> {
   const stage = await db.stage.findFirst({ where: { id: data.stageId, companyId: user.companyId! } });
@@ -26,13 +26,13 @@ export async function createLead(db: PrismaClient, user: SessionUser, data: {
   return db.lead.create({ data: {
     companyId: user.companyId!, title: data.title, contactName: data.contactName, stageId: data.stageId,
     email: data.email, phone: data.phone, companyName: data.companyName, source: data.source,
-    value: data.value ?? 0, priority: data.priority ?? "MEDIUM", ownerId: data.ownerId ?? user.id,
+    priority: data.priority ?? "MEDIUM", ownerId: data.ownerId ?? user.id,
     expectedCloseDate: data.expectedCloseDate ?? null,
   } });
 }
 
 export async function listLeads(db: PrismaClient, user: SessionUser, opts?: {
-  stageId?: string; ownerId?: string; q?: string; sort?: "value" | "createdAt"; skip?: number; take?: number;
+  stageId?: string; ownerId?: string; q?: string; sort?: "createdAt"; skip?: number; take?: number;
 }): Promise<Lead[]> {
   const where: Prisma.LeadWhereInput = { ...(await scopeWhere(db, user)) };
   if (opts?.stageId) where.stageId = opts.stageId;
@@ -56,7 +56,7 @@ export async function getLead(db: PrismaClient, user: SessionUser, id: string): 
 
 export async function updateLead(db: PrismaClient, user: SessionUser, id: string, data: Partial<{
   title: string; contactName: string; email: string | null; phone: string | null; companyName: string | null;
-  source: string | null; value: number | string; priority: Priority; ownerId: string; expectedCloseDate: Date | null;
+  source: string | null; priority: Priority; ownerId: string; expectedCloseDate: Date | null;
 }>): Promise<Lead> {
   const found = await getLead(db, user, id);
   if (!found) throw new NotFoundError("lead not in scope");

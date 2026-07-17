@@ -37,7 +37,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         email: lead.email ?? null,
         phone: lead.phone ?? null,
         companyName: lead.companyName ?? null,
-        value: Number(lead.value),
         priority: lead.priority,
         stageId: lead.stageId,
         lostReason: lead.lostReason ?? null,

@@ -36,7 +36,6 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
         status: account.status,
         website: account.website ?? null,
         industry: account.industry ?? null,
-        value: Number(account.value),
         accountManagerId: account.accountManagerId ?? null,
         primaryContactName: account.primaryContactName ?? null,
         primaryContactEmail: account.primaryContactEmail ?? null,

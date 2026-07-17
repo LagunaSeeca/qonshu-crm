@@ -14,7 +14,6 @@ export type AccountRow = {
   name: string;
   status: string;
   managerName: string;
-  value: number;
   industry: string | null;
 };
 
@@ -66,7 +65,6 @@ export function AccountTable({ rows }: { rows: AccountRow[] }) {
             <TableHead className="font-semibold text-foreground">Status</TableHead>
             <TableHead className="font-semibold text-foreground">Industry</TableHead>
             <TableHead className="font-semibold text-foreground">Account Manager</TableHead>
-            <TableHead className="text-right font-semibold text-foreground">Value</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -85,9 +83,6 @@ export function AccountTable({ rows }: { rows: AccountRow[] }) {
               </TableCell>
               <TableCell className="text-muted-foreground">{r.industry ?? "—"}</TableCell>
               <TableCell className="text-muted-foreground">{r.managerName}</TableCell>
-              <TableCell className="text-right tabular-nums font-medium">
-                {r.value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}
-              </TableCell>
             </TableRow>
           ))}
         </TableBody>

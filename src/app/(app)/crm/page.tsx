@@ -24,7 +24,6 @@ export default async function CrmBoardPage() {
           id: l.id,
           title: l.title,
           stageId: l.stageId,
-          value: Number(l.value),
           contactName: l.contactName,
           priority: l.priority,
         }))}

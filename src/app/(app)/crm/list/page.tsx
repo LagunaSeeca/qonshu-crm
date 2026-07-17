@@ -30,7 +30,6 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
     title: l.title,
     contactName: l.contactName,
     stageName: stageMap[l.stageId] ?? l.stageId,
-    value: Number(l.value),
     priority: l.priority,
     ownerName: userMap[l.ownerId ?? ""] ?? "—",
   }));

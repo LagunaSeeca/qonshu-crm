@@ -16,7 +16,6 @@ type Lead = {
   id: string;
   title: string;
   stageId: string;
-  value: number;
   contactName: string;
   priority?: string;
 };
@@ -47,11 +46,8 @@ function LeadCard({ lead }: { lead: Lead }) {
         <CardContent className="p-3">
           <div className="font-medium text-sm text-foreground leading-snug mb-1">{lead.title}</div>
           <div className="text-xs text-muted-foreground mb-2">{lead.contactName}</div>
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
             {priorityBadge(lead.priority)}
-            <span className="text-xs tabular-nums text-muted-foreground font-medium">
-              {lead.value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}
-            </span>
           </div>
         </CardContent>
       </Card>
@@ -61,7 +57,6 @@ function LeadCard({ lead }: { lead: Lead }) {
 
 function Column({ stage, leads }: { stage: Stage; leads: Lead[] }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
-  const weighted = leads.reduce((s, l) => s + l.value * stage.probability / 100, 0);
   return (
     <div
       ref={setNodeRef}
@@ -71,9 +66,6 @@ function Column({ stage, leads }: { stage: Stage; leads: Lead[] }) {
         <div className="flex items-center justify-between gap-2">
           <span className="font-semibold text-sm text-foreground">{stage.name}</span>
           <Badge variant="secondary" className="text-xs tabular-nums font-medium">{leads.length}</Badge>
-        </div>
-        <div className="text-xs text-muted-foreground mt-0.5 tabular-nums">
-          {weighted.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })} weighted
         </div>
       </div>
       <div className="p-3 min-h-[60px]">
