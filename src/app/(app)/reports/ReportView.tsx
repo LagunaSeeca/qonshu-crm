@@ -258,8 +258,6 @@ export function ReportView({ accounts, initialReport }: Props) {
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sales</h3>
               <SummaryRow label="Open leads" value={k.sales.openLeads.toLocaleString()} />
               <SummaryRow label="Won this period" value={k.sales.wonInPeriod.toLocaleString()} />
-              <SummaryRow label="Pipeline value" value={money(k.sales.pipelineValue)} />
-              <SummaryRow label="Weighted $" value={money(k.sales.weightedPipeline)} />
             </div>
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Activity</h3>
@@ -274,7 +272,7 @@ export function ReportView({ accounts, initialReport }: Props) {
                 label="App users (active/total)"
                 value={`${k.partners.activeAppUsers.toLocaleString()}/${k.partners.appUsers.toLocaleString()}`}
               />
-              <SummaryRow label="Payments count" value={k.partners.paymentsCount.toLocaleString()} />
+              <SummaryRow label="Users engaged" value={k.partners.engagedUsers.toLocaleString()} />
               <SummaryRow label="Payments amount" value={money(k.partners.paymentsAmount)} />
             </div>
             <div className="space-y-2">

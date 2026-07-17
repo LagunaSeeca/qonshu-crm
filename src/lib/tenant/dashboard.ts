@@ -5,9 +5,9 @@ import { getCompanySettings } from "./company";
 import { listCompanySettlements } from "./settlements";
 
 export type DashboardStats = {
-  sales: { openLeads: number; wonInPeriod: number; pipelineValue: number; weightedPipeline: number };
+  sales: { openLeads: number; wonInPeriod: number };
   activity: { meetingsDone: number; openTasks: number; overdueTasks: number };
-  partners: { accounts: number; activeAccounts: number; appUsers: number; activeAppUsers: number; paymentsCount: number; paymentsAmount: number };
+  partners: { accounts: number; activeAccounts: number; appUsers: number; activeAppUsers: number; engagedUsers: number; paymentsAmount: number };
   finance: { collected: number; transferred: number; owed: number };
 };
 
@@ -28,8 +28,6 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
   const stageById = new Map(stages.map((s) => [s.id, s]));
   const openLeads = leads.filter((l) => stageById.get(l.stageId)?.type === "OPEN");
   const wonInPeriod = leads.filter((l) => stageById.get(l.stageId)?.type === "WON" && l.updatedAt >= range.from && l.updatedAt <= range.to).length;
-  const pipelineValue = openLeads.reduce((s, l) => s + num(l.value), 0);
-  const weightedPipeline = openLeads.reduce((s, l) => s + num(l.value) * ((stageById.get(l.stageId)?.probability ?? 0) / 100), 0);
   const leadIds = leads.map((l) => l.id);
   const [leadMeetings, acctMeetings, leadTasks, acctTasks] = await Promise.all([
     db.activity.count({ where: { companyId, leadId: { in: leadIds }, kind: "MEETING", occurredAt: { gte: range.from, lte: range.to } } }),
@@ -38,8 +36,9 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
     db.accountTask.findMany({ where: { companyId, done: false } }),
   ]);
   const allOpenTasks = [...leadTasks, ...acctTasks];
+  const engagedUsers = new Set(payments.map((p) => p.appUserId)).size;
   return {
-    sales: { openLeads: openLeads.length, wonInPeriod, pipelineValue, weightedPipeline },
+    sales: { openLeads: openLeads.length, wonInPeriod },
     activity: {
       meetingsDone: leadMeetings + acctMeetings,
       openTasks: allOpenTasks.length,
@@ -50,7 +49,7 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
       activeAccounts: accounts.filter((a) => a.status === "ACTIVE").length,
       appUsers: appUsers.length,
       activeAppUsers: appUsers.filter((u2) => u2.active).length,
-      paymentsCount: payments.length,
+      engagedUsers,
       paymentsAmount: payments.reduce((s, p) => s + num(p.amount), 0),
     },
     finance: settlements.totals,

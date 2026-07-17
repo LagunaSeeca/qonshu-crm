@@ -1,17 +1,16 @@
 "use client";
 import { useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import {
   Users,
-  TrendingUp,
   Trophy,
-  Target,
   CalendarCheck,
   ListTodo,
   AlertTriangle,
   Building2,
   Smartphone,
-  Receipt,
+  UserCheck,
   DollarSign,
   ArrowDownCircle,
   ArrowUpCircle,
@@ -26,14 +25,14 @@ import { cn } from "@/lib/utils";
 export type PeriodType = "WEEKLY" | "BIWEEKLY" | "MONTHLY" | "YEARLY" | "CUSTOM";
 
 export type DashboardStats = {
-  sales: { openLeads: number; wonInPeriod: number; pipelineValue: number; weightedPipeline: number };
+  sales: { openLeads: number; wonInPeriod: number };
   activity: { meetingsDone: number; openTasks: number; overdueTasks: number };
   partners: {
     accounts: number;
     activeAccounts: number;
     appUsers: number;
     activeAppUsers: number;
-    paymentsCount: number;
+    engagedUsers: number;
     paymentsAmount: number;
   };
   finance: { collected: number; transferred: number; owed: number };
@@ -57,15 +56,22 @@ function KpiCard({
   icon: Icon,
   warning,
   emphasize,
+  hint,
+  href,
 }: {
   label: string;
   value: string;
   icon: React.ComponentType<{ className?: string }>;
   warning?: boolean;
   emphasize?: boolean;
+  hint?: string;
+  href?: string;
 }) {
-  return (
-    <Card size="sm">
+  const card = (
+    <Card
+      size="sm"
+      className={cn(href && "cursor-pointer transition-colors duration-150 hover:border-accent hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring")}
+    >
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-xs font-medium text-muted-foreground">{label}</CardTitle>
         <Icon className={cn("size-4", warning ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")} />
@@ -80,8 +86,16 @@ function KpiCard({
         >
           {value}
         </div>
+        {hint && <p className="text-[11px] text-muted-foreground mt-1">{hint}</p>}
       </CardContent>
     </Card>
+  );
+
+  if (!href) return card;
+  return (
+    <Link href={href} className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {card}
+    </Link>
   );
 }
 
@@ -187,38 +201,44 @@ export function DashboardView({ initialStats, initialPeriod }: Props) {
       </div>
 
       <KpiGroup title="Sales">
-        <KpiCard label="Open leads" value={stats.sales.openLeads.toLocaleString()} icon={Users} />
-        <KpiCard label="Won this period" value={stats.sales.wonInPeriod.toLocaleString()} icon={Trophy} />
-        <KpiCard label="Pipeline value" value={money(stats.sales.pipelineValue)} icon={TrendingUp} />
-        <KpiCard label="Weighted $" value={money(stats.sales.weightedPipeline)} icon={Target} />
+        <KpiCard label="Open leads" value={stats.sales.openLeads.toLocaleString()} icon={Users} href="/crm/list" />
+        <KpiCard label="Won this period" value={stats.sales.wonInPeriod.toLocaleString()} icon={Trophy} href="/crm/list" />
       </KpiGroup>
 
       <KpiGroup title="Activity">
-        <KpiCard label="Meetings done" value={stats.activity.meetingsDone.toLocaleString()} icon={CalendarCheck} />
-        <KpiCard label="Open tasks" value={stats.activity.openTasks.toLocaleString()} icon={ListTodo} />
+        <KpiCard label="Meetings done" value={stats.activity.meetingsDone.toLocaleString()} icon={CalendarCheck} href="/work" />
+        <KpiCard label="Open tasks" value={stats.activity.openTasks.toLocaleString()} icon={ListTodo} href="/work" />
         <KpiCard
           label="Overdue"
           value={stats.activity.overdueTasks.toLocaleString()}
           icon={AlertTriangle}
           warning
+          href="/work"
         />
       </KpiGroup>
 
       <KpiGroup title="Partners">
-        <KpiCard label="Partner accounts" value={stats.partners.accounts.toLocaleString()} icon={Building2} />
+        <KpiCard label="Partner accounts" value={stats.partners.accounts.toLocaleString()} icon={Building2} href="/accounts" />
         <KpiCard
           label="App users (active/total)"
           value={`${stats.partners.activeAppUsers.toLocaleString()}/${stats.partners.appUsers.toLocaleString()}`}
           icon={Smartphone}
+          href="/accounts"
         />
-        <KpiCard label="Payments count" value={stats.partners.paymentsCount.toLocaleString()} icon={Receipt} />
-        <KpiCard label="Payments amount" value={money(stats.partners.paymentsAmount)} icon={DollarSign} />
+        <KpiCard
+          label="Users engaged"
+          value={stats.partners.engagedUsers.toLocaleString()}
+          icon={UserCheck}
+          hint="Made a payment this period"
+          href="/accounts"
+        />
+        <KpiCard label="Payments amount" value={money(stats.partners.paymentsAmount)} icon={DollarSign} href="/accounts" />
       </KpiGroup>
 
       <KpiGroup title="Finance">
-        <KpiCard label="Collected" value={money(stats.finance.collected)} icon={ArrowDownCircle} />
-        <KpiCard label="Transferred" value={money(stats.finance.transferred)} icon={ArrowUpCircle} />
-        <KpiCard label="Owed" value={money(stats.finance.owed)} icon={Landmark} emphasize />
+        <KpiCard label="Collected" value={money(stats.finance.collected)} icon={ArrowDownCircle} href="/settlements" />
+        <KpiCard label="Transferred" value={money(stats.finance.transferred)} icon={ArrowUpCircle} href="/settlements" />
+        <KpiCard label="Owed" value={money(stats.finance.owed)} icon={Landmark} emphasize href="/settlements" />
       </KpiGroup>
     </div>
   );

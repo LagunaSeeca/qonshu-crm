@@ -6,9 +6,9 @@ const report = {
   label: "July 2026",
   scope: "ALL",
   kpis: {
-    sales: { openLeads: 3, wonInPeriod: 1, pipelineValue: 15000, weightedPipeline: 7250 },
+    sales: { openLeads: 3, wonInPeriod: 1 },
     activity: { meetingsDone: 4, openTasks: 5, overdueTasks: 2 },
-    partners: { accounts: 2, activeAccounts: 2, appUsers: 24, activeAppUsers: 20, paymentsCount: 120, paymentsAmount: 30000 },
+    partners: { accounts: 2, activeAccounts: 2, appUsers: 24, activeAppUsers: 20, engagedUsers: 18, paymentsAmount: 30000 },
     finance: { collected: 16400, transferred: 8000, owed: 8400 },
   },
   partnerRows: [{ accountId: "a1", accountName: "Acme", paymentsCount: 60, paymentsAmount: 15000, collected: 8200, transferred: 4000, owed: 4200 }],
