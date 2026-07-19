@@ -279,7 +279,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
   ];
 
   return (
-    <div className="max-w-7xl mx-auto p-6">
+    <div className="max-w-7xl mx-auto">
       {/* Page header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-foreground">{account.name}</h1>

@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { signOut } from "next-auth/react";
-import { Sun, Moon, LogOut, ChevronDown, KeyRound } from "lucide-react";
+import { Sun, Moon, LogOut, ChevronDown, KeyRound, Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -20,6 +20,8 @@ interface TopbarProps {
   title?: string;
   userName?: string;
   userEmail?: string;
+  /** When provided, a hamburger button is shown (< lg) that calls this to open the mobile nav drawer. */
+  onMenuClick?: () => void;
 }
 
 function getInitials(name?: string): string {
@@ -35,6 +37,7 @@ export function Topbar({
   title = "Dashboard",
   userName,
   userEmail,
+  onMenuClick,
 }: TopbarProps) {
   const { theme, setTheme } = useTheme();
   const router = useRouter();
@@ -50,9 +53,22 @@ export function Topbar({
   const initials = getInitials(userName);
 
   return (
-    <header className="h-14 border-b border-border bg-background flex items-center px-6 gap-4 shrink-0">
+    <header className="h-14 border-b border-border bg-background flex items-center px-4 md:px-6 gap-2 md:gap-4 shrink-0">
+      {/* Mobile nav trigger */}
+      {onMenuClick && (
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onMenuClick}
+          aria-label="Open navigation menu"
+          className="h-8 w-8 -ml-1 shrink-0 text-muted-foreground hover:text-foreground lg:hidden"
+        >
+          <Menu size={18} aria-hidden="true" />
+        </Button>
+      )}
+
       {/* Page title */}
-      <h1 className="text-base font-semibold text-foreground flex-1 truncate">
+      <h1 className="text-base font-semibold text-foreground flex-1 min-w-0 truncate">
         {title}
       </h1>
 

@@ -158,7 +158,7 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
   }
 
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-6">
+    <div className="max-w-3xl mx-auto space-y-6">
       <div className="mb-2">
         <h1 className="text-2xl font-bold text-foreground">Stage Settings</h1>
         <p className="text-sm text-muted-foreground mt-0.5">Manage your pipeline stages and visibility.</p>

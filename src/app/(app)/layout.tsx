@@ -3,8 +3,7 @@ import { headers } from "next/headers";
 import { getSessionUser } from "@/lib/auth/session";
 import { getCurrentUser } from "@/lib/tenant/me";
 import { prisma } from "@/db/client";
-import { Sidebar } from "@/components/Sidebar";
-import { Topbar } from "@/components/Topbar";
+import { AppShell } from "@/components/AppShell";
 
 // Partner logins are read-only and tied to exactly one account — everywhere else in the
 // tenant app (CRM, accounts, reports, users…) is off-limits and bounces to /analytics.
@@ -29,20 +28,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const currentUser = await getCurrentUser(prisma, sessionUser);
 
   return (
-    <div className="flex h-screen bg-background overflow-hidden">
-      <Sidebar
-        role={currentUser.role}
-        companyName={currentUser.companyName}
-      />
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <Topbar
-          userName={currentUser.name}
-          userEmail={currentUser.email}
-        />
-        <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-7xl p-6">{children}</div>
-        </main>
-      </div>
-    </div>
+    <AppShell
+      role={currentUser.role}
+      companyName={currentUser.companyName}
+      userName={currentUser.name}
+      userEmail={currentUser.email}
+    >
+      {children}
+    </AppShell>
   );
 }

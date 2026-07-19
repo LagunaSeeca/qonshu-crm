@@ -37,9 +37,11 @@ const PARTNER_NAV_HREFS = new Set(["/analytics", "/settlements", "/service-fees"
 interface SidebarProps {
   role: Role;
   companyName?: string | null;
+  /** Called when a nav link is activated — used to close the mobile drawer on navigation. */
+  onNavigate?: () => void;
 }
 
-export function Sidebar({ role, companyName }: SidebarProps) {
+export function Sidebar({ role, companyName, onNavigate }: SidebarProps) {
   const pathname = usePathname();
   const nav = role === "PARTNER_VIEWER" ? NAV.filter((item) => PARTNER_NAV_HREFS.has(item.href)) : NAV;
 
@@ -51,7 +53,7 @@ export function Sidebar({ role, companyName }: SidebarProps) {
 
   return (
     <nav
-      className="flex flex-col w-60 min-h-screen border-r border-border bg-card shrink-0"
+      className="flex flex-col w-60 h-full border-r border-border bg-card shrink-0"
       aria-label="Main navigation"
     >
       {/* Brand wordmark */}
@@ -67,6 +69,7 @@ export function Sidebar({ role, companyName }: SidebarProps) {
           <Link
             key={href}
             href={href}
+            onClick={onNavigate}
             className={cn(
               "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150 cursor-pointer",
               isActive(href)
@@ -89,6 +92,7 @@ export function Sidebar({ role, companyName }: SidebarProps) {
         {role === "COMPANY_ADMIN" && (
           <Link
             href="/users"
+            onClick={onNavigate}
             className={cn(
               "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150 cursor-pointer",
               isActive("/users")
@@ -111,6 +115,7 @@ export function Sidebar({ role, companyName }: SidebarProps) {
         {role === "SUPER_ADMIN" && (
           <Link
             href="/platform/companies"
+            onClick={onNavigate}
             className={cn(
               "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150 cursor-pointer",
               isActive("/platform/companies")

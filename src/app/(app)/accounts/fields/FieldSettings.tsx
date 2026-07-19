@@ -132,7 +132,7 @@ export function FieldSettings({ initialDefs }: Props) {
   }
 
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-6">
+    <div className="max-w-3xl mx-auto space-y-6">
       <div className="mb-2">
         <h1 className="text-2xl font-bold text-foreground">Custom Fields</h1>
         <p className="text-sm text-muted-foreground mt-0.5">Define company-wide fields shown on every account.</p>
