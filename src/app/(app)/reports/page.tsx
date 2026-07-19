@@ -4,6 +4,7 @@ import { prisma } from "@/db/client";
 import { listAccounts } from "@/lib/tenant/accounts";
 import { getReport } from "@/lib/tenant/reports";
 import { resolvePeriod } from "@/lib/reports/period";
+import { PageHeader } from "@/components/PageHeader";
 import { ReportView } from "./ReportView";
 
 export default async function ReportsPage() {
@@ -19,12 +20,10 @@ export default async function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Company-wide or per-partner performance, with CSV export
-        </p>
-      </div>
+      <PageHeader
+        title="Reports"
+        subtitle="Company-wide or per-partner performance, with CSV export"
+      />
 
       <ReportView
         accounts={accounts.map((a) => ({ id: a.id, name: a.name }))}

@@ -10,6 +10,7 @@ import { listAccounts } from "@/lib/tenant/accounts";
 import { listUsers } from "@/lib/tenant/users";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/PageHeader";
 import {
   Table,
   TableBody,
@@ -43,20 +44,17 @@ export default async function WorkPage() {
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">My Work</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Open tasks and recent meetings across your leads and accounts
-          </p>
-        </div>
-        <AddTask
-          leads={leads.map((l) => ({ id: l.id, title: l.title }))}
-          accounts={accounts.map((a) => ({ id: a.id, name: a.name }))}
-          members={members.map((m) => ({ id: m.id, name: m.name, email: m.email }))}
-        />
-      </div>
+      <PageHeader
+        title="My Work"
+        subtitle="Open tasks and recent meetings across your leads and accounts"
+        action={
+          <AddTask
+            leads={leads.map((l) => ({ id: l.id, title: l.title }))}
+            accounts={accounts.map((a) => ({ id: a.id, name: a.name }))}
+            members={members.map((m) => ({ id: m.id, name: m.name, email: m.email }))}
+          />
+        }
+      />
 
       {/* Tasks */}
       <Card>

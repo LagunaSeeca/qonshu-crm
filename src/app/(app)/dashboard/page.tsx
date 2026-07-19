@@ -3,6 +3,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
 import { getDashboardStats } from "@/lib/tenant/dashboard";
 import { resolvePeriod } from "@/lib/reports/period";
+import { PageHeader } from "@/components/PageHeader";
 import { DashboardView } from "./DashboardView";
 
 export default async function Dashboard() {
@@ -14,12 +15,10 @@ export default async function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Overview of your sales pipeline, activity, partners and finances
-        </p>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        subtitle="Overview of your sales pipeline, activity, partners and finances"
+      />
 
       <DashboardView initialStats={stats} initialPeriod="MONTHLY" />
     </div>

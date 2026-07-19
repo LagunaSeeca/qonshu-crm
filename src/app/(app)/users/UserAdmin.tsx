@@ -21,6 +21,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { PageHeader } from "@/components/PageHeader";
 import { UserPlus, Loader2 } from "lucide-react";
 
 type Row = { id: string; email: string; name: string; role: string; status: string };
@@ -114,16 +115,16 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Users</h1>
-          <p className="text-sm text-muted-foreground mt-1">Manage team members and their access</p>
-        </div>
-        <Button onClick={() => setOpen(true)}>
-          <UserPlus className="mr-2 h-4 w-4" />
-          Add user
-        </Button>
-      </div>
+      <PageHeader
+        title="Users"
+        subtitle="Manage team members and their access"
+        action={
+          <Button onClick={() => setOpen(true)}>
+            <UserPlus className="mr-2 h-4 w-4" />
+            Add user
+          </Button>
+        }
+      />
 
       <div className="rounded-md border">
         <Table>

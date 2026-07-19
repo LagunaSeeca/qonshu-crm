@@ -9,6 +9,7 @@ import { listUsers } from "@/lib/tenant/users";
 import { AccountCreate } from "./AccountCreate";
 import { AccountTable, type AccountRow } from "./AccountTable";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/PageHeader";
 
 export default async function AccountsPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const user = await getSessionUser();
@@ -33,11 +34,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Accounts</h1>
-        <p className="text-sm text-muted-foreground mt-1">All accounts in your organization</p>
-      </div>
+      <PageHeader title="Accounts" subtitle="All accounts in your organization" />
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">

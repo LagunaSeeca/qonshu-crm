@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PageHeader } from "@/components/PageHeader";
 
 type Stage = { id: string; name: string; type: string };
 type Activity = { id: string; kind: string; body: string; outcome: string | null; occurredAt: string; authorId: string | null };
@@ -257,21 +258,25 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
   return (
     <div className="max-w-7xl mx-auto">
       {/* Page header */}
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">{lead.title}</h1>
-          {lead.lostReason && (
-            <div className="flex items-center gap-1.5 mt-1 text-sm text-destructive">
-              <AlertCircle className="size-3.5" />
-              <span>Lost reason: {lead.lostReason}</span>
-            </div>
-          )}
-        </div>
-        {currentStage?.type === "WON" && (
-          <Button size="sm" onClick={handleConvert} disabled={converting}>
-            {converting ? "Converting…" : "Convert to Account"}
-          </Button>
-        )}
+      <div className="mb-6">
+        <PageHeader
+          title={lead.title}
+          subtitle={
+            lead.lostReason && (
+              <span className="flex items-center gap-1.5 text-destructive">
+                <AlertCircle className="size-3.5" />
+                Lost reason: {lead.lostReason}
+              </span>
+            )
+          }
+          action={
+            currentStage?.type === "WON" && (
+              <Button size="sm" onClick={handleConvert} disabled={converting}>
+                {converting ? "Converting…" : "Convert to Account"}
+              </Button>
+            )
+          }
+        />
       </div>
 
       {/* Two-column layout */}

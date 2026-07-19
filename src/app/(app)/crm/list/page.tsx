@@ -9,6 +9,7 @@ import { listUsers } from "@/lib/tenant/users";
 import { LeadCreate } from "../LeadCreate";
 import { LeadTable, type LeadRow } from "../LeadTable";
 import { Input } from "@/components/ui/input";
+import { PageHeader } from "@/components/PageHeader";
 import { LayoutGrid, List } from "lucide-react";
 
 export default async function CrmListPage({ searchParams }: { searchParams: Promise<{ q?: string; stageId?: string }> }) {
@@ -36,11 +37,7 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Sales CRM</h1>
-        <p className="text-sm text-muted-foreground mt-1">All leads in your pipeline</p>
-      </div>
+      <PageHeader title="Sales CRM" subtitle="All leads in your pipeline" />
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">

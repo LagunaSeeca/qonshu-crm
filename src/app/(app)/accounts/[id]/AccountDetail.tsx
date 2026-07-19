@@ -29,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PageHeader } from "@/components/PageHeader";
 import { Analytics } from "./Analytics";
 import { Settlement } from "./Settlement";
 import { ServiceFees } from "./ServiceFees";
@@ -282,7 +283,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
     <div className="max-w-7xl mx-auto">
       {/* Page header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">{account.name}</h1>
+        <PageHeader title={account.name} />
         <div className="mt-1">
           <StatusBadge status={account.status} />
         </div>

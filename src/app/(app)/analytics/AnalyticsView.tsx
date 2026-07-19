@@ -36,6 +36,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { PageHeader } from "@/components/PageHeader";
 import { PERIODS, type PeriodType } from "../dashboard/DashboardView";
 
 export type Totals = {
@@ -342,10 +343,7 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Analytics</h1>
-        <p className="text-sm text-muted-foreground mt-1">Across all partner companies</p>
-      </div>
+      <PageHeader title="Analytics" subtitle="Across all partner companies" />
 
       {/* Period selector */}
       <div className="flex flex-wrap items-center gap-3">

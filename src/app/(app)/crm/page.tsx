@@ -4,6 +4,7 @@ import { prisma } from "@/db/client";
 import { getTenantContext } from "@/lib/tenant/context";
 import { listStages } from "@/lib/tenant/stages";
 import { listLeads } from "@/lib/tenant/leads";
+import { PageHeader } from "@/components/PageHeader";
 import { Board } from "./Board";
 
 export default async function CrmBoardPage() {
@@ -14,10 +15,7 @@ export default async function CrmBoardPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Sales CRM</h1>
-        <p className="text-sm text-muted-foreground mt-1">Manage your pipeline</p>
-      </div>
+      <PageHeader title="Sales CRM" subtitle="Manage your pipeline" />
       <Board
         stages={stages.map((s) => ({ id: s.id, name: s.name, probability: s.probability }))}
         leads={leads.map((l) => ({

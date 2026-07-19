@@ -17,6 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PageHeader } from "@/components/PageHeader";
 
 type StageType = "OPEN" | "WON" | "LOST";
 
@@ -159,10 +160,7 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      <div className="mb-2">
-        <h1 className="text-2xl font-bold text-foreground">Stage Settings</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">Manage your pipeline stages and visibility.</p>
-      </div>
+      <PageHeader title="Stage Settings" subtitle="Manage your pipeline stages and visibility." />
 
       {/* Visibility toggle */}
       <Card>
