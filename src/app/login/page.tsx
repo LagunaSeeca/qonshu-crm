@@ -28,47 +28,67 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-sm shadow-sm">
-        <CardHeader className="space-y-1 pb-4">
-          <p className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
-            Qonshu
-          </p>
-          <CardTitle className="text-2xl font-bold">Sign in</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={submit} className="flex flex-col gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="you@company.com"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                placeholder="••••••••"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <Button type="submit" className="w-full mt-1" disabled={loading}>
-              {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Sign in
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+    <div className="relative min-h-screen flex items-center justify-center overflow-hidden bg-background p-4">
+      {/* Subtle branded backdrop — radial glow in the accent hue, theme-aware via tokens. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 -z-10"
+        style={{
+          backgroundImage:
+            "radial-gradient(ellipse 60% 50% at 50% 0%, color-mix(in oklch, var(--accent) 12%, transparent), transparent)",
+        }}
+      />
+
+      <div className="w-full max-w-sm flex flex-col items-center gap-6">
+        {/* Wordmark */}
+        <div className="flex flex-col items-center gap-1 select-none">
+          <span className="text-2xl font-bold tracking-tight text-foreground">Qonshu</span>
+          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            CRM
+          </span>
+        </div>
+
+        <Card className="w-full shadow-sm">
+          <CardHeader className="space-y-1 pb-4">
+            <CardTitle className="text-2xl font-bold">Sign in</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Enter your credentials to access your workspace
+            </p>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={submit} className="flex flex-col gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="you@company.com"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <Button type="submit" className="w-full mt-1" disabled={loading}>
+                {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {loading ? "Signing in…" : "Sign in"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
