@@ -186,7 +186,8 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
     const res = await fetch(`/api/leads/${lead.id}/tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: taskTitle, dueDate: taskDue || undefined }),
+      // <input type="date"> yields YYYY-MM-DD; the API expects a full ISO datetime.
+      body: JSON.stringify({ title: taskTitle, dueDate: taskDue ? new Date(taskDue).toISOString() : undefined }),
     });
     setAddingTask(false);
     if (!res.ok) {
