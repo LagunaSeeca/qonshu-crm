@@ -60,14 +60,16 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
         <form method="GET" className="flex items-center gap-2 flex-1">
           <Input
             name="q"
+            aria-label="Search leads"
             defaultValue={sp.q ?? ""}
             placeholder="Search leads..."
             className="h-8 text-sm max-w-xs"
           />
           <select
             name="stageId"
+            aria-label="Filter by stage"
             defaultValue={sp.stageId ?? ""}
-            className="h-8 rounded-md border border-input bg-background px-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors duration-150"
+            className="h-8 rounded-md border border-input bg-background px-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors duration-150 cursor-pointer"
           >
             <option value="">All stages</option>
             {stages.map((s) => (
@@ -76,7 +78,7 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
           </select>
           <button
             type="submit"
-            className="h-8 px-3 rounded-md border border-input bg-muted text-sm font-medium hover:bg-muted/70 transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-8 px-3 rounded-md border border-input bg-muted text-sm font-medium hover:bg-muted/70 transition-colors duration-150 cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring"
           >
             Filter
           </button>

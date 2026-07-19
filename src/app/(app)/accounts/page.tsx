@@ -42,13 +42,14 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
         <form method="GET" className="flex items-center gap-2 flex-1">
           <Input
             name="q"
+            aria-label="Search accounts"
             defaultValue={sp.q ?? ""}
             placeholder="Search accounts..."
             className="h-8 text-sm max-w-xs"
           />
           <button
             type="submit"
-            className="h-8 px-3 rounded-md border border-input bg-muted text-sm font-medium hover:bg-muted/70 transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring"
+            className="h-8 px-3 rounded-md border border-input bg-muted text-sm font-medium hover:bg-muted/70 transition-colors duration-150 cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring"
           >
             Search
           </button>

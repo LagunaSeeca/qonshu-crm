@@ -155,6 +155,7 @@ export function Board({ stages, leads, isAdmin, searchQuery }: BoardProps) {
         {/* Search */}
         <div className="flex-1 max-w-xs">
           <Input
+            aria-label="Search leads"
             placeholder="Search leads..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
