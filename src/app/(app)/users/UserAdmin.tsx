@@ -22,7 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/PageHeader";
-import { UserPlus, Loader2 } from "lucide-react";
+import { UserPlus, Loader2, Users } from "lucide-react";
 
 type Row = { id: string; email: string; name: string; role: string; status: string };
 type Account = { id: string; name: string };
@@ -126,7 +126,14 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
         }
       />
 
-      <div className="rounded-md border">
+      {rows.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-center rounded-lg border border-dashed border-border">
+          <Users className="size-8 mb-2 opacity-40 text-muted-foreground" />
+          <p className="text-muted-foreground text-sm">No users yet</p>
+          <p className="text-xs text-muted-foreground mt-1">Add your first team member to get started</p>
+        </div>
+      ) : (
+      <div className="rounded-md border overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -138,13 +145,6 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                  No users yet
-                </TableCell>
-              </TableRow>
-            )}
             {rows.map((u) => (
               <TableRow key={u.id}>
                 <TableCell className="font-medium">{u.name || "—"}</TableCell>
@@ -167,6 +167,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
           </TableBody>
         </Table>
       </div>
+      )}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-sm">

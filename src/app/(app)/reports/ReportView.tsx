@@ -305,7 +305,7 @@ export function ReportView({ accounts, initialReport }: Props) {
               <p className="text-sm">No partner activity for this period</p>
             </div>
           ) : (
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-lg border border-border overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/40 hover:bg-muted/40">

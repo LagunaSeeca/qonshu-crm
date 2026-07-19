@@ -610,7 +610,7 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
               <p className="text-sm">No partner accounts yet</p>
             </div>
           ) : (
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-lg border border-border overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/40 hover:bg-muted/40">

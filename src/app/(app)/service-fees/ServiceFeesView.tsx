@@ -2,7 +2,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ReceiptText, CheckCircle2, Circle } from "lucide-react";
+import { ReceiptText, CheckCircle2, Circle, Building2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -104,11 +104,12 @@ export function ServiceFeesView({ initialData }: Props) {
       <div className={cn(loading && "opacity-60 pointer-events-none transition-opacity")} aria-busy={loading}>
       {rows.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center rounded-lg border border-dashed border-border">
+          <Building2 className="size-8 mb-2 opacity-40 text-muted-foreground" />
           <p className="text-muted-foreground text-sm">No accounts yet</p>
           <p className="text-xs text-muted-foreground mt-1">Service fee balances will appear once accounts are billed</p>
         </div>
       ) : (
-        <div className="rounded-lg border border-border overflow-hidden">
+        <div className="rounded-lg border border-border overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/40 hover:bg-muted/40">

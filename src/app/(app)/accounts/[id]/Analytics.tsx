@@ -558,10 +558,11 @@ export function Analytics({ accountId, initialData }: Props) {
             <CardContent className="pt-4">
               {data.topUsers.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
+                  <Users className="size-8 mb-2 opacity-40" />
                   <p className="text-sm">No user activity yet</p>
                 </div>
               ) : (
-                <div className="rounded-lg border border-border overflow-hidden">
+                <div className="rounded-lg border border-border overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow className="bg-muted/40 hover:bg-muted/40">
@@ -639,7 +640,7 @@ export function Analytics({ accountId, initialData }: Props) {
               <p className="text-sm">{paymentsLoading ? "Loading…" : "No transactions for this range"}</p>
             </div>
           ) : (
-            <div className="rounded-lg border border-border overflow-hidden">
+            <div className="rounded-lg border border-border overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/40 hover:bg-muted/40">

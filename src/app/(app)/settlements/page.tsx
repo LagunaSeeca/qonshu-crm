@@ -71,11 +71,12 @@ export default async function SettlementsPage() {
       {/* Registry by partner */}
       {rows.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center rounded-lg border border-dashed border-border">
+          <Landmark className="size-8 mb-2 opacity-40 text-muted-foreground" />
           <p className="text-muted-foreground text-sm">No accounts yet</p>
           <p className="text-xs text-muted-foreground mt-1">Settlement balances will appear once accounts have entries</p>
         </div>
       ) : (
-        <div className="rounded-lg border border-border overflow-hidden">
+        <div className="rounded-lg border border-border overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/40 hover:bg-muted/40">

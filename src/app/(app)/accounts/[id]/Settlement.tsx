@@ -325,7 +325,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
               <p className="text-sm">No settlement entries yet</p>
             </div>
           ) : (
-              <div className="rounded-lg border border-border overflow-hidden">
+              <div className="rounded-lg border border-border overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/40 hover:bg-muted/40">

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Building2 } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -50,6 +51,7 @@ export function AccountTable({ rows }: { rows: AccountRow[] }) {
   if (rows.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center rounded-lg border border-dashed border-border">
+        <Building2 className="size-8 mb-2 opacity-40 text-muted-foreground" />
         <p className="text-muted-foreground text-sm">No accounts yet</p>
         <p className="text-xs text-muted-foreground mt-1">Create your first account to get started</p>
       </div>
@@ -57,7 +59,7 @@ export function AccountTable({ rows }: { rows: AccountRow[] }) {
   }
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden">
+    <div className="rounded-lg border border-border overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow className="bg-muted/40 hover:bg-muted/40">
