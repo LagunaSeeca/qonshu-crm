@@ -239,6 +239,9 @@ export function ReportView({ accounts, initialReport }: Props) {
         </Button>
       </div>
 
+      {/* Result content — dimmed while a refetch is in flight so the previous period's
+          numbers stay visible instead of flashing blank. */}
+      <div className={cn("space-y-6", loading && "opacity-60 pointer-events-none transition-opacity")} aria-busy={loading}>
       {/* Period label */}
       <div>
         <h2 className="text-lg font-semibold tracking-tight">{report.label}</h2>
@@ -331,6 +334,7 @@ export function ReportView({ accounts, initialReport }: Props) {
           )}
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

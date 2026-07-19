@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -163,6 +164,13 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
   return (
     <div className="space-y-6">
       {/* Balance tiles */}
+      {!data ? (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" aria-busy="true" aria-label="Loading settlement">
+          <Skeleton className="h-28 rounded-xl" />
+          <Skeleton className="h-28 rounded-xl" />
+          <Skeleton className="h-20 rounded-xl" />
+        </div>
+      ) : (
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card size="sm">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -220,6 +228,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
           </CardContent>
         </Card>
       </div>
+      )}
 
       {/* Add entry (admin only) */}
       {isAdmin && (
@@ -308,7 +317,9 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
           <CardTitle className="text-base font-semibold">Registry</CardTitle>
         </CardHeader>
         <CardContent className="pt-4">
-          {entries.length === 0 ? (
+          {!data ? (
+            <Skeleton className="h-32 rounded-lg" aria-busy="true" aria-label="Loading registry" />
+          ) : entries.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
               <Landmark className="size-8 mb-2 opacity-40" />
               <p className="text-sm">No settlement entries yet</p>

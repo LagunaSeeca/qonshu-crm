@@ -37,6 +37,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/PageHeader";
+import { cn } from "@/lib/utils";
 import { PERIODS, type PeriodType } from "../dashboard/DashboardView";
 
 export type Totals = {
@@ -404,6 +405,9 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
         )}
       </div>
 
+      {/* Result content — dimmed while a refetch is in flight so the previous period's
+          numbers stay visible instead of flashing blank. */}
+      <div className={cn("space-y-6", loading && "opacity-60 pointer-events-none transition-opacity")} aria-busy={loading}>
       {/* KPI tiles */}
       <KpiGroup title="Partners">
         <KpiTile label="Partner Accounts" value={t.accounts.toLocaleString()} icon={Building2} />
@@ -641,6 +645,7 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
           )}
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

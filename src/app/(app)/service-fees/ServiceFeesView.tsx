@@ -13,6 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
 export type ServiceFeeRow = { accountId: string; accountName: string; billed: number; paid: number; outstanding: number };
 export type ServiceFeeSummary = {
@@ -53,8 +54,9 @@ export function ServiceFeesView({ initialData }: Props) {
 
   return (
     <div className="space-y-6">
-      {/* Totals */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Totals — dimmed while a refetch is in flight so the previous numbers stay visible
+          instead of flashing blank. */}
+      <div className={cn("grid grid-cols-1 sm:grid-cols-3 gap-4", loading && "opacity-60 pointer-events-none transition-opacity")} aria-busy={loading}>
         <Card size="sm">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-xs font-medium text-muted-foreground">Billed</CardTitle>
@@ -99,6 +101,7 @@ export function ServiceFeesView({ initialData }: Props) {
       </div>
 
       {/* Per-account table */}
+      <div className={cn(loading && "opacity-60 pointer-events-none transition-opacity")} aria-busy={loading}>
       {rows.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center rounded-lg border border-dashed border-border">
           <p className="text-muted-foreground text-sm">No accounts yet</p>
@@ -135,6 +138,7 @@ export function ServiceFeesView({ initialData }: Props) {
           </Table>
         </div>
       )}
+      </div>
     </div>
   );
 }

@@ -205,59 +205,61 @@ export function DashboardView({ initialStats, initialPeriod }: Props) {
         </div>
       </div>
 
-      <KpiGroup title="Sales">
-        <KpiCard label="Open leads" value={stats.sales.openLeads.toLocaleString()} icon={Users} href="/crm/list" />
-        <KpiCard label="Won this period" value={stats.sales.wonInPeriod.toLocaleString()} icon={Trophy} href="/crm/list" />
-      </KpiGroup>
+      <div className={cn("space-y-6", loading && "opacity-60 pointer-events-none transition-opacity")} aria-busy={loading}>
+        <KpiGroup title="Sales">
+          <KpiCard label="Open leads" value={stats.sales.openLeads.toLocaleString()} icon={Users} href="/crm/list" />
+          <KpiCard label="Won this period" value={stats.sales.wonInPeriod.toLocaleString()} icon={Trophy} href="/crm/list" />
+        </KpiGroup>
 
-      <KpiGroup title="Activity">
-        <KpiCard label="Meetings done" value={stats.activity.meetingsDone.toLocaleString()} icon={CalendarCheck} href="/work" />
-        <KpiCard label="Open tasks" value={stats.activity.openTasks.toLocaleString()} icon={ListTodo} href="/work" />
-        <KpiCard
-          label="Overdue"
-          value={stats.activity.overdueTasks.toLocaleString()}
-          icon={AlertTriangle}
-          warning
-          href="/work"
-        />
-      </KpiGroup>
+        <KpiGroup title="Activity">
+          <KpiCard label="Meetings done" value={stats.activity.meetingsDone.toLocaleString()} icon={CalendarCheck} href="/work" />
+          <KpiCard label="Open tasks" value={stats.activity.openTasks.toLocaleString()} icon={ListTodo} href="/work" />
+          <KpiCard
+            label="Overdue"
+            value={stats.activity.overdueTasks.toLocaleString()}
+            icon={AlertTriangle}
+            warning
+            href="/work"
+          />
+        </KpiGroup>
 
-      <KpiGroup title="Partners">
-        <KpiCard label="Partner accounts" value={stats.partners.accounts.toLocaleString()} icon={Building2} href="/accounts" />
-        <KpiCard
-          label="App users (active/total)"
-          value={`${stats.partners.activeAppUsers.toLocaleString()}/${stats.partners.appUsers.toLocaleString()}`}
-          icon={Smartphone}
-          href="/accounts"
-        />
-        <KpiCard
-          label="Users engaged"
-          value={stats.partners.engagedUsers.toLocaleString()}
-          icon={UserCheck}
-          hint="Made a payment this period"
-          href="/accounts"
-        />
-        <KpiCard label="Payments amount" value={money(stats.partners.paymentsAmount)} icon={DollarSign} href="/accounts" />
-        <KpiCard
-          label="App installs"
-          value={stats.partners.appInstalls.toLocaleString()}
-          icon={Download}
-          hint={`iOS ${stats.partners.installsIos.toLocaleString()} / Android ${stats.partners.installsAndroid.toLocaleString()}`}
-          href="/accounts"
-        />
-      </KpiGroup>
+        <KpiGroup title="Partners">
+          <KpiCard label="Partner accounts" value={stats.partners.accounts.toLocaleString()} icon={Building2} href="/accounts" />
+          <KpiCard
+            label="App users (active/total)"
+            value={`${stats.partners.activeAppUsers.toLocaleString()}/${stats.partners.appUsers.toLocaleString()}`}
+            icon={Smartphone}
+            href="/accounts"
+          />
+          <KpiCard
+            label="Users engaged"
+            value={stats.partners.engagedUsers.toLocaleString()}
+            icon={UserCheck}
+            hint="Made a payment this period"
+            href="/accounts"
+          />
+          <KpiCard label="Payments amount" value={money(stats.partners.paymentsAmount)} icon={DollarSign} href="/accounts" />
+          <KpiCard
+            label="App installs"
+            value={stats.partners.appInstalls.toLocaleString()}
+            icon={Download}
+            hint={`iOS ${stats.partners.installsIos.toLocaleString()} / Android ${stats.partners.installsAndroid.toLocaleString()}`}
+            href="/accounts"
+          />
+        </KpiGroup>
 
-      <KpiGroup title="Finance">
-        <KpiCard label="Collected" value={money(stats.finance.collected)} icon={ArrowDownCircle} href="/settlements" />
-        <KpiCard label="Transferred" value={money(stats.finance.transferred)} icon={ArrowUpCircle} href="/settlements" />
-        <KpiCard label="Owed" value={money(stats.finance.owed)} icon={Landmark} emphasize href="/settlements" />
-        <KpiCard
-          label="Service fees outstanding"
-          value={money(stats.finance.serviceFeesOutstanding)}
-          icon={ReceiptText}
-          href="/service-fees"
-        />
-      </KpiGroup>
+        <KpiGroup title="Finance">
+          <KpiCard label="Collected" value={money(stats.finance.collected)} icon={ArrowDownCircle} href="/settlements" />
+          <KpiCard label="Transferred" value={money(stats.finance.transferred)} icon={ArrowUpCircle} href="/settlements" />
+          <KpiCard label="Owed" value={money(stats.finance.owed)} icon={Landmark} emphasize href="/settlements" />
+          <KpiCard
+            label="Service fees outstanding"
+            value={money(stats.finance.serviceFeesOutstanding)}
+            icon={ReceiptText}
+            href="/service-fees"
+          />
+        </KpiGroup>
+      </div>
     </div>
   );
 }
