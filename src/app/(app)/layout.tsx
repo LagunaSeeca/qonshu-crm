@@ -18,7 +18,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const sessionUser = await getSessionUser();
   if (!sessionUser) redirect("/login");
   // Super Admin (no company) belongs in the platform area, not the tenant CRM.
-  if (!sessionUser.companyId) redirect("/platform/companies");
+  if (!sessionUser.companyId) redirect("/platform");
 
   if (sessionUser.role === "PARTNER_VIEWER") {
     const pathname = (await headers()).get("x-pathname") ?? "";
