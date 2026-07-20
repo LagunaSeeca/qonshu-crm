@@ -12,9 +12,16 @@ export type RawUser = {
   appToken: string | null;
 };
 export type RawPayment = { externalUserId: string; occurredAt: Date; amount: number; method: PaymentMethod; category: PaymentCategory };
+
+// What the sync layer hands a source for one account. `externalKey` is the manually-entered
+// Account.externalPartnerKey — the ONLY thing a real (Django) source should match on, so a
+// partner can never receive another partner's data. `accountId` is our internal id (the mock
+// keys its deterministic demo data off it; a real source ignores it).
+export type SourceContext = { accountId: string; externalKey: string | null };
+
 export interface PartnerAnalyticsSource {
-  fetchUsers(accountId: string): Promise<RawUser[]>;
-  fetchPayments(accountId: string, since: Date): Promise<RawPayment[]>;
+  fetchUsers(ctx: SourceContext): Promise<RawUser[]>;
+  fetchPayments(ctx: SourceContext, since: Date): Promise<RawPayment[]>;
 }
 
 // tiny deterministic PRNG (mulberry32) seeded from the account id
@@ -29,7 +36,7 @@ const CATS: PaymentCategory[] = ["APARTMENT", "PARKING", "NON_RESIDENTIAL", "UTI
 const PLATFORMS: AppPlatform[] = ["IOS", "ANDROID"];
 
 export class MockPartnerAnalyticsSource implements PartnerAnalyticsSource {
-  async fetchUsers(accountId: string): Promise<RawUser[]> {
+  async fetchUsers({ accountId }: SourceContext): Promise<RawUser[]> {
     const rnd = seedFrom(accountId + ":u");
     const n = 8 + Math.floor(rnd() * 8);
     return Array.from({ length: n }, (_, i) => {
@@ -50,8 +57,9 @@ export class MockPartnerAnalyticsSource implements PartnerAnalyticsSource {
       };
     });
   }
-  async fetchPayments(accountId: string, since: Date): Promise<RawPayment[]> {
-    const users = await this.fetchUsers(accountId);
+  async fetchPayments(ctx: SourceContext, since: Date): Promise<RawPayment[]> {
+    const { accountId } = ctx;
+    const users = await this.fetchUsers(ctx);
     const rnd = seedFrom(accountId + ":p");
     const out: RawPayment[] = [];
     const days = Math.max(1, Math.ceil((Date.now() - since.getTime()) / 86400000));

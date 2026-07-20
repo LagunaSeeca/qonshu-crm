@@ -51,6 +51,7 @@ type Account = {
   primaryContactName: string | null;
   primaryContactEmail: string | null;
   primaryContactPhone: string | null;
+  externalPartnerKey: string | null;
 };
 
 type Props = {
@@ -114,6 +115,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
   const [primaryContactName, setPrimaryContactName] = useState(account.primaryContactName ?? "");
   const [primaryContactEmail, setPrimaryContactEmail] = useState(account.primaryContactEmail ?? "");
   const [primaryContactPhone, setPrimaryContactPhone] = useState(account.primaryContactPhone ?? "");
+  const [externalPartnerKey, setExternalPartnerKey] = useState(account.externalPartnerKey ?? "");
   const [saving, setSaving] = useState(false);
 
   async function handleSave(e: React.FormEvent) {
@@ -131,6 +133,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
         primaryContactName: primaryContactName || null,
         primaryContactEmail: primaryContactEmail || null,
         primaryContactPhone: primaryContactPhone || null,
+        externalPartnerKey: externalPartnerKey || null,
       }),
     });
     setSaving(false);
@@ -312,6 +315,19 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
               <div className="space-y-1.5">
                 <Label htmlFor="industry">Industry</Label>
                 <Input id="industry" value={industry} onChange={(e) => setIndustry(e.target.value)} placeholder="e.g. SaaS" />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="externalPartnerKey">Partner name for analytics API</Label>
+                <Input
+                  id="externalPartnerKey"
+                  value={externalPartnerKey}
+                  onChange={(e) => setExternalPartnerKey(e.target.value)}
+                  placeholder="Company name as known to the analytics provider"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Maps this account to its partner in the external API so only its own app users, payments &amp; debt sync here.
+                </p>
               </div>
 
               <div className="space-y-1.5">

@@ -221,6 +221,11 @@ model Account {
   name                String
   website             String?
   industry            String?
+  // Manually-entered key that maps this account to the partner company as known to the
+  // external analytics API (matched by company name per the partner API contract). The real
+  // PartnerAnalyticsSource fetches by THIS key, not the display name, so renaming the account
+  // never mis-routes another partner's data onto it. Null => not yet linked => syncs nothing.
+  externalPartnerKey  String?
   status              AccountStatus @default(ACTIVE)
   accountManagerId    String
   primaryContactName  String?

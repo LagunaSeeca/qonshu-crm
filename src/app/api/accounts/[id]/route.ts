@@ -20,6 +20,7 @@ const Patch = z.object({
   accountManagerId: z.string().optional(),
   primaryContactName: z.string().nullable().optional(), primaryContactEmail: z.string().email().nullable().optional(),
   primaryContactPhone: z.string().nullable().optional(),
+  externalPartnerKey: z.string().nullable().optional(),
 });
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {

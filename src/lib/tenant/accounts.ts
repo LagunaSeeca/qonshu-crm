@@ -17,6 +17,7 @@ export function createAccount(db: PrismaClient, user: SessionUser, data: {
   name: string; website?: string; industry?: string; status?: AccountStatus;
   accountManagerId?: string; primaryContactName?: string;
   primaryContactEmail?: string; primaryContactPhone?: string; sourceLeadId?: string;
+  externalPartnerKey?: string;
 }): Promise<Account> {
   return db.account.create({ data: {
     companyId: user.companyId!, name: data.name, website: data.website, industry: data.industry,
@@ -24,6 +25,7 @@ export function createAccount(db: PrismaClient, user: SessionUser, data: {
     primaryContactName: data.primaryContactName,
     primaryContactEmail: data.primaryContactEmail, primaryContactPhone: data.primaryContactPhone,
     sourceLeadId: data.sourceLeadId ?? null,
+    externalPartnerKey: data.externalPartnerKey ?? null,
   } });
 }
 
@@ -84,6 +86,7 @@ export async function updateAccount(db: PrismaClient, user: SessionUser, id: str
   name: string; website: string | null; industry: string | null; status: AccountStatus;
   accountManagerId: string; primaryContactName: string | null;
   primaryContactEmail: string | null; primaryContactPhone: string | null;
+  externalPartnerKey: string | null;
 }>): Promise<Account> {
   const found = await getAccount(db, user, id);
   if (!found) throw new NotFoundError("account not in scope");

@@ -32,6 +32,7 @@ export function AccountCreate({ members }: { members: Member[] }) {
   const [industry, setIndustry] = useState("");
   const [primaryContactName, setPrimaryContactName] = useState("");
   const [primaryContactEmail, setPrimaryContactEmail] = useState("");
+  const [externalPartnerKey, setExternalPartnerKey] = useState("");
   const [accountManagerId, setAccountManagerId] = useState(members[0]?.id ?? "");
   const [showPartnerLogin, setShowPartnerLogin] = useState(false);
   const [partnerName, setPartnerName] = useState("");
@@ -47,6 +48,7 @@ export function AccountCreate({ members }: { members: Member[] }) {
     setIndustry("");
     setPrimaryContactName("");
     setPrimaryContactEmail("");
+    setExternalPartnerKey("");
     setAccountManagerId(members[0]?.id ?? "");
     setShowPartnerLogin(false);
     setPartnerName("");
@@ -74,6 +76,7 @@ export function AccountCreate({ members }: { members: Member[] }) {
           industry: industry || undefined,
           primaryContactName: primaryContactName || undefined,
           primaryContactEmail: primaryContactEmail || undefined,
+          externalPartnerKey: externalPartnerKey || undefined,
           accountManagerId: accountManagerId || undefined,
           partnerLogin: showPartnerLogin && partnerLoginFilled
             ? { name: partnerName || name, email: partnerEmail, password: partnerPassword }
@@ -136,6 +139,18 @@ export function AccountCreate({ members }: { members: Member[] }) {
               value={industry}
               onChange={(e) => setIndustry(e.target.value)}
             />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ac-partner-key">Partner name for analytics API</Label>
+            <Input
+              id="ac-partner-key"
+              placeholder="Company name as known to the analytics provider"
+              value={externalPartnerKey}
+              onChange={(e) => setExternalPartnerKey(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Used to pull this partner&apos;s app users, payments &amp; debt from the external API. Leave blank until you have it.
+            </p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="ac-contact-name">Primary contact name</Label>

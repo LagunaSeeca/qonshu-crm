@@ -40,6 +40,7 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
         primaryContactName: account.primaryContactName ?? null,
         primaryContactEmail: account.primaryContactEmail ?? null,
         primaryContactPhone: account.primaryContactPhone ?? null,
+        externalPartnerKey: account.externalPartnerKey ?? null,
       }}
       members={members.map((m) => ({ id: m.id, name: m.name }))}
       activities={activities.map((a) => ({

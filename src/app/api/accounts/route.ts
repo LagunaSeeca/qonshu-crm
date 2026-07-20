@@ -20,6 +20,7 @@ const Create = z.object({ name: z.string().min(1), website: z.string().optional(
   status: z.enum(["ACTIVE","AT_RISK","CHURNED"]).optional(), accountManagerId: z.string().optional(),
   primaryContactName: z.string().optional(),
   primaryContactEmail: z.string().email().optional().or(z.literal("")), primaryContactPhone: z.string().optional(),
+  externalPartnerKey: z.string().optional(),
   partnerLogin: z.object({
     name: z.string().min(1),
     email: z.string().email(),

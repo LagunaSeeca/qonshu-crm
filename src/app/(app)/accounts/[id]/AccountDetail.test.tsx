@@ -4,7 +4,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: () => {}, refresh:
 import { AccountDetail } from "./AccountDetail";
 
 const base = {
-  account: { id: "a1", name: "Partner Co", status: "ACTIVE", website: "", industry: "SaaS", accountManagerId: "u", primaryContactName: "Jane", primaryContactEmail: "", primaryContactPhone: "" },
+  account: { id: "a1", name: "Partner Co", status: "ACTIVE", website: "", industry: "SaaS", accountManagerId: "u", primaryContactName: "Jane", primaryContactEmail: "", primaryContactPhone: "", externalPartnerKey: null },
   members: [{ id: "u", name: "M1" }],
   activities: [{ id: "ac1", kind: "MEETING", body: "kickoff call", outcome: null, occurredAt: new Date().toISOString(), authorId: "u" }],
   tasks: [{ id: "t1", title: "send deck", dueDate: null, done: false }],
