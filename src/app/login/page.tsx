@@ -1,6 +1,5 @@
 "use client";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,7 +9,6 @@ import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
 
 export default function Login() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -23,7 +21,12 @@ export default function Login() {
       toast.error("Invalid credentials");
       setLoading(false);
     } else {
-      router.push("/dashboard");
+      // Hard navigation (not router.push): each role's landing is resolved by a server-side
+      // layout redirect (partner -> /analytics, super-admin -> /platform). A soft client
+      // navigation that hits redirect() in the shared (app) layout lands the URL but renders
+      // a blank tree — the bug behind "partner view is just blank". A full document load
+      // follows the redirect correctly for every role.
+      window.location.href = "/dashboard";
     }
   }
 
