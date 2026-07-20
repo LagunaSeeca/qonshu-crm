@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Plus } from "lucide-react";
+import { Plus, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,6 +33,10 @@ export function AccountCreate({ members }: { members: Member[] }) {
   const [primaryContactName, setPrimaryContactName] = useState("");
   const [primaryContactEmail, setPrimaryContactEmail] = useState("");
   const [accountManagerId, setAccountManagerId] = useState(members[0]?.id ?? "");
+  const [showPartnerLogin, setShowPartnerLogin] = useState(false);
+  const [partnerName, setPartnerName] = useState("");
+  const [partnerEmail, setPartnerEmail] = useState("");
+  const [partnerPassword, setPartnerPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
   const managerItems = Object.fromEntries(members.map((m) => [m.id, m.name ?? m.email]));
@@ -44,10 +48,21 @@ export function AccountCreate({ members }: { members: Member[] }) {
     setPrimaryContactName("");
     setPrimaryContactEmail("");
     setAccountManagerId(members[0]?.id ?? "");
+    setShowPartnerLogin(false);
+    setPartnerName("");
+    setPartnerEmail("");
+    setPartnerPassword("");
   }
+
+  const partnerLoginFilled = partnerEmail.trim().length > 0 && partnerPassword.length > 0;
+  const partnerLoginInvalid = showPartnerLogin && partnerLoginFilled && partnerPassword.length < 8;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (partnerLoginInvalid) {
+      toast.error("Partner login password must be at least 8 characters");
+      return;
+    }
     setLoading(true);
     try {
       const r = await fetch("/api/accounts", {
@@ -60,13 +75,19 @@ export function AccountCreate({ members }: { members: Member[] }) {
           primaryContactName: primaryContactName || undefined,
           primaryContactEmail: primaryContactEmail || undefined,
           accountManagerId: accountManagerId || undefined,
+          partnerLogin: showPartnerLogin && partnerLoginFilled
+            ? { name: partnerName || name, email: partnerEmail, password: partnerPassword }
+            : undefined,
         }),
       });
       if (r.ok) {
-        toast.success("Account created");
+        const body = await r.json().catch(() => ({}));
+        toast.success(body?.partnerUser ? "Account created + partner login" : "Account created");
         reset();
         setOpen(false);
         router.refresh();
+      } else if (r.status === 409) {
+        toast.error("That login email is already in use");
       } else {
         const body = await r.json().catch(() => ({}));
         toast.error(body?.error ?? "Failed to create account");
@@ -148,12 +169,66 @@ export function AccountCreate({ members }: { members: Member[] }) {
               </SelectContent>
             </Select>
           </div>
+
+          <div className="border-t border-border pt-3">
+            <button
+              type="button"
+              onClick={() => setShowPartnerLogin((v) => !v)}
+              className="flex w-full items-center justify-between text-sm font-medium text-foreground cursor-pointer"
+              aria-expanded={showPartnerLogin}
+            >
+              Give this partner portal access (optional)
+              <ChevronDown
+                className={`h-4 w-4 text-muted-foreground transition-transform duration-150 ${showPartnerLogin ? "rotate-180" : ""}`}
+              />
+            </button>
+            {showPartnerLogin && (
+              <div className="space-y-4 pt-3">
+                <p className="text-xs text-muted-foreground">
+                  The partner signs in with this email/password and sees only their own analytics & records.
+                </p>
+                <div className="space-y-1.5">
+                  <Label htmlFor="ac-partner-name">Name</Label>
+                  <Input
+                    id="ac-partner-name"
+                    placeholder="Defaults to account name"
+                    value={partnerName}
+                    onChange={(e) => setPartnerName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="ac-partner-email">Login email</Label>
+                  <Input
+                    id="ac-partner-email"
+                    type="email"
+                    placeholder="partner@example.com"
+                    value={partnerEmail}
+                    onChange={(e) => setPartnerEmail(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="ac-partner-password">Password</Label>
+                  <Input
+                    id="ac-partner-password"
+                    type="password"
+                    placeholder="Min 8 characters"
+                    value={partnerPassword}
+                    onChange={(e) => setPartnerPassword(e.target.value)}
+                    minLength={8}
+                  />
+                  {partnerLoginInvalid && (
+                    <p className="text-xs text-destructive">Password must be at least 8 characters</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </form>
         <DialogFooter className="pt-2">
           <Button variant="outline" type="button" onClick={() => setOpen(false)} disabled={loading}>
             Cancel
           </Button>
-          <Button type="submit" form="account-create-form" disabled={loading}>
+          <Button type="submit" form="account-create-form" disabled={loading || partnerLoginInvalid}>
             {loading ? "Creating…" : "Create account"}
           </Button>
         </DialogFooter>
