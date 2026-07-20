@@ -1,10 +1,12 @@
-import type { PrismaClient, Account, AccountStatus, Prisma } from "@prisma/client";
+import type { PrismaClient, Account, AccountStatus, Prisma, User } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
 import { getLead } from "./leads";
 import { removeLeadDir } from "@/lib/files/storage";
+import { hashPassword } from "@/lib/auth/password";
 
 export class AlreadyConvertedError extends Error {}
+export class InvalidPartnerLoginError extends Error {}
 
 export function accountScopeWhere(user: SessionUser): { companyId: string } {
   if (!user.companyId) throw new Error("no tenant context");
@@ -23,6 +25,33 @@ export function createAccount(db: PrismaClient, user: SessionUser, data: {
     primaryContactEmail: data.primaryContactEmail, primaryContactPhone: data.primaryContactPhone,
     sourceLeadId: data.sourceLeadId ?? null,
   } });
+}
+
+// Same as createAccount, but can also provision the partner's PARTNER_VIEWER login in the
+// same transaction — so "add an account" and "give the partner portal access" happen atomically
+// instead of as two separate admin steps (Accounts, then Users).
+export function createAccountWithLogin(db: PrismaClient, user: SessionUser, data: {
+  name: string; website?: string; industry?: string; status?: AccountStatus;
+  accountManagerId?: string; primaryContactName?: string;
+  primaryContactEmail?: string; primaryContactPhone?: string; sourceLeadId?: string;
+  partnerLogin?: { name: string; email: string; password: string };
+}): Promise<{ account: Account; partnerUser: User | null }> {
+  const { partnerLogin, ...accountData } = data;
+  if (partnerLogin && partnerLogin.password.length < 8) {
+    throw new InvalidPartnerLoginError("password must be at least 8 characters");
+  }
+  return db.$transaction(async (tx) => {
+    const account = await createAccount(tx as PrismaClient, user, accountData);
+    if (!partnerLogin) return { account, partnerUser: null };
+    const passwordHash = await hashPassword(partnerLogin.password);
+    const partnerUser = await tx.user.create({
+      data: {
+        companyId: user.companyId!, email: partnerLogin.email, name: partnerLogin.name,
+        passwordHash, role: "PARTNER_VIEWER", accountId: account.id, status: "ACTIVE",
+      },
+    });
+    return { account, partnerUser };
+  });
 }
 
 export function listAccounts(db: PrismaClient, user: SessionUser, opts?: { status?: AccountStatus; accountManagerId?: string; q?: string }): Promise<Account[]> {
