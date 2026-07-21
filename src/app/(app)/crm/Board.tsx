@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { LayoutGrid, List, Plus, Settings2 } from "lucide-react";
+import { LayoutGrid, List, Plus, Settings2, Phone, Clock, CalendarClock, User as UserIcon } from "lucide-react";
 
 type Stage = { id: string; name: string; probability: number };
 type Lead = {
@@ -26,7 +26,23 @@ type Lead = {
   stageId: string;
   contactName: string;
   priority?: string;
+  phone?: string | null;
+  ownerName?: string;
+  lastActivityAt?: string | null;
+  nextDate?: string | null;
 };
+
+// "Jun 8" — adds the year only when it isn't the current one, so recent dates stay compact.
+function fmtDate(iso?: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  const now = new Date();
+  return d.toLocaleDateString("en-US", {
+    month: "short", day: "numeric",
+    ...(d.getUTCFullYear() !== now.getUTCFullYear() ? { year: "numeric" } : {}),
+    timeZone: "UTC",
+  });
+}
 
 function priorityBadge(priority?: string) {
   switch (priority) {
@@ -57,10 +73,42 @@ function LeadCard({ lead }: { lead: Lead }) {
         <Card className="mb-2 shadow-sm hover:shadow transition-shadow duration-150 border border-border">
           <CardContent className="p-3">
             <div className="font-medium text-sm text-foreground leading-snug mb-1">{lead.title}</div>
-            <div className="text-xs text-muted-foreground mb-2">{lead.contactName}</div>
-            <div className="flex items-center gap-2">
-              {priorityBadge(lead.priority)}
+            {/* Contact + phone on one line — phone only when present. */}
+            <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap text-xs text-muted-foreground mb-2">
+              <span className="inline-flex items-center gap-1 min-w-0">
+                <UserIcon className="size-3 shrink-0" />
+                <span className="truncate">{lead.contactName}</span>
+              </span>
+              {lead.phone && (
+                <span className="inline-flex items-center gap-1">
+                  <Phone className="size-3 shrink-0" />
+                  <span className="tabular-nums">{lead.phone}</span>
+                </span>
+              )}
             </div>
+            <div className="flex items-center justify-between gap-2">
+              {priorityBadge(lead.priority)}
+              {lead.ownerName && lead.ownerName !== "—" && (
+                <span className="text-[11px] text-muted-foreground truncate max-w-[55%] text-right">{lead.ownerName}</span>
+              )}
+            </div>
+            {/* Last activity + next date — the two dates worth seeing before opening the lead. */}
+            {(lead.lastActivityAt || lead.nextDate) && (
+              <div className="flex items-center gap-x-3 gap-y-1 flex-wrap mt-2 pt-2 border-t border-border/60 text-[11px] text-muted-foreground">
+                {lead.lastActivityAt && (
+                  <span className="inline-flex items-center gap-1" title="Last activity">
+                    <Clock className="size-3 shrink-0" />
+                    {fmtDate(lead.lastActivityAt)}
+                  </span>
+                )}
+                {lead.nextDate && (
+                  <span className="inline-flex items-center gap-1 text-foreground/80" title="Next / expected close date">
+                    <CalendarClock className="size-3 shrink-0" />
+                    {fmtDate(lead.nextDate)}
+                  </span>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       </Link>

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Briefcase } from "lucide-react";
+import { Briefcase, Phone } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -14,10 +14,24 @@ export type LeadRow = {
   id: string;
   title: string;
   contactName: string;
+  phone: string | null;
   stageName: string;
   priority: string;
   ownerName: string;
+  lastActivityAt: string | null;
+  nextDate: string | null;
 };
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const now = new Date();
+  return d.toLocaleDateString("en-US", {
+    month: "short", day: "numeric",
+    ...(d.getUTCFullYear() !== now.getUTCFullYear() ? { year: "numeric" } : {}),
+    timeZone: "UTC",
+  });
+}
 
 function StageBadge({ name }: { name: string }) {
   // Heuristic: color by common stage-type conventions
@@ -87,6 +101,8 @@ export function LeadTable({ rows }: { rows: LeadRow[] }) {
             <TableHead className="font-semibold text-foreground">Stage</TableHead>
             <TableHead className="font-semibold text-foreground">Owner</TableHead>
             <TableHead className="font-semibold text-foreground">Priority</TableHead>
+            <TableHead className="font-semibold text-foreground whitespace-nowrap">Last activity</TableHead>
+            <TableHead className="font-semibold text-foreground whitespace-nowrap">Next</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -100,13 +116,25 @@ export function LeadTable({ rows }: { rows: LeadRow[] }) {
                   {r.title}
                 </Link>
               </TableCell>
-              <TableCell className="text-muted-foreground">{r.contactName}</TableCell>
+              <TableCell className="text-muted-foreground">
+                <div className="text-foreground">{r.contactName}</div>
+                {r.phone && (
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground tabular-nums">
+                    <Phone className="size-3 shrink-0" />
+                    {r.phone}
+                  </div>
+                )}
+              </TableCell>
               <TableCell>
                 <StageBadge name={r.stageName} />
               </TableCell>
               <TableCell className="text-muted-foreground">{r.ownerName}</TableCell>
               <TableCell>
                 <PriorityBadge priority={r.priority} />
+              </TableCell>
+              <TableCell className="text-muted-foreground whitespace-nowrap tabular-nums">{fmtDate(r.lastActivityAt)}</TableCell>
+              <TableCell className="whitespace-nowrap tabular-nums">
+                {r.nextDate ? <span className="text-foreground">{fmtDate(r.nextDate)}</span> : <span className="text-muted-foreground">—</span>}
               </TableCell>
             </TableRow>
           ))}

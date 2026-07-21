@@ -50,6 +50,40 @@ export async function listLeads(db: PrismaClient, user: SessionUser, opts?: {
   return db.lead.findMany({ where, orderBy: { [opts?.sort ?? "createdAt"]: "desc" }, skip: opts?.skip, take: opts?.take });
 }
 
+// Enriched rows for the board cards + list table: everything worth seeing at a glance without
+// opening the lead — owner, contact phone, the last time anything happened, and the next date on
+// the calendar. Kept to one findMany (owner join + newest activity) so it stays cheap.
+export type LeadCard = {
+  id: string; title: string; stageId: string; contactName: string; phone: string | null;
+  priority: Priority; ownerName: string; lastActivityAt: string | null; nextDate: string | null;
+};
+export async function listLeadCards(db: PrismaClient, user: SessionUser, opts?: {
+  stageId?: string; q?: string;
+}): Promise<LeadCard[]> {
+  const where: Prisma.LeadWhereInput = { ...(await scopeWhere(db, user)) };
+  if (opts?.stageId) where.stageId = opts.stageId;
+  if (opts?.q) where.OR = [
+    { title: { contains: opts.q, mode: "insensitive" } },
+    { contactName: { contains: opts.q, mode: "insensitive" } },
+    { companyName: { contains: opts.q, mode: "insensitive" } },
+  ];
+  const leads = await db.lead.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+    include: {
+      owner: { select: { name: true, email: true } },
+      activities: { orderBy: { occurredAt: "desc" }, take: 1, select: { occurredAt: true } },
+    },
+  });
+  return leads.map((l) => ({
+    id: l.id, title: l.title, stageId: l.stageId, contactName: l.contactName, phone: l.phone,
+    priority: l.priority,
+    ownerName: l.owner?.name ?? l.owner?.email ?? "—",
+    lastActivityAt: l.activities[0]?.occurredAt.toISOString() ?? null,
+    nextDate: l.expectedCloseDate?.toISOString() ?? null,
+  }));
+}
+
 export async function getLead(db: PrismaClient, user: SessionUser, id: string): Promise<Lead | null> {
   return db.lead.findFirst({ where: { id, ...(await scopeWhere(db, user)) } });
 }

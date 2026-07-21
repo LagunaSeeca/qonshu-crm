@@ -4,7 +4,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
 import { getTenantContext } from "@/lib/tenant/context";
 import { listStages } from "@/lib/tenant/stages";
-import { listLeads } from "@/lib/tenant/leads";
+import { listLeadCards } from "@/lib/tenant/leads";
 import { listUsers } from "@/lib/tenant/users";
 import { LeadCreate } from "../LeadCreate";
 import { LeadTable, type LeadRow } from "../LeadTable";
@@ -19,20 +19,22 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
   const sp = await searchParams;
   const [stages, leads, users] = await Promise.all([
     listStages(prisma, ctx),
-    listLeads(prisma, user, { q: sp.q, stageId: sp.stageId }),
+    listLeadCards(prisma, user, { q: sp.q, stageId: sp.stageId }),
     listUsers(prisma, ctx),
   ]);
 
   const stageMap = Object.fromEntries(stages.map((s) => [s.id, s.name]));
-  const userMap = Object.fromEntries(users.map((u) => [u.id, u.name ?? u.email]));
 
   const rows: LeadRow[] = leads.map((l) => ({
     id: l.id,
     title: l.title,
     contactName: l.contactName,
+    phone: l.phone,
     stageName: stageMap[l.stageId] ?? l.stageId,
     priority: l.priority,
-    ownerName: userMap[l.ownerId ?? ""] ?? "—",
+    ownerName: l.ownerName,
+    lastActivityAt: l.lastActivityAt,
+    nextDate: l.nextDate,
   }));
 
   return (
