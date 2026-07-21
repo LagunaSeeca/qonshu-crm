@@ -21,12 +21,14 @@ export type ServiceFeeSummary = {
   rows: ServiceFeeRow[];
 };
 
-type Props = { initialData: ServiceFeeSummary };
+// Partners can't open account detail (/accounts/[id] bounces them back), so for them the row
+// name is plain text instead of a dead link that would blank on click.
+type Props = { initialData: ServiceFeeSummary; isPartner?: boolean };
 
 const money = (n: number) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
-export function ServiceFeesView({ initialData }: Props) {
+export function ServiceFeesView({ initialData, isPartner = false }: Props) {
   const [data, setData] = useState<ServiceFeeSummary>(initialData);
   const [unpaidOnly, setUnpaidOnly] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -123,12 +125,16 @@ export function ServiceFeesView({ initialData }: Props) {
               {rows.map((r) => (
                 <TableRow key={r.accountId} className="hover:bg-muted/40 transition-colors duration-150">
                   <TableCell className="font-medium">
-                    <Link
-                      href={`/accounts/${r.accountId}`}
-                      className="text-sky-700 dark:text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 rounded"
-                    >
-                      {r.accountName}
-                    </Link>
+                    {isPartner ? (
+                      r.accountName
+                    ) : (
+                      <Link
+                        href={`/accounts/${r.accountId}`}
+                        className="text-sky-700 dark:text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 rounded"
+                      >
+                        {r.accountName}
+                      </Link>
+                    )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{money(r.billed)}</TableCell>
                   <TableCell className="text-right tabular-nums">{money(r.paid)}</TableCell>

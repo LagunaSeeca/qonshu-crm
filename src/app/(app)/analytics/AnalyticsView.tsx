@@ -86,6 +86,9 @@ type Props = {
   // own account, so both of these are omitted/empty for them and the filter never renders.
   accounts?: AccountOption[];
   showCompanyFilter?: boolean;
+  // Partners can't open account detail (/accounts/[id] bounces them back), so their partner-row
+  // names render as plain text instead of dead links that would blank on click.
+  isPartner?: boolean;
 };
 
 const METHOD_LABELS: Record<string, string> = { CARD: "Card", MANUAL: "Manual", CASH: "Cash" };
@@ -279,7 +282,7 @@ function KpiTile({
   );
 }
 
-export function AnalyticsView({ initialData, initialPeriod, accounts = [], showCompanyFilter = false }: Props) {
+export function AnalyticsView({ initialData, initialPeriod, accounts = [], showCompanyFilter = false, isPartner = false }: Props) {
   const [data, setData] = useState<CompanyAnalyticsData>(initialData);
   const [period, setPeriod] = useState<PeriodType>(initialPeriod);
   const [customFrom, setCustomFrom] = useState("");
@@ -626,9 +629,13 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
                   {data.partners.map((p) => (
                     <TableRow key={p.accountId}>
                       <TableCell className="font-medium">
-                        <Link href={`/accounts/${p.accountId}`} className="hover:underline text-accent">
-                          {p.accountName}
-                        </Link>
+                        {isPartner ? (
+                          p.accountName
+                        ) : (
+                          <Link href={`/accounts/${p.accountId}`} className="hover:underline text-accent">
+                            {p.accountName}
+                          </Link>
+                        )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{p.appUsers.toLocaleString()}</TableCell>
                       <TableCell className="text-right tabular-nums">{p.installs.toLocaleString()}</TableCell>

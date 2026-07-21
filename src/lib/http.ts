@@ -6,6 +6,14 @@ export { ForbiddenError, NotFoundError };
 
 export class UnauthorizedError extends Error {}
 
+// Build a safe Content-Disposition for a download. The filename is user-supplied (uploaded),
+// so injecting it raw lets a `"`, `\`, or CR/LF break the header. Emit an ASCII-sanitized
+// `filename="…"` fallback plus an RFC 5987 `filename*` that carries the real (unicode) name.
+export function contentDisposition(filename: string): string {
+  const fallback = filename.replace(/[\r\n"\\]/g, "_").replace(/[^\x20-\x7e]/g, "_");
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
 export function errorResponse(e: unknown): NextResponse {
   if (e instanceof UnauthorizedError)
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });

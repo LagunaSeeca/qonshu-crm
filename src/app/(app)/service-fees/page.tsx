@@ -10,6 +10,7 @@ export default async function ServiceFeesPage() {
   if (!user) redirect("/login");
 
   const data = await listCompanyServiceFees(prisma, user);
+  const isPartner = user.role === "PARTNER_VIEWER";
 
   return (
     <div className="space-y-6">
@@ -18,7 +19,7 @@ export default async function ServiceFeesPage() {
         subtitle="What accounts pay us monthly for using our app — separate from resident payments and settlements"
       />
 
-      <ServiceFeesView initialData={data} />
+      <ServiceFeesView initialData={data} isPartner={isPartner} />
     </div>
   );
 }

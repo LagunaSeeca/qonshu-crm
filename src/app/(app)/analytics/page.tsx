@@ -26,6 +26,7 @@ export default async function AnalyticsPage() {
       initialPeriod="MONTHLY"
       accounts={isPartner ? [] : accounts.map((a) => ({ id: a.id, name: a.name }))}
       showCompanyFilter={!isPartner}
+      isPartner={isPartner}
     />
   );
 }

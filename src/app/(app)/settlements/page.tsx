@@ -90,12 +90,18 @@ export default async function SettlementsPage() {
               {rows.map((r) => (
                 <TableRow key={r.accountId} className="hover:bg-muted/40 transition-colors duration-150">
                   <TableCell className="font-medium">
-                    <Link
-                      href={`/accounts/${r.accountId}`}
-                      className="text-sky-700 dark:text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 rounded"
-                    >
-                      {r.accountName}
-                    </Link>
+                    {/* Partners can't open account detail (/accounts/[id] bounces them back) — plain
+                        text instead of a dead link that would blank on click. */}
+                    {user.role === "PARTNER_VIEWER" ? (
+                      r.accountName
+                    ) : (
+                      <Link
+                        href={`/accounts/${r.accountId}`}
+                        className="text-sky-700 dark:text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 rounded"
+                      >
+                        {r.accountName}
+                      </Link>
+                    )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{money(r.collected)}</TableCell>
                   <TableCell className="text-right tabular-nums">{money(r.transferred)}</TableCell>

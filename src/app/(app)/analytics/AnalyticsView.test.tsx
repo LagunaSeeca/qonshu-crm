@@ -41,6 +41,12 @@ describe("AnalyticsView", () => {
     expect(link).toHaveAttribute("href", "/accounts/a1");
   });
 
+  it("renders the partner name as plain text (no dead account link) for partner logins", () => {
+    render(<AnalyticsView initialData={data} initialPeriod="MONTHLY" isPartner />);
+    expect(screen.queryByRole("link", { name: /acme partner/i })).toBeNull();
+    expect(screen.getAllByText("Acme Partner").length).toBeGreaterThan(0);
+  });
+
   it("renders empty states for breakdowns without crashing", () => {
     render(<AnalyticsView initialData={data} initialPeriod="MONTHLY" />);
     expect(screen.getAllByText(/no data for this range/i).length).toBeGreaterThan(0);
