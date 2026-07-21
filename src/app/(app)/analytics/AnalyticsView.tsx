@@ -59,6 +59,7 @@ export type Totals = {
 type MethodBreakdown = { method: string; count: number; amount: number };
 type CategoryBreakdown = { category: string; count: number; amount: number };
 type MoneyFlowPoint = { date: string; paymentsIn: number; collected: number; transferred: number };
+type DebtPoint = { date: string; debt: number };
 type PartnerRow = {
   accountId: string;
   accountName: string;
@@ -74,6 +75,7 @@ export type CompanyAnalyticsData = {
   byMethod: MethodBreakdown[];
   byCategory: CategoryBreakdown[];
   moneyFlow: MoneyFlowPoint[];
+  debtOverTime: DebtPoint[];
   partners: PartnerRow[];
 };
 
@@ -172,6 +174,27 @@ function pickDirectLabels(lines: { key: string; last: { x: number; y: number } |
     }
   }
   return shown;
+}
+
+// Debt over time: a single series (total outstanding resident debt) — a stock, so it's drawn as
+// a filled area, one hue. Single series → no legend needed (the card title names it); the amber
+// is validated for contrast on both surfaces, distinct from the money-flow hues.
+const DEBT_COLOR = "#D97706";
+function buildDebtArea(points: DebtPoint[], width: number, height: number) {
+  const max = Math.max(1, ...points.map((p) => p.debt));
+  const pad = height * 0.1;
+  const usableH = height - pad * 2;
+  const base = pad + usableH;
+  const stepX = points.length > 1 ? width / (points.length - 1) : 0;
+  const xAt = (i: number) => (points.length > 1 ? i * stepX : width / 2);
+  const yAt = (v: number) => pad + usableH - (v / max) * usableH;
+  const line = points.map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p.debt).toFixed(1)}`).join(" ");
+  const area = points.length > 0
+    ? `M${xAt(0).toFixed(1)},${base.toFixed(1)} ${points.map((p, i) => `L${xAt(i).toFixed(1)},${yAt(p.debt).toFixed(1)}`).join(" ")} L${xAt(points.length - 1).toFixed(1)},${base.toFixed(1)} Z`
+    : "";
+  const last = points.length > 0 ? { x: xAt(points.length - 1), y: yAt(points[points.length - 1].debt) } : null;
+  const gridY = [0, 0.25, 0.5, 0.75, 1].map((f) => pad + usableH * f);
+  return { line, area, last, gridY };
 }
 
 // Bucket keys are "YYYY-MM-DD" (day/week, week keyed by its Monday) or "YYYY-MM" (month).
@@ -344,6 +367,12 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
   };
   const moneyFlowSummary = `Money flow: ${money(flowTotals.paymentsIn)} app payments in, ${money(flowTotals.collected)} collected to bank, ${money(flowTotals.transferred)} cash transferred out, across ${data.moneyFlow.length} bucket${data.moneyFlow.length === 1 ? "" : "s"}`;
   const moneyFlowDirectLabels = moneyFlowGeo ? pickDirectLabels(moneyFlowGeo.lines, 14) : new Set<string>();
+
+  const debtGeo = data.debtOverTime.length > 0 ? buildDebtArea(data.debtOverTime, 400, 130) : null;
+  const debtHasData = data.debtOverTime.some((d) => d.debt > 0);
+  const debtCurrent = data.debtOverTime.length > 0 ? data.debtOverTime[data.debtOverTime.length - 1].debt : 0;
+  const debtPeak = data.debtOverTime.reduce((m, d) => Math.max(m, d.debt), 0);
+  const debtSummary = `Debt over time: currently ${money(debtCurrent)}, peak ${money(debtPeak)}, across ${data.debtOverTime.length} day${data.debtOverTime.length === 1 ? "" : "s"}`;
 
   return (
     <div className="space-y-6">
@@ -557,6 +586,81 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Debt over time: total outstanding resident debt as a stock (a running balance), plotted
+          from daily snapshots. Single series → filled area, no legend (the title names it). */}
+      <Card>
+        <CardHeader className="border-b border-border pb-4">
+          <CardTitle className="text-base font-semibold flex items-center gap-2">
+            <Wallet className="size-4 text-muted-foreground" />
+            Debt Over Time
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-4">
+          {!debtHasData ? (
+            <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground">
+              <Wallet className="size-8 mb-2 opacity-40" />
+              <p className="text-sm">No debt recorded in this range</p>
+              <p className="text-xs mt-1">Snapshots accrue each time analytics sync.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-baseline gap-4">
+                <div>
+                  <p className="text-xs text-muted-foreground">Current</p>
+                  <p className="text-xl font-bold tabular-nums text-foreground">{money(debtCurrent)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Peak in range</p>
+                  <p className="text-xl font-bold tabular-nums text-foreground">{money(debtPeak)}</p>
+                </div>
+              </div>
+              <svg
+                viewBox="0 0 400 130"
+                preserveAspectRatio="none"
+                className="w-full h-36"
+                role="img"
+                aria-label={debtSummary}
+              >
+                <title>{debtSummary}</title>
+                {debtGeo?.gridY.map((y, i) => (
+                  <line key={i} x1={0} x2={400} y1={y} y2={y} className="stroke-border" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+                ))}
+                {debtGeo && <path d={debtGeo.area} fill={DEBT_COLOR} fillOpacity={0.12} stroke="none" />}
+                {debtGeo && (
+                  <path
+                    d={debtGeo.line}
+                    fill="none"
+                    stroke={DEBT_COLOR}
+                    strokeWidth={2}
+                    vectorEffect="non-scaling-stroke"
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                )}
+                {debtGeo?.last && (
+                  <g>
+                    <circle cx={debtGeo.last.x} cy={debtGeo.last.y} r={2.5} fill={DEBT_COLOR} />
+                    <text
+                      x={debtGeo.last.x - 6}
+                      y={debtGeo.last.y}
+                      textAnchor="end"
+                      dominantBaseline="middle"
+                      className="fill-muted-foreground text-[9px]"
+                    >
+                      {money(debtCurrent)}
+                    </text>
+                  </g>
+                )}
+              </svg>
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                <span>{formatBucketLabel(data.debtOverTime[0].date)}</span>
+                <span>{formatBucketLabel(data.debtOverTime[data.debtOverTime.length - 1].date)}</span>
+              </div>
             </div>
           )}
         </CardContent>

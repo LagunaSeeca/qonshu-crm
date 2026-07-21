@@ -47,7 +47,7 @@ export async function getCompanyAnalytics(
     targetAccountId = opts.accountId;
   }
 
-  const [accounts, users, payments, settlementEntries] = await Promise.all([
+  const [accounts, users, payments, settlementEntries, debtSnapshots] = await Promise.all([
     targetAccountId
       ? db.account.findMany({ where: { id: targetAccountId, companyId } })
       : listAccounts(db, user),
@@ -63,6 +63,13 @@ export async function getCompanyAnalytics(
       where: {
         companyId,
         occurredAt: { gte: range.from, lte: range.to },
+        ...(targetAccountId ? { accountId: targetAccountId } : {}),
+      },
+    }),
+    db.accountDebtSnapshot.findMany({
+      where: {
+        companyId,
+        capturedOn: { gte: range.from, lte: range.to },
         ...(targetAccountId ? { accountId: targetAccountId } : {}),
       },
     }),
@@ -118,6 +125,17 @@ export async function getCompanyAnalytics(
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([date, v]) => ({ date, paymentsIn: v.paymentsIn, collected: v.collected, transferred: v.transferred }));
 
+  // Debt over time: sum each day's per-account debt snapshots into one company-wide (or
+  // single-partner) total-debt point. A stock, so it's the day's balance — never summed across days.
+  const debtMap = new Map<string, number>();
+  for (const s of debtSnapshots) {
+    const d = s.capturedOn.toISOString().slice(0, 10);
+    debtMap.set(d, (debtMap.get(d) ?? 0) + num(s.totalDebt));
+  }
+  const debtOverTime = [...debtMap.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([date, debt]) => ({ date, debt }));
+
   const partners = accounts
     .map((a) => {
       const acctUsers = users.filter((u) => u.accountId === a.id);
@@ -155,6 +173,7 @@ export async function getCompanyAnalytics(
     byCategory,
     trend,
     moneyFlow,
+    debtOverTime,
     partners,
   };
 }

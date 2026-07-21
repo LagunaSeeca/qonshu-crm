@@ -54,6 +54,7 @@ model Company {
   accountFieldDefs    AccountFieldDef[]
   accountFieldValues  AccountFieldValue[]
   serviceFees         ServiceFee[]
+  debtSnapshots       AccountDebtSnapshot[]
 }
 
 model User {
@@ -244,6 +245,7 @@ model Account {
   fieldValues         AccountFieldValue[]
   serviceFees         ServiceFee[]
   partnerUsers        User[]
+  debtSnapshots       AccountDebtSnapshot[]
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, accountManagerId])
@@ -346,6 +348,22 @@ model PartnerAppUser {
   @@unique([accountId, externalId])
   @@index([companyId, accountId])
   @@index([accountId, active])
+}
+
+// One row per account per day recording that day's total resident debt. Debt is a stock
+// (a running balance), not a flow, so it can't be derived from payments — it's snapshotted on
+// each analytics sync so a "debt over time" trend can be charted going forward.
+model AccountDebtSnapshot {
+  id         String   @id @default(cuid())
+  companyId  String
+  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  capturedOn DateTime @db.Date
+  totalDebt  Decimal  @default(0)
+  createdAt  DateTime @default(now())
+  @@unique([accountId, capturedOn])
+  @@index([companyId, capturedOn])
 }
 
 model PartnerPayment {

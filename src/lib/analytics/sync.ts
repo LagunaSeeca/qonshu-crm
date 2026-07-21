@@ -22,6 +22,18 @@ export async function syncAccountAnalytics(db: PrismaClient, accountId: string, 
       },
     });
   }
+  // Record today's total debt so the "debt over time" trend accrues a point per sync. Debt is a
+  // stock (a running balance), not derivable from payments — one row per account per day, latest
+  // sync of the day wins.
+  const totalDebt = rawUsers.reduce((s, u) => s + u.debt, 0);
+  const now = new Date();
+  const capturedOn = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  await db.accountDebtSnapshot.upsert({
+    where: { accountId_capturedOn: { accountId, capturedOn } },
+    update: { totalDebt },
+    create: { companyId, accountId, capturedOn, totalDebt },
+  });
+
   const idByExternal = new Map((await db.partnerAppUser.findMany({ where: { accountId } })).map((u) => [u.externalId, u.id]));
   const since = new Date(Date.now() - 90 * 86400000);
   const rawPayments = await source.fetchPayments(ctx, since);

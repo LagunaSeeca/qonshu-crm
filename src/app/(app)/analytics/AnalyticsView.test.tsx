@@ -23,6 +23,7 @@ const data = {
   byMethod: [] as { method: string; count: number; amount: number }[],
   byCategory: [] as { category: string; count: number; amount: number }[],
   moneyFlow: [] as { date: string; paymentsIn: number; collected: number; transferred: number }[],
+  debtOverTime: [] as { date: string; debt: number }[],
   partners: [
     { accountId: "a1", accountName: "Acme Partner", appUsers: 15, installs: 14, engagedUsers: 10, paymentsCount: 25, paymentsAmount: 18000 },
   ],
@@ -69,6 +70,23 @@ describe("AnalyticsView", () => {
     expect(screen.getAllByText("App payments in").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Collected to bank").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Cash transferred out").length).toBeGreaterThan(0);
+  });
+
+  it("shows the debt-over-time empty state with no snapshots, and current/peak once there's data", () => {
+    render(<AnalyticsView initialData={data} initialPeriod="MONTHLY" />);
+    expect(screen.getByText(/no debt recorded in this range/i)).toBeInTheDocument();
+
+    const withDebt = {
+      ...data,
+      debtOverTime: [
+        { date: "2026-07-01", debt: 800 },
+        { date: "2026-07-15", debt: 1200 },
+      ],
+    };
+    render(<AnalyticsView initialData={withDebt} initialPeriod="MONTHLY" />);
+    expect(screen.getAllByText("Debt Over Time").length).toBeGreaterThan(0);
+    expect(screen.getByText("Peak in range")).toBeInTheDocument();
+    expect(screen.getAllByText("$1,200").length).toBeGreaterThan(0); // peak + current label
   });
 
   it("shows an empty state when the company has no accounts", () => {

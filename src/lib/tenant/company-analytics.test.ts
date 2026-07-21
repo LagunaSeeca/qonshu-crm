@@ -53,6 +53,17 @@ async function seedCompanyA() {
     ],
   });
 
+  // Daily debt snapshots for the debt-over-time chart: two in-range days across both accounts,
+  // plus a June snapshot that must be excluded.
+  await testPrisma.accountDebtSnapshot.createMany({
+    data: [
+      { companyId: c.id, accountId: acc1.id, capturedOn: new Date("2026-07-05"), totalDebt: "40" },
+      { companyId: c.id, accountId: acc2.id, capturedOn: new Date("2026-07-05"), totalDebt: "5" },
+      { companyId: c.id, accountId: acc1.id, capturedOn: new Date("2026-07-10"), totalDebt: "45" },
+      { companyId: c.id, accountId: acc1.id, capturedOn: new Date("2026-06-20"), totalDebt: "999" },
+    ],
+  });
+
   return { c, user, acc1, acc2, au1, au2, au3 };
 }
 
@@ -134,6 +145,13 @@ describe("company analytics", () => {
     expect(partnerTwo.appUsers).toBe(1);
     expect(partnerTwo.installs).toBe(0);
     expect(partnerTwo.engagedUsers).toBe(1);
+
+    // debtOverTime: per-day summed debt across accounts; June snapshot excluded, sorted by date
+    expect(a.debtOverTime.every((d) => d.date.startsWith("2026-07"))).toBe(true);
+    expect(a.debtOverTime).toEqual([
+      { date: "2026-07-05", debt: 45 }, // acc1 40 + acc2 5
+      { date: "2026-07-10", debt: 45 }, // acc1 only
+    ]);
   });
 
   it("isolates tenants: company B's accounts/users/payments never appear in company A's analytics", async () => {
@@ -153,6 +171,9 @@ describe("company analytics", () => {
     await testPrisma.settlementEntry.create({
       data: { companyId: cB.id, accountId: accB.id, type: "COLLECTED", amount: "3000", method: "BANK_TRANSFER", occurredAt: new Date("2026-07-08T10:00:00Z"), createdById: uB.id },
     });
+    await testPrisma.accountDebtSnapshot.create({
+      data: { companyId: cB.id, accountId: accB.id, capturedOn: new Date("2026-07-08"), totalDebt: "8000" },
+    });
 
     const a = await getCompanyAnalytics(testPrisma, user, range);
     expect(a.totals.accounts).toBe(2);
@@ -163,6 +184,8 @@ describe("company analytics", () => {
     // company B's money-flow numbers (5000 in, 3000 collected) never leak into company A's buckets
     expect(a.moneyFlow.reduce((s, f) => s + f.paymentsIn, 0)).toBe(200);
     expect(a.moneyFlow.reduce((s, f) => s + f.collected, 0)).toBe(75);
+    // company B's 8000 debt snapshot never appears in company A's debt trend (max stays 45)
+    expect(Math.max(...a.debtOverTime.map((d) => d.debt))).toBe(45);
 
     const b = await getCompanyAnalytics(testPrisma, userB, range);
     expect(b.totals.accounts).toBe(1);

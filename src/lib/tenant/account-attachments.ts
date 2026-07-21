@@ -2,7 +2,7 @@ import type { PrismaClient, AccountAttachment } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
 import { getAccount } from "./accounts";
-import { saveFile, readFile, removeFile, removeLeadDir } from "@/lib/files/storage";
+import { saveFile, readFile, removeFile } from "@/lib/files/storage";
 
 const MAX = 10 * 1024 * 1024;
 export class FileTooLargeError extends Error {}
@@ -36,8 +36,4 @@ export async function deleteAccountAttachment(db: PrismaClient, user: SessionUse
   if (!account) throw new NotFoundError("account not in scope");
   await removeFile(att.diskPath);
   await db.accountAttachment.delete({ where: { id: attId } });
-}
-
-export async function deleteAccountFiles(db: PrismaClient, companyId: string, accountId: string): Promise<void> {
-  await removeLeadDir(companyId, `account-${accountId}`);
 }

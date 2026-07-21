@@ -49,4 +49,16 @@ describe("syncAccountAnalytics", () => {
     await syncAccountAnalytics(testPrisma, acc.id, c.id, spy);
     expect(spy.seen.every((ctx) => ctx.externalKey === null)).toBe(true);
   });
+
+  it("records one debt snapshot per sync = today's summed app-user debt (upserted, not duplicated)", async () => {
+    const { c, acc } = await acct();
+    await syncAccountAnalytics(testPrisma, acc.id, c.id, new MockPartnerAnalyticsSource());
+    const snaps = await testPrisma.accountDebtSnapshot.findMany({ where: { accountId: acc.id } });
+    expect(snaps.length).toBe(1);
+    const userDebt = await testPrisma.partnerAppUser.aggregate({ where: { accountId: acc.id }, _sum: { debt: true } });
+    expect(Number(snaps[0].totalDebt)).toBeCloseTo(Number(userDebt._sum.debt ?? 0), 2);
+    // second sync same day overwrites the same row, doesn't add a new one
+    await syncAccountAnalytics(testPrisma, acc.id, c.id, new MockPartnerAnalyticsSource());
+    expect(await testPrisma.accountDebtSnapshot.count({ where: { accountId: acc.id } })).toBe(1);
+  });
 });
