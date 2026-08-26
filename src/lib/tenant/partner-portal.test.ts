@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
 import { getAccount, listAccounts } from "./accounts";
 import { getCompanyAnalytics } from "./company-analytics";
@@ -8,8 +8,21 @@ import { leadVisibilityWhere } from "./visibility";
 import { createUser, InvalidUserRoleError } from "./users";
 import { ForbiddenError } from "@/lib/auth/guards";
 import type { SessionUser } from "@/lib/auth/guards";
+import { encryptSecret } from "@/lib/crypto/secret";
+import { fetchPartnerStats } from "@/lib/partner-api/client";
+import { makePartnerStats } from "@/test/partner-stats-fixture";
 
+// getCompanyAnalytics is now a LIVE fan-out (see company-analytics.test.ts) — mock the external
+// client so the getCompanyAnalytics cases below never hit the network. Every other case in this
+// file (settlements/service-fees/users) is untouched by this mock.
+vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn() }));
+
+const KEY_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const range = { from: new Date("2026-07-01T00:00:00Z"), to: new Date("2026-07-31T23:59:59Z") };
+
+// Partner keys registered here so the fetchPartnerStats mock (wired in beforeEach) can look up
+// the right canned response per account, keyed by the account's externalPartnerKey.
+const statsByPartner = new Map<string, ReturnType<typeof makePartnerStats>>();
 
 async function seed(slug: string) {
   const c = await testPrisma.company.create({ data: { name: "PartnerCo", slug } });
@@ -22,29 +35,30 @@ async function seed(slug: string) {
   const adminUser: SessionUser = { id: admin.id, companyId: c.id, role: "COMPANY_ADMIN" };
   const memberUser: SessionUser = { id: member.id, companyId: c.id, role: "MEMBER" };
 
-  // Two accounts, each with their own analytics/settlement/service-fee data.
-  const acc1 = await testPrisma.account.create({ data: { companyId: c.id, name: "Own Account", accountManagerId: admin.id } });
-  const acc2 = await testPrisma.account.create({ data: { companyId: c.id, name: "Other Account", accountManagerId: admin.id } });
+  // Two accounts, each with their own analytics/settlement/service-fee data. Both are wired up
+  // as partner-configured (key + partner mapping) so the live fan-out actually calls out for them.
+  const ownPartnerKey = `${slug}-own`;
+  const otherPartnerKey = `${slug}-other`;
+  const acc1 = await testPrisma.account.create({
+    data: {
+      companyId: c.id, name: "Own Account", accountManagerId: admin.id,
+      externalPartnerKey: ownPartnerKey, externalApiKeyEnc: encryptSecret(`key-${ownPartnerKey}`), externalApiKeyLast4: "abcd",
+    },
+  });
+  const acc2 = await testPrisma.account.create({
+    data: {
+      companyId: c.id, name: "Other Account", accountManagerId: admin.id,
+      externalPartnerKey: otherPartnerKey, externalApiKeyEnc: encryptSecret(`key-${otherPartnerKey}`), externalApiKeyLast4: "abcd",
+    },
+  });
+  statsByPartner.set(ownPartnerKey, makePartnerStats({ partner: ownPartnerKey, total_payments_amount: 150, total_debt: 40 }));
+  statsByPartner.set(otherPartnerKey, makePartnerStats({ partner: otherPartnerKey, total_payments_amount: 5000, total_debt: 999 }));
 
   const partnerRecord = await testPrisma.user.create({
     data: { companyId: c.id, email: `partner-${slug}@a.com`, passwordHash: "x", name: "Partner", role: "PARTNER_VIEWER", accountId: acc1.id },
   });
   const partnerUser: SessionUser = { id: partnerRecord.id, companyId: c.id, role: "PARTNER_VIEWER", accountId: acc1.id };
   const partnerUserNoAccount: SessionUser = { id: partnerRecord.id, companyId: c.id, role: "PARTNER_VIEWER", accountId: null };
-
-  // Analytics data on both accounts — au1/pay1 belongs to acc1 (own), au2/pay2 to acc2 (other).
-  const au1 = await testPrisma.partnerAppUser.create({
-    data: { companyId: c.id, accountId: acc1.id, externalId: "own-1", name: "OwnUser", active: true, debt: "40", joinedAt: new Date("2026-01-01") },
-  });
-  const au2 = await testPrisma.partnerAppUser.create({
-    data: { companyId: c.id, accountId: acc2.id, externalId: "other-1", name: "OtherUser", active: true, debt: "999", joinedAt: new Date("2026-01-01") },
-  });
-  await testPrisma.partnerPayment.create({
-    data: { companyId: c.id, accountId: acc1.id, appUserId: au1.id, occurredAt: new Date("2026-07-05T10:00:00Z"), amount: "150", method: "CARD", category: "UTILITY" },
-  });
-  await testPrisma.partnerPayment.create({
-    data: { companyId: c.id, accountId: acc2.id, appUserId: au2.id, occurredAt: new Date("2026-07-06T10:00:00Z"), amount: "5000", method: "CASH", category: "APARTMENT" },
-  });
 
   // Settlement entries on both accounts.
   await addSettlementEntry(testPrisma, adminUser, acc1.id, { type: "COLLECTED", amount: 200, method: "CASH", occurredAt: new Date() });
@@ -58,7 +72,22 @@ async function seed(slug: string) {
 }
 
 describe("partner portal security", () => {
-  beforeEach(resetDb);
+  let savedSecret: string | undefined;
+  beforeEach(async () => {
+    await resetDb();
+    savedSecret = process.env.PARTNER_API_KEY_SECRET;
+    process.env.PARTNER_API_KEY_SECRET = KEY_SECRET;
+    statsByPartner.clear();
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) => {
+      const s = statsByPartner.get(partner);
+      if (!s) throw new Error(`no mocked stats registered for partner: ${partner}`);
+      return s;
+    });
+  });
+  afterEach(() => {
+    if (savedSecret === undefined) delete process.env.PARTNER_API_KEY_SECRET;
+    else process.env.PARTNER_API_KEY_SECRET = savedSecret;
+  });
   afterAll(() => testPrisma.$disconnect());
 
   it("getAccount: PARTNER_VIEWER can read their own account but gets null for another account in the same company", async () => {
@@ -86,13 +115,8 @@ describe("partner portal security", () => {
     expect(a.partners[0].accountId).toBe(acc1.id);
     // the other account's huge numbers must never leak in
     expect(a.totals.paymentsAmount).not.toBe(5000);
-
-    // moneyFlow is scoped the same way: only acc1's payment/settlement activity appears.
-    const flowPaymentsIn = a.moneyFlow.reduce((s, f) => s + f.paymentsIn, 0);
-    const flowCollected = a.moneyFlow.reduce((s, f) => s + f.collected, 0);
-    expect(flowPaymentsIn).toBe(150);
-    expect(flowCollected).toBe(200);
-    expect(flowCollected).not.toBe(8000);
+    // and the other account was never even fetched
+    expect(fetchPartnerStats).toHaveBeenCalledTimes(1);
   });
 
   it("listCompanySettlements: PARTNER_VIEWER sees only their own account's ledger", async () => {

@@ -4,6 +4,8 @@ import { leadVisibilityWhere } from "./visibility";
 import { getCompanySettings } from "./company";
 import { listCompanySettlements } from "./settlements";
 import { listCompanyServiceFees } from "./service-fees";
+import { listAccounts } from "./accounts";
+import { getCompanyAnalytics } from "./company-analytics";
 
 export type DashboardStats = {
   sales: { openLeads: number; wonInPeriod: number };
@@ -12,18 +14,21 @@ export type DashboardStats = {
   finance: { collected: number; transferred: number; owed: number; serviceFeesOutstanding: number };
 };
 
-const num = (d: { toNumber: () => number }) => d.toNumber();
-
+// The "partners" section used to read the persisted PartnerAppUser/PartnerPayment mock tables.
+// It now reuses getCompanyAnalytics — the same LIVE fan-out to the external Partner API used by
+// the company-wide analytics page — for the selected range, and just maps its summed totals onto
+// the dashboard's existing KPI shape. Accounts that aren't partner-configured or that error are
+// silently excluded from the totals (never fatal to the page); account/activeAccount counts stay
+// a local DB read since Account itself is CRM data, not partner-app data. No DB writes occur.
 export async function getDashboardStats(db: PrismaClient, user: SessionUser, range: { from: Date; to: Date }): Promise<DashboardStats> {
   const companyId = user.companyId!;
   const { shareAllLeads } = await getCompanySettings(db, { companyId });
   const leadWhere = leadVisibilityWhere(user, shareAllLeads);
-  const [leads, stages, accounts, appUsers, payments, settlements, serviceFees] = await Promise.all([
+  const [leads, stages, accounts, analytics, settlements, serviceFees] = await Promise.all([
     db.lead.findMany({ where: leadWhere }),
     db.stage.findMany({ where: { companyId } }),
-    db.account.findMany({ where: { companyId } }),
-    db.partnerAppUser.findMany({ where: { companyId } }),
-    db.partnerPayment.findMany({ where: { companyId, occurredAt: { gte: range.from, lte: range.to } } }),
+    listAccounts(db, user),
+    getCompanyAnalytics(db, user, range),
     listCompanySettlements(db, user),
     listCompanyServiceFees(db, user),
   ]);
@@ -38,7 +43,6 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
     db.accountTask.findMany({ where: { companyId, done: false } }),
   ]);
   const allOpenTasks = [...leadTasks, ...acctTasks];
-  const engagedUsers = new Set(payments.map((p) => p.appUserId)).size;
   return {
     sales: { openLeads: openLeads.length, wonInPeriod },
     activity: {
@@ -49,13 +53,13 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
     partners: {
       accounts: accounts.length,
       activeAccounts: accounts.filter((a) => a.status === "ACTIVE").length,
-      appUsers: appUsers.length,
-      activeAppUsers: appUsers.filter((u2) => u2.active).length,
-      engagedUsers,
-      paymentsAmount: payments.reduce((s, p) => s + num(p.amount), 0),
-      appInstalls: appUsers.filter((u2) => u2.installedAt !== null).length,
-      installsIos: appUsers.filter((u2) => u2.installedAt !== null && u2.platform === "IOS").length,
-      installsAndroid: appUsers.filter((u2) => u2.installedAt !== null && u2.platform === "ANDROID").length,
+      appUsers: analytics.totals.appUsers,
+      activeAppUsers: analytics.totals.activeUsers,
+      engagedUsers: analytics.totals.engagedUsers,
+      paymentsAmount: analytics.totals.paymentsAmount,
+      appInstalls: analytics.totals.installs,
+      installsIos: analytics.totals.iosInstalls,
+      installsAndroid: analytics.totals.androidInstalls,
     },
     finance: { ...settlements.totals, serviceFeesOutstanding: serviceFees.totals.outstanding },
   };

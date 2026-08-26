@@ -48,13 +48,11 @@ model Company {
   accountTasks        AccountTask[]
   accountAsks         AccountAsk[]
   accountAttachments  AccountAttachment[]
-  partnerAppUsers     PartnerAppUser[]
-  partnerPayments     PartnerPayment[]
   settlementEntries   SettlementEntry[]
   accountFieldDefs    AccountFieldDef[]
   accountFieldValues  AccountFieldValue[]
   serviceFees         ServiceFee[]
-  debtSnapshots       AccountDebtSnapshot[]
+  installSnapshots    PlatformInstallSnapshot[]
 }
 
 model User {
@@ -70,6 +68,7 @@ model User {
   ownedLeads   Lead[]     @relation("LeadOwner")
   accountId    String?
   account      Account?   @relation(fields: [accountId], references: [id])
+  createdInstallSnapshots PlatformInstallSnapshot[]
 
   @@index([companyId])
   @@index([accountId])
@@ -227,6 +226,12 @@ model Account {
   // PartnerAnalyticsSource fetches by THIS key, not the display name, so renaming the account
   // never mis-routes another partner's data onto it. Null => not yet linked => syncs nothing.
   externalPartnerKey  String?
+  // Ciphertext of the secret X-API-Key used to authenticate to the partner's Django backend
+  // (encryption performed by the integration layer, not by this model). Nullable until linked.
+  externalApiKeyEnc   String?
+  // Last 4 chars of the plaintext key, kept alongside the ciphertext for masked display
+  // (e.g. "•••• 9f3a") without ever decrypting the secret for the UI.
+  externalApiKeyLast4 String?
   status              AccountStatus @default(ACTIVE)
   accountManagerId    String
   primaryContactName  String?
@@ -239,13 +244,11 @@ model Account {
   tasks               AccountTask[]
   asks                AccountAsk[]
   attachments         AccountAttachment[]
-  partnerAppUsers     PartnerAppUser[]
-  partnerPayments     PartnerPayment[]
   settlementEntries   SettlementEntry[]
   fieldValues         AccountFieldValue[]
   serviceFees         ServiceFee[]
   partnerUsers        User[]
-  debtSnapshots       AccountDebtSnapshot[]
+  installSnapshots    PlatformInstallSnapshot[]
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, accountManagerId])
@@ -310,77 +313,28 @@ model AccountAttachment {
   @@index([companyId, accountId])
 }
 
-enum PaymentMethod {
-  CARD
-  MANUAL
-  CASH
-}
-enum PaymentCategory {
-  APARTMENT
-  PARKING
-  NON_RESIDENTIAL
-  UTILITY
-}
-
 enum AppPlatform {
   IOS
   ANDROID
   UNKNOWN
 }
 
-model PartnerAppUser {
-  id          String      @id @default(cuid())
-  companyId   String
-  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  accountId   String
-  account     Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  externalId  String
-  name        String
-  active      Boolean     @default(true)
-  debt        Decimal     @default(0)
-  joinedAt    DateTime
-  platform    AppPlatform @default(UNKNOWN)
-  installedAt DateTime?
-  lastLoginAt DateTime?
-  appToken    String?
-  createdAt   DateTime    @default(now())
-  payments    PartnerPayment[]
-  @@unique([accountId, externalId])
-  @@index([companyId, accountId])
-  @@index([accountId, active])
-}
-
-// One row per account per day recording that day's total resident debt. Debt is a stock
-// (a running balance), not a flow, so it can't be derived from payments — it's snapshotted on
-// each analytics sync so a "debt over time" trend can be charted going forward.
-model AccountDebtSnapshot {
-  id         String   @id @default(cuid())
-  companyId  String
-  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  accountId  String
-  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  capturedOn DateTime @db.Date
-  totalDebt  Decimal  @default(0)
-  createdAt  DateTime @default(now())
+// One row per account per day recording that day's manually-entered app-download counts
+// (iOS + Android), so an installs-over-time chart can be built without a live analytics feed.
+model PlatformInstallSnapshot {
+  id              String   @id @default(cuid())
+  companyId       String
+  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId       String
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  capturedOn      DateTime @db.Date
+  iosInstalls     Int
+  androidInstalls Int
+  createdById     String?
+  createdBy       User?    @relation(fields: [createdById], references: [id])
+  createdAt       DateTime @default(now())
   @@unique([accountId, capturedOn])
   @@index([companyId, capturedOn])
-}
-
-model PartnerPayment {
-  id         String          @id @default(cuid())
-  companyId  String
-  company    Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  accountId  String
-  account    Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  appUserId  String
-  appUser    PartnerAppUser  @relation(fields: [appUserId], references: [id], onDelete: Cascade)
-  occurredAt DateTime
-  amount     Decimal
-  method     PaymentMethod
-  category   PaymentCategory
-  createdAt  DateTime        @default(now())
-  @@index([companyId, accountId])
-  @@index([accountId, occurredAt])
 }
 
 enum SettlementType {

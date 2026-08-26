@@ -1,14 +1,47 @@
-import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
 import { seedDefaultStages, listStages } from "./stages";
 import { createLead } from "./leads";
 import { getDashboardStats } from "./dashboard";
+import { encryptSecret } from "@/lib/crypto/secret";
+import { fetchPartnerStats } from "@/lib/partner-api/client";
+import { makePartnerStats } from "@/test/partner-stats-fixture";
 import type { SessionUser } from "@/lib/auth/guards";
 
+// The dashboard's "partners" section is now a LIVE fan-out (via getCompanyAnalytics) instead of
+// reads against the persisted PartnerAppUser/PartnerPayment mock tables — mock the external
+// client so these tests stay hermetic, matching company-analytics.test.ts's pattern.
+vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn() }));
+
 const range = { from: new Date("2026-07-01T00:00:00Z"), to: new Date("2026-07-31T23:59:59Z") };
+const KEY_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+async function makeConfiguredAccount(companyId: string, managerId: string, name: string, partnerKey: string) {
+  return testPrisma.account.create({
+    data: {
+      companyId,
+      name,
+      accountManagerId: managerId,
+      externalPartnerKey: partnerKey,
+      externalApiKeyEnc: encryptSecret(`key-for-${partnerKey}`),
+      externalApiKeyLast4: "abcd",
+    },
+  });
+}
 
 describe("dashboard stats", () => {
-  beforeEach(resetDb);
+  let savedSecret: string | undefined;
+
+  beforeEach(async () => {
+    await resetDb();
+    savedSecret = process.env.PARTNER_API_KEY_SECRET;
+    process.env.PARTNER_API_KEY_SECRET = KEY_SECRET;
+    vi.mocked(fetchPartnerStats).mockReset();
+  });
+  afterEach(() => {
+    if (savedSecret === undefined) delete process.env.PARTNER_API_KEY_SECRET;
+    else process.env.PARTNER_API_KEY_SECRET = savedSecret;
+  });
   afterAll(() => testPrisma.$disconnect());
 
   it("counts open leads and meetings; isolates tenants", async () => {
@@ -35,43 +68,72 @@ describe("dashboard stats", () => {
     const s2 = await getDashboardStats(testPrisma, { id: u2.id, companyId: c2.id, role: "COMPANY_ADMIN" }, range);
     expect(s2.sales.openLeads).toBe(0);
     expect(s2.activity.meetingsDone).toBe(0);
+
+    // no partner-configured accounts on either tenant -> the live fan-out never hit the network
+    expect(fetchPartnerStats).not.toHaveBeenCalled();
   });
 
-  it("counts distinct engaged users (appUsers with a payment in period), not raw payment count", async () => {
-    const c = await testPrisma.company.create({ data: { name: "C", slug: "c-dash" } });
-    const u = await testPrisma.user.create({ data: { companyId: c.id, email: "u@c.com", passwordHash: "x", name: "U", role: "COMPANY_ADMIN" } });
+  it("aggregates live partner totals (engaged users, payments amount) across configured accounts, skipping unconfigured ones", async () => {
+    const slug = `dash-agg-${Date.now()}-${Math.random()}`;
+    const c = await testPrisma.company.create({ data: { name: "C", slug } });
+    const u = await testPrisma.user.create({ data: { companyId: c.id, email: `u@${slug}.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" } });
     const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
-    const account = await testPrisma.account.create({ data: { companyId: c.id, name: "Acc", accountManagerId: u.id } });
-    const appUser1 = await testPrisma.partnerAppUser.create({ data: { companyId: c.id, accountId: account.id, externalId: "e1", name: "User1", joinedAt: new Date("2026-01-01") } });
-    const appUser2 = await testPrisma.partnerAppUser.create({ data: { companyId: c.id, accountId: account.id, externalId: "e2", name: "User2", joinedAt: new Date("2026-01-01") } });
-    // appUser1 pays twice in period, appUser2 pays once; both should count once each -> engagedUsers = 2
-    await testPrisma.partnerPayment.createMany({ data: [
-      { companyId: c.id, accountId: account.id, appUserId: appUser1.id, occurredAt: new Date("2026-07-05"), amount: 10, method: "CASH", category: "UTILITY" },
-      { companyId: c.id, accountId: account.id, appUserId: appUser1.id, occurredAt: new Date("2026-07-15"), amount: 20, method: "CASH", category: "UTILITY" },
-      { companyId: c.id, accountId: account.id, appUserId: appUser2.id, occurredAt: new Date("2026-07-20"), amount: 5, method: "CASH", category: "UTILITY" },
-    ] });
+    await makeConfiguredAccount(c.id, u.id, "Partner One", `${slug}-p1`);
+    await makeConfiguredAccount(c.id, u.id, "Partner Two", `${slug}-p2`);
+    await testPrisma.account.create({ data: { companyId: c.id, name: "Not Linked", accountManagerId: u.id } }); // no partner key
+
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) => {
+      if (partner === `${slug}-p1`) {
+        return makePartnerStats({ partner, total_users: 5, active_users: 4, engaged_users: 1, total_payments_amount: 20 });
+      }
+      if (partner === `${slug}-p2`) {
+        return makePartnerStats({ partner, total_users: 2, active_users: 2, engaged_users: 1, total_payments_amount: 15 });
+      }
+      throw new Error(`unexpected partner key: ${partner}`);
+    });
 
     const s = await getDashboardStats(testPrisma, user, range);
     expect(s.partners.engagedUsers).toBe(2);
     expect(s.partners.paymentsAmount).toBe(35);
+    expect(s.partners.appUsers).toBe(7);
+    expect(s.partners.activeAppUsers).toBe(6);
+    // "accounts" stays a plain company-wide Account count (all 3, configured or not) — it's
+    // CRM data, not partner-app data, so it isn't sourced from the live fan-out.
+    expect(s.partners.accounts).toBe(3);
+    expect(fetchPartnerStats).toHaveBeenCalledWith(expect.objectContaining({ partner: `${slug}-p1` }));
   });
 
-  it("counts company-wide app installs (iOS/Android split), all-time regardless of period", async () => {
-    const c = await testPrisma.company.create({ data: { name: "D", slug: "d-dash" } });
-    const u = await testPrisma.user.create({ data: { companyId: c.id, email: "u@d.com", passwordHash: "x", name: "U", role: "COMPANY_ADMIN" } });
+  it("sums live app-install counts (iOS/Android split) for the selected range across configured accounts", async () => {
+    const slug = `dash-installs-${Date.now()}-${Math.random()}`;
+    const c = await testPrisma.company.create({ data: { name: "D", slug } });
+    const u = await testPrisma.user.create({ data: { companyId: c.id, email: `u@${slug}.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" } });
     const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
-    const account = await testPrisma.account.create({ data: { companyId: c.id, name: "Acc", accountManagerId: u.id } });
-    await testPrisma.partnerAppUser.createMany({
-      data: [
-        { companyId: c.id, accountId: account.id, externalId: "i1", name: "iOS1", joinedAt: new Date("2020-01-01"), platform: "IOS", installedAt: new Date("2020-01-05") },
-        { companyId: c.id, accountId: account.id, externalId: "i2", name: "iOS2", joinedAt: new Date("2020-01-01"), platform: "IOS", installedAt: new Date("2020-01-06") },
-        { companyId: c.id, accountId: account.id, externalId: "a1", name: "Android1", joinedAt: new Date("2020-01-01"), platform: "ANDROID", installedAt: new Date("2020-01-07") },
-        { companyId: c.id, accountId: account.id, externalId: "n1", name: "NotInstalled", joinedAt: new Date("2020-01-01"), platform: "UNKNOWN" },
-      ],
-    });
-    const s = await getDashboardStats(testPrisma, user, range); // range is July 2026, install dates are 2020 — proves all-time
+    await makeConfiguredAccount(c.id, u.id, "Acc", `${slug}-p1`);
+
+    vi.mocked(fetchPartnerStats).mockResolvedValue(
+      makePartnerStats({ partner: `${slug}-p1`, total_installations: 3, ios_installations: 2, android_installations: 1 }),
+    );
+
+    const s = await getDashboardStats(testPrisma, user, range);
     expect(s.partners.appInstalls).toBe(3);
     expect(s.partners.installsIos).toBe(2);
     expect(s.partners.installsAndroid).toBe(1);
+  });
+
+  it("isolates one account's failure from the rest instead of failing the whole dashboard", async () => {
+    const slug = `dash-fail-${Date.now()}-${Math.random()}`;
+    const c = await testPrisma.company.create({ data: { name: "E", slug } });
+    const u = await testPrisma.user.create({ data: { companyId: c.id, email: `u@${slug}.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" } });
+    const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    await makeConfiguredAccount(c.id, u.id, "OK", `${slug}-ok`);
+    await makeConfiguredAccount(c.id, u.id, "Broken", `${slug}-broken`);
+
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) => {
+      if (partner === `${slug}-ok`) return makePartnerStats({ partner, total_payments_amount: 42 });
+      throw new Error("boom");
+    });
+
+    const s = await getDashboardStats(testPrisma, user, range);
+    expect(s.partners.paymentsAmount).toBe(42);
   });
 });

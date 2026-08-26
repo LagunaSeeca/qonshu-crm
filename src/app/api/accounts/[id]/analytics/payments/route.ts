@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { PaymentMethod, PaymentCategory } from "@prisma/client";
 import { prisma } from "@/db/client";
 import { getSessionUser } from "@/lib/auth/session";
 import { listAccountPayments } from "@/lib/tenant/partner-analytics";
@@ -12,10 +11,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const sp = req.nextUrl.searchParams;
     let range; try { range = resolveRange({ preset: (sp.get("preset") as RangePreset) ?? undefined, from: sp.get("from") ?? undefined, to: sp.get("to") ?? undefined }); }
     catch { return NextResponse.json({ error: "invalid_range" }, { status: 400 }); }
-    const method = sp.get("method") as PaymentMethod | null;
-    const category = sp.get("category") as PaymentCategory | null;
-    const skip = sp.get("skip") ? parseInt(sp.get("skip")!, 10) : undefined;
-    const take = sp.get("take") ? parseInt(sp.get("take")!, 10) : undefined;
-    return NextResponse.json(await listAccountPayments(prisma, user, (await params).id, { ...range, method: method ?? undefined, category: category ?? undefined, skip, take }));
+    // page / page_size flow straight through to the partner API (the client normalizes/clamps them).
+    const page = sp.get("page") ? parseInt(sp.get("page")!, 10) : undefined;
+    const pageSize = sp.get("page_size") ? parseInt(sp.get("page_size")!, 10) : undefined;
+    return NextResponse.json(await listAccountPayments(prisma, user, (await params).id, { ...range, page, pageSize }));
   } catch (e) { return errorResponse(e); }
 }

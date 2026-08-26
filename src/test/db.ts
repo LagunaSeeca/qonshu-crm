@@ -15,8 +15,6 @@ export async function resetDb() {
   await testPrisma.accountFieldDef.deleteMany();
   await testPrisma.serviceFee.deleteMany();
   await testPrisma.settlementEntry.deleteMany();
-  await testPrisma.partnerPayment.deleteMany();
-  await testPrisma.partnerAppUser.deleteMany();
   await testPrisma.accountAttachment.deleteMany();
   await testPrisma.accountAsk.deleteMany();
   await testPrisma.accountTask.deleteMany();

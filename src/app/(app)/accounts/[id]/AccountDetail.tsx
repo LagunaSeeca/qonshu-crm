@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
@@ -14,6 +14,7 @@ import {
   BarChart2,
   Landmark,
   ReceiptText,
+  Boxes,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Analytics } from "./Analytics";
 import { Settlement } from "./Settlement";
 import { ServiceFees } from "./ServiceFees";
+import { Objects } from "./Objects";
 import { AccountFields } from "./AccountFields";
 
 type Activity = { id: string; kind: string; body: string; outcome: string | null; occurredAt: string; authorId: string | null };
@@ -101,7 +103,7 @@ function isOverdue(dueDate: string | null, done: boolean) {
   return new Date(dueDate) < new Date();
 }
 
-type TabKey = "activity" | "tasks" | "asks" | "files" | "settlement" | "serviceFees" | "analytics";
+type TabKey = "activity" | "tasks" | "asks" | "files" | "settlement" | "serviceFees" | "objects" | "analytics";
 
 export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false }: Props) {
   const router = useRouter();
@@ -117,6 +119,26 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
   const [primaryContactPhone, setPrimaryContactPhone] = useState(account.primaryContactPhone ?? "");
   const [externalPartnerKey, setExternalPartnerKey] = useState(account.externalPartnerKey ?? "");
   const [saving, setSaving] = useState(false);
+
+  // Partner API key: the server never sends the plaintext or ciphertext, only a masked
+  // hint ("••••1234" or null). page.tsx doesn't pass it as a prop, so admins fetch it
+  // client-side; non-admins never issue this request at all.
+  const [partnerApiKeyMasked, setPartnerApiKeyMasked] = useState<string | null>(null);
+  const [partnerApiKeyLoaded, setPartnerApiKeyLoaded] = useState(false);
+  const [partnerApiKeyInput, setPartnerApiKeyInput] = useState("");
+  const [showPartnerApiKeyInput, setShowPartnerApiKeyInput] = useState(false);
+  const [clearPartnerApiKey, setClearPartnerApiKey] = useState(false);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    fetch(`/api/accounts/${account.id}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => { if (!cancelled) setPartnerApiKeyMasked(body?.externalApiKeyMasked ?? null); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setPartnerApiKeyLoaded(true); });
+    return () => { cancelled = true; };
+  }, [isAdmin, account.id]);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -134,12 +156,21 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
         primaryContactEmail: primaryContactEmail || null,
         primaryContactPhone: primaryContactPhone || null,
         externalPartnerKey: externalPartnerKey || null,
+        partnerApiKey: isAdmin ? (partnerApiKeyInput || undefined) : undefined,
+        clearPartnerApiKey: isAdmin ? (clearPartnerApiKey || undefined) : undefined,
       }),
     });
     setSaving(false);
     if (!res.ok) {
       toast.error("Failed to save. Please try again.");
       return;
+    }
+    const body = await res.json().catch(() => null);
+    if (isAdmin) {
+      setPartnerApiKeyMasked(body?.externalApiKeyMasked ?? null);
+      setPartnerApiKeyInput("");
+      setShowPartnerApiKeyInput(false);
+      setClearPartnerApiKey(false);
     }
     toast.success("Account saved.");
     router.refresh();
@@ -279,6 +310,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
     { key: "files", label: "Files" },
     { key: "settlement", label: "Settlement" },
     { key: "serviceFees", label: "Service fees" },
+    { key: "objects", label: "Objects" },
     { key: "analytics", label: "Analytics" },
   ];
 
@@ -329,6 +361,78 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
                   Maps this account to its partner in the external API so only its own app users, payments &amp; debt sync here.
                 </p>
               </div>
+
+              {isAdmin && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="partnerApiKey">Partner API key</Label>
+                  {!showPartnerApiKeyInput ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">
+                        {!partnerApiKeyLoaded
+                          ? "Loading…"
+                          : clearPartnerApiKey
+                          ? "Will be cleared on save"
+                          : (partnerApiKeyMasked ?? "Not set")}
+                      </span>
+                      {clearPartnerApiKey ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => setClearPartnerApiKey(false)}
+                        >
+                          Undo
+                        </Button>
+                      ) : (
+                        <>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => setShowPartnerApiKeyInput(true)}
+                          >
+                            {partnerApiKeyMasked ? "Replace key" : "Set key"}
+                          </Button>
+                          {partnerApiKeyMasked && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-xs text-destructive"
+                              onClick={() => setClearPartnerApiKey(true)}
+                            >
+                              Clear
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <Input
+                        id="partnerApiKey"
+                        type="password"
+                        autoComplete="new-password"
+                        placeholder="Paste new Partner API key"
+                        value={partnerApiKeyInput}
+                        onChange={(e) => setPartnerApiKeyInput(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => { setShowPartnerApiKeyInput(false); setPartnerApiKeyInput(""); }}
+                        className="text-xs text-muted-foreground hover:text-foreground underline cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Secret used to authenticate to the partner&apos;s analytics API. Stored encrypted — never shown in full again. Save to apply.
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <Label>Status</Label>
@@ -416,6 +520,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
                 {tab.key === "analytics" && <BarChart2 className="size-3" />}
                 {tab.key === "settlement" && <Landmark className="size-3" />}
                 {tab.key === "serviceFees" && <ReceiptText className="size-3" />}
+                {tab.key === "objects" && <Boxes className="size-3" />}
                 {tab.label}
               </button>
             ))}
@@ -729,9 +834,14 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
             <ServiceFees accountId={account.id} isAdmin={isAdmin} />
           </div>
 
+          {/* Objects panel */}
+          <div hidden={activeTab !== "objects"}>
+            <Objects accountId={account.id} />
+          </div>
+
           {/* Analytics panel */}
           <div hidden={activeTab !== "analytics"}>
-            <Analytics accountId={account.id} />
+            <Analytics accountId={account.id} isAdmin={isAdmin} />
           </div>
         </div>
       </div>

@@ -20,13 +20,16 @@ const data = {
     utilityCount: 10,
     utilityAmount: 2000,
   },
-  byMethod: [] as { method: string; count: number; amount: number }[],
-  byCategory: [] as { category: string; count: number; amount: number }[],
-  moneyFlow: [] as { date: string; paymentsIn: number; collected: number; transferred: number }[],
-  debtOverTime: [] as { date: string; debt: number }[],
+  byMethod: [] as { method: string; amount: number }[],
+  byCategory: [] as { category: string; amount: number }[],
   partners: [
     { accountId: "a1", accountName: "Acme Partner", appUsers: 15, installs: 14, engagedUsers: 10, paymentsCount: 25, paymentsAmount: 18000 },
   ],
+  accountStatuses: [
+    { accountId: "a1", accountName: "Acme Partner", status: "ok" as const },
+  ],
+  contributed: 1,
+  skipped: 0,
 };
 
 describe("AnalyticsView", () => {
@@ -53,40 +56,26 @@ describe("AnalyticsView", () => {
     expect(screen.getAllByText(/no data for this range/i).length).toBeGreaterThan(0);
   });
 
-  it("renders the money-flow empty state and a legend for all three series once there's data", () => {
+  it("renders the fan-out summary with no skipped accounts", () => {
     render(<AnalyticsView initialData={data} initialPeriod="MONTHLY" />);
-    expect(screen.getByText(/no activity in this range/i)).toBeInTheDocument();
-
-    const withFlow = {
-      ...data,
-      moneyFlow: [
-        { date: "2026-07-01", paymentsIn: 100, collected: 60, transferred: 20 },
-        { date: "2026-07-02", paymentsIn: 50, collected: 0, transferred: 10 },
-      ],
-    };
-    render(<AnalyticsView initialData={withFlow} initialPeriod="MONTHLY" />);
-    // May also appear as a direct on-chart label when it doesn't collide with a neighbor,
-    // so assert presence rather than a single match.
-    expect(screen.getAllByText("App payments in").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Collected to bank").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Cash transferred out").length).toBeGreaterThan(0);
+    expect(screen.getByText(/of 1 partner account contributed live data/i)).toBeInTheDocument();
+    expect(screen.queryByText(/skipped/i)).toBeNull();
   });
 
-  it("shows the debt-over-time empty state with no snapshots, and current/peak once there's data", () => {
-    render(<AnalyticsView initialData={data} initialPeriod="MONTHLY" />);
-    expect(screen.getByText(/no debt recorded in this range/i)).toBeInTheDocument();
-
-    const withDebt = {
+  it("renders the account fan-out status summary, including per-account skip reasons", () => {
+    const withSkips = {
       ...data,
-      debtOverTime: [
-        { date: "2026-07-01", debt: 800 },
-        { date: "2026-07-15", debt: 1200 },
+      accountStatuses: [
+        { accountId: "a1", accountName: "Acme Partner", status: "ok" as const },
+        { accountId: "a2", accountName: "Beta Partner", status: "skipped" as const, reason: "invalid_key" as const },
       ],
+      contributed: 1,
+      skipped: 1,
     };
-    render(<AnalyticsView initialData={withDebt} initialPeriod="MONTHLY" />);
-    expect(screen.getAllByText("Debt Over Time").length).toBeGreaterThan(0);
-    expect(screen.getByText("Peak in range")).toBeInTheDocument();
-    expect(screen.getAllByText("$1,200").length).toBeGreaterThan(0); // peak + current label
+    render(<AnalyticsView initialData={withSkips} initialPeriod="MONTHLY" />);
+    expect(screen.getByText(/1 skipped/i)).toBeInTheDocument();
+    expect(screen.getByText("Beta Partner")).toBeInTheDocument();
+    expect(screen.getByText(/Invalid API key/i)).toBeInTheDocument();
   });
 
   it("shows an empty state when the company has no accounts", () => {

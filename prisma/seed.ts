@@ -3,8 +3,6 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { hashPassword } from "../src/lib/auth/password";
 import { seedDefaultStages } from "../src/lib/tenant/stages";
-import { syncAccountAnalytics } from "../src/lib/analytics/sync";
-import { MockPartnerAnalyticsSource } from "../src/lib/analytics/source";
 import { createFieldDef, setAccountFieldValue } from "../src/lib/tenant/account-fields";
 import { addServiceFee, markFeePaid } from "../src/lib/tenant/service-fees";
 import type { SessionUser } from "../src/lib/auth/guards";
@@ -276,54 +274,9 @@ async function main() {
 
   console.log(`seeded: partner@demo.co (read-only, scoped to ${firstDemoAccount.name})`);
 
-  // Seed mock analytics for each demo account
-  const source = new MockPartnerAnalyticsSource();
-  let totalAppUsers = 0;
-  let totalPayments = 0;
-
-  for (const accountData of demoAccounts) {
-    const account = await prisma.account.findFirst({
-      where: { companyId: co.id, name: accountData.name },
-    });
-    if (!account) continue;
-
-    const { users, payments } = await syncAccountAnalytics(prisma, account.id, co.id, source);
-    totalAppUsers += users;
-    totalPayments += payments;
-  }
-
-  console.log(`seeded: mock partner analytics — ${totalAppUsers} app users, ${totalPayments} payments across demo accounts`);
-
-  // Backfill 90 days of daily debt snapshots per demo account so the "debt over time" chart is
-  // populated on a fresh seed (real accounts accrue one point per sync, going forward). The
-  // series drifts deterministically up toward each account's actual current debt (today's point,
-  // already written by the sync above, is the anchor).
-  await prisma.accountDebtSnapshot.deleteMany({ where: { companyId: co.id } });
-  const today = new Date();
-  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
-  let snapshotDays = 0;
-  for (const accountData of demoAccounts) {
-    const account = await prisma.account.findFirst({ where: { companyId: co.id, name: accountData.name } });
-    if (!account) continue;
-    const agg = await prisma.partnerAppUser.aggregate({ where: { accountId: account.id }, _sum: { debt: true } });
-    const currentDebt = Number(agg._sum.debt ?? 0);
-    const rows: { companyId: string; accountId: string; capturedOn: Date; totalDebt: number }[] = [];
-    for (let i = 90; i >= 1; i--) {
-      // deterministic wobble from accountId + day, ±12%, on a ramp from ~55% to 100% of current
-      const h = [...(account.id + ":" + i)].reduce((a, c) => (Math.imul(a, 31) + c.charCodeAt(0)) | 0, 7) >>> 0;
-      const wobble = 1 + ((h % 240) / 1000 - 0.12);
-      const ramp = 0.55 + 0.45 * ((90 - i) / 89);
-      rows.push({
-        companyId: co.id,
-        accountId: account.id,
-        capturedOn: new Date(todayUtc - i * 86400000),
-        totalDebt: Math.round(currentDebt * ramp * wobble * 100) / 100,
-      });
-    }
-    await prisma.accountDebtSnapshot.createMany({ data: rows });
-    snapshotDays += rows.length;
-  }
-  console.log(`seeded: ${snapshotDays} daily debt snapshots for debt-over-time chart`);
+  // NOTE: Persisted mock partner analytics (partnerAppUser / partnerPayment / debt snapshots)
+  // are no longer seeded — analytics now reads LIVE from the external Partner API and persists
+  // nothing. The old debt-snapshot backfill was removed along with the AccountDebtSnapshot model.
 
   // Seed demo settlement entries (idempotent)
   await prisma.settlementEntry.deleteMany({

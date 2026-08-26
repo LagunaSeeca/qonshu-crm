@@ -24,7 +24,7 @@ import {
 
 type Member = { id: string; name: string | null; email: string };
 
-export function AccountCreate({ members }: { members: Member[] }) {
+export function AccountCreate({ members, isAdmin = false }: { members: Member[]; isAdmin?: boolean }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -33,6 +33,7 @@ export function AccountCreate({ members }: { members: Member[] }) {
   const [primaryContactName, setPrimaryContactName] = useState("");
   const [primaryContactEmail, setPrimaryContactEmail] = useState("");
   const [externalPartnerKey, setExternalPartnerKey] = useState("");
+  const [partnerApiKey, setPartnerApiKey] = useState("");
   const [accountManagerId, setAccountManagerId] = useState(members[0]?.id ?? "");
   const [showPartnerLogin, setShowPartnerLogin] = useState(false);
   const [partnerName, setPartnerName] = useState("");
@@ -49,6 +50,7 @@ export function AccountCreate({ members }: { members: Member[] }) {
     setPrimaryContactName("");
     setPrimaryContactEmail("");
     setExternalPartnerKey("");
+    setPartnerApiKey("");
     setAccountManagerId(members[0]?.id ?? "");
     setShowPartnerLogin(false);
     setPartnerName("");
@@ -77,6 +79,7 @@ export function AccountCreate({ members }: { members: Member[] }) {
           primaryContactName: primaryContactName || undefined,
           primaryContactEmail: primaryContactEmail || undefined,
           externalPartnerKey: externalPartnerKey || undefined,
+          partnerApiKey: isAdmin ? (partnerApiKey || undefined) : undefined,
           accountManagerId: accountManagerId || undefined,
           partnerLogin: showPartnerLogin && partnerLoginFilled
             ? { name: partnerName || name, email: partnerEmail, password: partnerPassword }
@@ -152,6 +155,22 @@ export function AccountCreate({ members }: { members: Member[] }) {
               Used to pull this partner&apos;s app users, payments &amp; debt from the external API. Leave blank until you have it.
             </p>
           </div>
+          {isAdmin && (
+            <div className="space-y-1.5">
+              <Label htmlFor="ac-partner-api-key">Partner API key</Label>
+              <Input
+                id="ac-partner-api-key"
+                type="password"
+                autoComplete="new-password"
+                placeholder="Secret key for the partner's analytics API"
+                value={partnerApiKey}
+                onChange={(e) => setPartnerApiKey(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Stored encrypted. Leave blank until you have it — you can set or replace it later.
+              </p>
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label htmlFor="ac-contact-name">Primary contact name</Label>
             <Input

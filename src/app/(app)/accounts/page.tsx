@@ -66,7 +66,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
               Custom fields
             </Link>
           )}
-          <AccountCreate members={members.map((m) => ({ id: m.id, name: m.name, email: m.email }))} />
+          <AccountCreate members={members.map((m) => ({ id: m.id, name: m.name, email: m.email }))} isAdmin={user.role === "COMPANY_ADMIN"} />
         </div>
       </div>
 

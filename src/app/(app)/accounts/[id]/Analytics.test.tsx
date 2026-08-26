@@ -27,7 +27,7 @@ describe("Analytics", () => {
   it("renders installs & activation tiles from initialData", () => {
     render(<Analytics accountId="a1" initialData={data} />);
     expect(screen.getByText(/installs & activation/i)).toBeInTheDocument();
-    expect(screen.getByText(/total installs/i)).toBeInTheDocument();
+    expect(screen.getByText(/active on app/i)).toBeInTheDocument();
     expect(screen.getByText("10")).toBeInTheDocument();
     expect(screen.getByText(/activation rate/i)).toBeInTheDocument();
     expect(screen.getByText("70%")).toBeInTheDocument();

@@ -1,18 +1,66 @@
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient, Account } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
 import { getAccount } from "./accounts";
 import { getDashboardStats, type DashboardStats } from "./dashboard";
 import { listCompanySettlements } from "./settlements";
+import { fetchPartnerStats } from "@/lib/partner-api/client";
+import { decryptSecret } from "@/lib/crypto/secret";
+import {
+  InvalidApiKeyError,
+  UnknownPartnerError,
+  PartnerApiUnavailableError,
+} from "@/lib/partner-api/errors";
+import type {
+  PartnerPayment,
+  PartnerStatsResponse,
+  PaymentMethod,
+  PaymentCategory,
+} from "@/lib/partner-api/schema";
+
+// Reports are now a LIVE read: the per-partner payment figures and the flattened payment-level
+// detail come from the external Partner API for the requested range — NOT from a persisted
+// `partnerPayment` table. Nothing fetched here is written back to the DB. The KPI Summary block
+// still comes from `getDashboardStats` (the shared Dashboard computation, migrated on its own
+// slice), and Collected/Transferred/Owed still come from the company Settlement ledger — those
+// are company-owned CRM records, not partner-app payments, and the Partner API cannot supply them.
 
 export type PartnerRow = {
   accountId: string;
   accountName: string;
-  paymentsCount: number;
-  paymentsAmount: number;
-  collected: number;
-  transferred: number;
-  owed: number;
+  paymentsCount: number; // LIVE — Partner API total_payments_count for the range
+  paymentsAmount: number; // LIVE — Partner API total_payments_amount for the range
+  collected: number; // Settlement ledger (DB) — not sourceable from the Partner API
+  transferred: number; // Settlement ledger (DB) — not sourceable from the Partner API
+  owed: number; // Settlement ledger (DB) — not sourceable from the Partner API
+};
+
+// One row per individual payment, flattened across every configured account (paginated live).
+export type PaymentRow = {
+  accountId: string;
+  accountName: string;
+  id: string;
+  userId: string;
+  userName: string;
+  date: string;
+  amount: number;
+  method: PaymentMethod;
+  category: PaymentCategory;
+};
+
+export type AccountReportReason =
+  | "not_configured" // no encrypted key / partner mapping — never hit the network
+  | "invalid_key" // Partner API rejected the key (401)
+  | "unknown_partner" // Partner API does not recognize the partner (404)
+  | "unavailable" // network failure / timeout / 5xx
+  | "error" // decrypt or schema-validation failure
+  | "partial"; // page 1 succeeded but some pages (or the page cap) dropped payment detail
+
+export type AccountReportStatus = {
+  accountId: string;
+  accountName: string;
+  status: "ok" | "partial" | "skipped";
+  reason?: AccountReportReason;
 };
 
 export type Report = {
@@ -21,19 +69,84 @@ export type Report = {
   accountName?: string;
   kpis: DashboardStats;
   partnerRows: PartnerRow[];
+  payments: PaymentRow[];
+  accountStatuses: AccountReportStatus[];
 };
 
-const num = (d: { toNumber: () => number }) => d.toNumber();
+// The Partner API caps page_size at 500. We cap the number of pages we will chase per account so
+// a pathological partner (hundreds of thousands of payments) can't blow up memory / the CSV or
+// hammer the upstream — 20 pages × 500 = up to 10,000 payment rows of detail per account. The
+// aggregate paymentsCount/paymentsAmount always reflect the FULL range (they come from the
+// summary totals, not the fetched pages), so the cap only ever truncates the row-level detail,
+// and we flag the account "partial" when it does.
+const PAGE_SIZE = 500;
+const MAX_PAGES = 20;
+
+// BOTH the encrypted key and the partner mapping key must be present to authenticate a real call.
+function isConfigured(
+  a: Account,
+): a is Account & { externalApiKeyEnc: string; externalPartnerKey: string } {
+  return !!a.externalApiKeyEnc && !!a.externalPartnerKey;
+}
+
+// Map a per-account failure to a stable, secret-free reason.
+function skipReason(err: unknown): AccountReportReason {
+  if (err instanceof InvalidApiKeyError) return "invalid_key";
+  if (err instanceof UnknownPartnerError) return "unknown_partner";
+  if (err instanceof PartnerApiUnavailableError) return "unavailable";
+  return "error";
+}
+
+type AccountPayments = {
+  summary: PartnerStatsResponse;
+  payments: PartnerPayment[];
+  partial: boolean;
+};
+
+// Fetch EVERY payment for one account across the range. Page 1 (any error here rejects and the
+// account is skipped) yields the authoritative summary totals plus payments_page_count; the
+// remaining pages are fetched in parallel with Promise.allSettled so one bad page degrades the
+// detail to "partial" instead of losing the account. Pages beyond MAX_PAGES are intentionally
+// dropped and also mark the result partial.
+async function fetchAllPayments(params: {
+  baseUrl?: string;
+  apiKey: string;
+  partner: string;
+  dateFrom: string;
+  dateTo: string;
+}): Promise<AccountPayments> {
+  const first = await fetchPartnerStats({ ...params, page: 1, pageSize: PAGE_SIZE });
+  const totalPages = Math.max(1, Math.floor(first.payments_page_count || 1));
+  const cappedPages = Math.min(totalPages, MAX_PAGES);
+  const payments: PartnerPayment[] = [...first.payments];
+  let partial = totalPages > MAX_PAGES;
+
+  if (cappedPages > 1) {
+    const rest = await Promise.allSettled(
+      Array.from({ length: cappedPages - 1 }, (_, i) =>
+        fetchPartnerStats({ ...params, page: i + 2, pageSize: PAGE_SIZE }),
+      ),
+    );
+    for (const r of rest) {
+      if (r.status === "fulfilled") payments.push(...r.value.payments);
+      else partial = true;
+    }
+  }
+
+  return { summary: first, payments, partial };
+}
 
 export async function getReport(
   db: PrismaClient,
   user: SessionUser,
-  opts: { range: { from: Date; to: Date }; label: string; accountId?: string }
+  opts: { range: { from: Date; to: Date }; label: string; accountId?: string },
 ): Promise<Report> {
   const companyId = user.companyId!;
   const scope: "ALL" | "PARTNER" = opts.accountId ? "PARTNER" : "ALL";
 
-  let accounts: { id: string; name: string }[];
+  // Access scoping is unchanged: PARTNER goes through the getAccount chokepoint (foreign id →
+  // 404), ALL is company-scoped.
+  let accounts: Account[];
   let accountName: string | undefined;
   if (scope === "PARTNER") {
     const acc = await getAccount(db, user, opts.accountId!);
@@ -44,31 +157,98 @@ export async function getReport(
     accounts = await db.account.findMany({ where: { companyId } });
   }
 
-  const accountIds = accounts.map((a) => a.id);
-  const [kpis, payments, settlements] = await Promise.all([
+  // The Partner API takes plain YYYY-MM-DD bounds.
+  const dateFrom = opts.range.from.toISOString().slice(0, 10);
+  const dateTo = opts.range.to.toISOString().slice(0, 10);
+  const baseUrl = process.env.PARTNER_API_BASE_URL;
+
+  const [kpis, settlements] = await Promise.all([
     getDashboardStats(db, user, opts.range),
-    db.partnerPayment.findMany({
-      where: { companyId, accountId: { in: accountIds }, occurredAt: { gte: opts.range.from, lte: opts.range.to } },
-    }),
     listCompanySettlements(db, user),
   ]);
 
+  // Fan out live over configured accounts only; unconfigured accounts never touch the network.
+  const configured = accounts.filter(isConfigured);
+  const settled = await Promise.allSettled(
+    configured.map((a) =>
+      fetchAllPayments({
+        baseUrl,
+        apiKey: decryptSecret(a.externalApiKeyEnc),
+        partner: a.externalPartnerKey,
+        dateFrom,
+        dateTo,
+      }),
+    ),
+  );
+
+  const statuses: AccountReportStatus[] = accounts
+    .filter((a) => !isConfigured(a))
+    .map((a) => ({
+      accountId: a.id,
+      accountName: a.name,
+      status: "skipped" as const,
+      reason: "not_configured" as const,
+    }));
+
+  const liveByAccount = new Map<string, { count: number; amount: number }>();
+  const payments: PaymentRow[] = [];
+
+  settled.forEach((res, i) => {
+    const a = configured[i];
+    if (res.status === "rejected") {
+      statuses.push({
+        accountId: a.id,
+        accountName: a.name,
+        status: "skipped",
+        reason: skipReason(res.reason),
+      });
+      return;
+    }
+    const { summary, payments: rows, partial } = res.value;
+    liveByAccount.set(a.id, {
+      count: summary.total_payments_count,
+      amount: summary.total_payments_amount,
+    });
+    statuses.push({
+      accountId: a.id,
+      accountName: a.name,
+      status: partial ? "partial" : "ok",
+      reason: partial ? "partial" : undefined,
+    });
+    for (const p of rows) {
+      payments.push({
+        accountId: a.id,
+        accountName: a.name,
+        id: p.id,
+        userId: p.user_id,
+        userName: p.user_name,
+        date: p.date,
+        amount: p.amount,
+        method: p.method,
+        category: p.category,
+      });
+    }
+  });
+
+  // Partner rows preserve the existing per-account shape/order (every account is a row, even the
+  // skipped ones). Live payment figures merge in where available; skipped/errored accounts show 0
+  // and are explained by accountStatuses / the CSV "Skipped accounts" section — never faked.
   const settlementByAccount = new Map(settlements.rows.map((r) => [r.accountId, r]));
   const partnerRows: PartnerRow[] = accounts.map((a) => {
-    const mine = payments.filter((p) => p.accountId === a.id);
+    const live = liveByAccount.get(a.id);
     const s = settlementByAccount.get(a.id);
     return {
       accountId: a.id,
       accountName: a.name,
-      paymentsCount: mine.length,
-      paymentsAmount: mine.reduce((sum, p) => sum + num(p.amount), 0),
+      paymentsCount: live?.count ?? 0,
+      paymentsAmount: live?.amount ?? 0,
       collected: s?.collected ?? 0,
       transferred: s?.transferred ?? 0,
       owed: s?.owed ?? 0,
     };
   });
 
-  return { label: opts.label, scope, accountName, kpis, partnerRows };
+  return { label: opts.label, scope, accountName, kpis, partnerRows, payments, accountStatuses: statuses };
 }
 
 function esc(v: string | number): string {
@@ -76,6 +256,15 @@ function esc(v: string | number): string {
   if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
+
+const REASON_LABEL: Record<AccountReportReason, string> = {
+  not_configured: "not configured",
+  invalid_key: "invalid API key",
+  unknown_partner: "unknown partner",
+  unavailable: "Partner API unavailable",
+  error: "error",
+  partial: "payment detail truncated",
+};
 
 export function toCsv(report: Report): string {
   const k = report.kpis;
@@ -103,8 +292,28 @@ export function toCsv(report: Report): string {
     "",
     "Partner,Payments,Payments Amount,Collected,Transferred,Owed",
     ...report.partnerRows.map((r) =>
-      [r.accountName, r.paymentsCount, r.paymentsAmount, r.collected, r.transferred, r.owed].map(esc).join(",")
+      [r.accountName, r.paymentsCount, r.paymentsAmount, r.collected, r.transferred, r.owed].map(esc).join(","),
+    ),
+    "",
+    "Payments",
+    "Account,Payment ID,User ID,User Name,Date,Amount,Method,Category",
+    ...report.payments.map((p) =>
+      [p.accountName, p.id, p.userId, p.userName, p.date, p.amount, p.method, p.category].map(esc).join(","),
     ),
   ];
+
+  // Report which accounts are missing/incomplete so the export never silently drops a partner.
+  const flagged = report.accountStatuses.filter((s) => s.status !== "ok");
+  if (flagged.length > 0) {
+    lines.push(
+      "",
+      "Skipped accounts",
+      "Account,Reason",
+      ...flagged.map((s) =>
+        [s.accountName, s.reason ? REASON_LABEL[s.reason] : s.status].map(esc).join(","),
+      ),
+    );
+  }
+
   return lines.join("\n");
 }
