@@ -20,7 +20,14 @@ import { GET as GET_ONE } from "./[id]/route";
 
 const KEY_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-describe("account routes — API key masking", () => {
+// There is no per-account Partner API key entry anymore — the external API authenticates every
+// partner with one shared X-API-Key read from PARTNER_API_KEY (see
+// src/lib/partner-api/credentials.ts); an account goes live purely off its partner NAME. The
+// `externalApiKeyEnc`/`externalApiKeyLast4` columns still exist as a dormant override (no
+// migration dropped them) and could in principle hold a value if written directly to the DB, so
+// these tests just confirm the account routes never let those two columns leak into a response —
+// there's no more masked-key feature to test (the `externalApiKeyMasked` field is gone).
+describe("account routes — partner key columns never leak", () => {
   let savedSecret: string | undefined;
 
   beforeEach(async () => {
@@ -44,7 +51,7 @@ describe("account routes — API key masking", () => {
     return { c, u };
   }
 
-  it("GET /api/accounts/[id]: masks a configured key as ••••<last4> and strips the ciphertext/last4 fields", async () => {
+  it("GET /api/accounts/[id]: strips externalApiKeyEnc/externalApiKeyLast4 even when a dormant override key is set on the row", async () => {
     const slug = `mask-one-${Date.now()}-${Math.random()}`;
     const { c, u } = await seedCompanyAndAdmin(slug);
     const plaintext = "sk_live_abcd1234";
@@ -61,33 +68,33 @@ describe("account routes — API key masking", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
 
-    expect(body.externalApiKeyMasked).toBe("••••1234");
-    expect(body.externalApiKeyEnc).toBeUndefined();
-    expect(body.externalApiKeyLast4).toBeUndefined();
     expect("externalApiKeyEnc" in body).toBe(false);
     expect("externalApiKeyLast4" in body).toBe(false);
+    expect("externalApiKeyMasked" in body).toBe(false); // the per-account key entry/field is gone
+    expect(body.externalPartnerKey).toBe("partner-x"); // the partner NAME is still returned as-is
     const raw = JSON.stringify(body);
     expect(raw).not.toContain(plaintext);
     expect(raw).not.toContain(ciphertext);
   });
 
-  it("GET /api/accounts/[id]: an unconfigured account gets externalApiKeyMasked: null", async () => {
+  it("GET /api/accounts/[id]: an account configured by partner name alone (no override column) never mentions a key field", async () => {
     const slug = `mask-none-${Date.now()}-${Math.random()}`;
     const { c, u } = await seedCompanyAndAdmin(slug);
     const acc = await testPrisma.account.create({
-      data: { companyId: c.id, name: "No Key", accountManagerId: u.id },
+      data: { companyId: c.id, name: "Name Only", accountManagerId: u.id, externalPartnerKey: "partner-only-name" },
     });
 
     const req = new NextRequest(`http://localhost/api/accounts/${acc.id}`);
     const res = await GET_ONE(req, { params: Promise.resolve({ id: acc.id }) });
     const body = await res.json();
 
-    expect(body.externalApiKeyMasked).toBeNull();
+    expect(body.externalPartnerKey).toBe("partner-only-name");
     expect("externalApiKeyEnc" in body).toBe(false);
     expect("externalApiKeyLast4" in body).toBe(false);
+    expect("externalApiKeyMasked" in body).toBe(false);
   });
 
-  it("GET /api/accounts (list): masks every row's key the same way", async () => {
+  it("GET /api/accounts (list): strips the columns from every row", async () => {
     const slug = `mask-list-${Date.now()}-${Math.random()}`;
     const { c, u } = await seedCompanyAndAdmin(slug);
     const plaintext = "sk_live_zzzz9999";
@@ -108,20 +115,17 @@ describe("account routes — API key masking", () => {
     const body = await res.json();
 
     expect(body).toHaveLength(2);
-    const configured = body.find((a: { name: string }) => a.name === "Configured");
-    const unconfigured = body.find((a: { name: string }) => a.name === "Unconfigured");
-    expect(configured.externalApiKeyMasked).toBe("••••9999");
-    expect(unconfigured.externalApiKeyMasked).toBeNull();
     for (const row of body) {
       expect("externalApiKeyEnc" in row).toBe(false);
       expect("externalApiKeyLast4" in row).toBe(false);
+      expect("externalApiKeyMasked" in row).toBe(false);
     }
     const raw = JSON.stringify(body);
     expect(raw).not.toContain(plaintext);
     expect(raw).not.toContain(ciphertext);
   });
 
-  it("GET /api/accounts/[id]: a foreign (cross-tenant) account 404s instead of leaking its masked key", async () => {
+  it("GET /api/accounts/[id]: a foreign (cross-tenant) account 404s instead of leaking anything", async () => {
     const slugA = `mask-x1-${Date.now()}-${Math.random()}`;
     const slugB = `mask-x2-${Date.now()}-${Math.random()}`;
     const { c: cB, u: uB } = await seedCompanyAndAdmin(slugB);

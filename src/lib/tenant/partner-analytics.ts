@@ -1,9 +1,9 @@
-import type { PrismaClient, Account } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
 import { getAccount } from "./accounts";
-import { decryptSecret } from "@/lib/crypto/secret";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
+import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import { InvalidApiKeyError, UnknownPartnerError } from "@/lib/partner-api/errors";
 import type { PartnerStatsResponse } from "@/lib/partner-api/schema";
 
@@ -14,7 +14,7 @@ import type { PartnerStatsResponse } from "@/lib/partner-api/schema";
 
 export type AnalyticsStatus =
   | "ok"
-  | "not-configured" // account has no partner name and/or no stored API key — never call the API
+  | "not-configured" // account has no partner name and/or no resolvable API key — never call the API
   | "invalid-key" // upstream rejected the API key (HTTP 401)
   | "unknown-partner" // upstream does not recognize this partner (HTTP 404)
   | "unavailable"; // network / timeout / 5xx / malformed body / decrypt failure
@@ -71,17 +71,6 @@ function statusForError(e: unknown): AnalyticsStatus {
   if (e instanceof InvalidApiKeyError) return "invalid-key";
   if (e instanceof UnknownPartnerError) return "unknown-partner";
   return "unavailable";
-}
-
-// Resolve upstream credentials from the account. Returns null when the account isn't linked yet
-// (no partner name or no stored key) so the caller short-circuits WITHOUT calling the API. The
-// plaintext key is returned only to be handed to fetchPartnerStats — never onto a DTO.
-// decryptSecret may throw (tampered ciphertext / missing PARTNER_API_KEY_SECRET); the caller
-// treats that as "unavailable".
-function resolveCredentials(acc: Account): { apiKey: string; partner: string } | null {
-  if (!acc.externalApiKeyEnc || !acc.externalPartnerKey) return null;
-  const apiKey = decryptSecret(acc.externalApiKeyEnc);
-  return { apiKey, partner: acc.externalPartnerKey };
 }
 
 function emptyAnalytics(status: AnalyticsStatus): AccountAnalytics {
@@ -141,9 +130,9 @@ export async function getAccountAnalytics(
   const acc = await getAccount(db, user, accountId); // tenancy chokepoint: foreign account -> null
   if (!acc) throw new NotFoundError("account not in scope");
 
-  let creds: { apiKey: string; partner: string } | null;
+  let creds: PartnerCredentials | null;
   try {
-    creds = resolveCredentials(acc);
+    creds = resolvePartnerCredentials(acc);
   } catch {
     return emptyAnalytics("unavailable"); // decrypt failure — do not leak the cause
   }
@@ -153,6 +142,7 @@ export async function getAccountAnalytics(
     // pageSize 1: this endpoint only needs the range-wide aggregates (which are independent of
     // pagination); the payments page itself is served by listAccountPayments.
     const stats = await fetchPartnerStats({
+      baseUrl: creds.baseUrl,
       apiKey: creds.apiKey,
       partner: creds.partner,
       dateFrom: isoDate(range.from),
@@ -177,9 +167,9 @@ export async function listAccountPayments(
   // transactions.
   if (!acc) return { status: "not-configured", rows: [], total: 0, page: opts.page ?? 1, pageCount: 0 };
 
-  let creds: { apiKey: string; partner: string } | null;
+  let creds: PartnerCredentials | null;
   try {
-    creds = resolveCredentials(acc);
+    creds = resolvePartnerCredentials(acc);
   } catch {
     return { status: "unavailable", rows: [], total: 0, page: opts.page ?? 1, pageCount: 0 };
   }
@@ -187,6 +177,7 @@ export async function listAccountPayments(
 
   try {
     const stats = await fetchPartnerStats({
+      baseUrl: creds.baseUrl,
       apiKey: creds.apiKey,
       partner: creds.partner,
       dateFrom: isoDate(opts.from),

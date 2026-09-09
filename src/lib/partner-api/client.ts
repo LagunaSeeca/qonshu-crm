@@ -5,8 +5,10 @@
 import {
   PartnerStatsResponseSchema,
   PartnerObjectsResponseSchema,
+  PartnerListResponseSchema,
   type PartnerStatsResponse,
   type PartnerObjectsResponse,
+  type PartnerListResponse,
 } from "./schema";
 import {
   InvalidApiKeyError,
@@ -21,6 +23,7 @@ const MAX_PAGE_SIZE = 500;
 
 const STATS_PATH = "/api/qonshu/partner-stats/";
 const OBJECTS_PATH = "/api/qonshu/objects/";
+const PARTNERS_PATH = "/api/qonshu/partners/";
 
 export type FetchPartnerStatsParams = {
   /** Overrides the `PARTNER_API_BASE_URL` env fallback. */
@@ -39,6 +42,13 @@ export type FetchPartnerObjectsParams = {
   baseUrl?: string;
   apiKey: string;
   partner: string;
+  timeoutMs?: number;
+};
+
+// Global — not scoped to any single partner, so no `partner` field.
+export type FetchPartnersParams = {
+  baseUrl?: string;
+  apiKey: string;
   timeoutMs?: number;
 };
 
@@ -143,4 +153,19 @@ export async function fetchPartnerObjects(
     params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   );
   return PartnerObjectsResponseSchema.parse(body);
+}
+
+// GET /api/qonshu/partners/ — no query params; lists every partner the shared X-API-Key can see.
+export async function fetchPartners(
+  params: FetchPartnersParams,
+): Promise<PartnerListResponse> {
+  const baseUrl = resolveBaseUrl(params.baseUrl);
+  const body = await requestJson(
+    baseUrl,
+    PARTNERS_PATH,
+    params.apiKey,
+    new URLSearchParams(),
+    params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  );
+  return PartnerListResponseSchema.parse(body);
 }

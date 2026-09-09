@@ -5,7 +5,7 @@ import { getAccount } from "./accounts";
 import { getDashboardStats, type DashboardStats } from "./dashboard";
 import { listCompanySettlements } from "./settlements";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
-import { decryptSecret } from "@/lib/crypto/secret";
+import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import {
   InvalidApiKeyError,
   UnknownPartnerError,
@@ -49,7 +49,7 @@ export type PaymentRow = {
 };
 
 export type AccountReportReason =
-  | "not_configured" // no encrypted key / partner mapping — never hit the network
+  | "not_configured" // no partner name, or no resolvable key (env + override both absent) — never hit the network
   | "invalid_key" // Partner API rejected the key (401)
   | "unknown_partner" // Partner API does not recognize the partner (404)
   | "unavailable" // network failure / timeout / 5xx
@@ -81,13 +81,6 @@ export type Report = {
 // and we flag the account "partial" when it does.
 const PAGE_SIZE = 500;
 const MAX_PAGES = 20;
-
-// BOTH the encrypted key and the partner mapping key must be present to authenticate a real call.
-function isConfigured(
-  a: Account,
-): a is Account & { externalApiKeyEnc: string; externalPartnerKey: string } {
-  return !!a.externalApiKeyEnc && !!a.externalPartnerKey;
-}
 
 // Map a per-account failure to a stable, secret-free reason.
 function skipReason(err: unknown): AccountReportReason {
@@ -160,41 +153,51 @@ export async function getReport(
   // The Partner API takes plain YYYY-MM-DD bounds.
   const dateFrom = opts.range.from.toISOString().slice(0, 10);
   const dateTo = opts.range.to.toISOString().slice(0, 10);
-  const baseUrl = process.env.PARTNER_API_BASE_URL;
 
   const [kpis, settlements] = await Promise.all([
     getDashboardStats(db, user, opts.range),
     listCompanySettlements(db, user),
   ]);
 
-  // Fan out live over configured accounts only; unconfigured accounts never touch the network.
-  const configured = accounts.filter(isConfigured);
+  // Resolve credentials for every account up front, synchronously. An account with no partner
+  // name (or no resolvable key — no env PARTNER_API_KEY and no per-account override) never
+  // touches the network; it's reported as skipped so the export never silently drops a partner.
+  // A decrypt failure on a (dormant) per-account override key is isolated the same way,
+  // immediately, without attempting the call.
+  const resolved: { account: Account; creds: PartnerCredentials }[] = [];
+  const statuses: AccountReportStatus[] = [];
+  for (const a of accounts) {
+    let creds: PartnerCredentials | null;
+    try {
+      creds = resolvePartnerCredentials(a);
+    } catch {
+      statuses.push({ accountId: a.id, accountName: a.name, status: "skipped", reason: "error" });
+      continue;
+    }
+    if (!creds) {
+      statuses.push({ accountId: a.id, accountName: a.name, status: "skipped", reason: "not_configured" });
+      continue;
+    }
+    resolved.push({ account: a, creds });
+  }
+
   const settled = await Promise.allSettled(
-    configured.map((a) =>
+    resolved.map(({ creds }) =>
       fetchAllPayments({
-        baseUrl,
-        apiKey: decryptSecret(a.externalApiKeyEnc),
-        partner: a.externalPartnerKey,
+        baseUrl: creds.baseUrl,
+        apiKey: creds.apiKey,
+        partner: creds.partner,
         dateFrom,
         dateTo,
       }),
     ),
   );
 
-  const statuses: AccountReportStatus[] = accounts
-    .filter((a) => !isConfigured(a))
-    .map((a) => ({
-      accountId: a.id,
-      accountName: a.name,
-      status: "skipped" as const,
-      reason: "not_configured" as const,
-    }));
-
   const liveByAccount = new Map<string, { count: number; amount: number }>();
   const payments: PaymentRow[] = [];
 
   settled.forEach((res, i) => {
-    const a = configured[i];
+    const a = resolved[i].account;
     if (res.status === "rejected") {
       statuses.push({
         accountId: a.id,

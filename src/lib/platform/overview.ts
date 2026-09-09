@@ -1,7 +1,7 @@
 import type { PrismaClient, CompanyStatus, Account } from "@prisma/client";
 import { assertRole, type SessionUser } from "@/lib/auth/guards";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
-import { decryptSecret } from "@/lib/crypto/secret";
+import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import { resolveRange } from "@/lib/analytics/range";
 
 // Platform Overview app-user/payment figures are a LIVE fan-out over the external Partner API,
@@ -50,14 +50,6 @@ export type PlatformOverview = {
   };
 };
 
-// Partner-configured means BOTH the encrypted key and the partner mapping key are present —
-// either one missing and we can't authenticate a real call, so the account is skipped.
-function isConfigured(
-  a: Account,
-): a is Account & { externalApiKeyEnc: string; externalPartnerKey: string } {
-  return !!a.externalApiKeyEnc && !!a.externalPartnerKey;
-}
-
 // The one sanctioned cross-company read in the app: every other tenant-scoped query in
 // src/lib/tenant/* filters by companyId, but a super admin legitimately needs to see across
 // all tenants. Gated by assertRole so a COMPANY_ADMIN calling this directly still gets
@@ -101,12 +93,29 @@ export async function getPlatformOverview(db: PrismaClient, actor: SessionUser):
   const range = resolveRange({});
   const dateFrom = range.from.toISOString().slice(0, 10);
   const dateTo = range.to.toISOString().slice(0, 10);
-  const baseUrl = process.env.PARTNER_API_BASE_URL;
 
-  const configured = accounts.filter(isConfigured);
-  let skipped = accounts.length - configured.length; // not_configured accounts, counted up front
+  // Resolve credentials for every account across every company, synchronously. An account with
+  // no partner name (or no resolvable key — no env PARTNER_API_KEY and no per-account override)
+  // never touches the network; a decrypt failure on a (dormant) per-account override key is
+  // isolated the same way. Both count toward `skipped` up front, before any network call.
+  const resolved: { account: Account; creds: PartnerCredentials }[] = [];
+  let skipped = 0;
+  for (const a of accounts) {
+    let creds: PartnerCredentials | null;
+    try {
+      creds = resolvePartnerCredentials(a);
+    } catch {
+      skipped += 1;
+      continue;
+    }
+    if (!creds) {
+      skipped += 1;
+      continue;
+    }
+    resolved.push({ account: a, creds });
+  }
 
-  // Fan out across EVERY configured account of EVERY company, in parallel. allSettled keeps one
+  // Fan out across EVERY resolved account of EVERY company, in parallel. allSettled keeps one
   // account's rejection (bad key / unknown partner / timeout / malformed body) from failing the
   // whole page. PERF NOTE for reviewer: this is O(all configured accounts across all companies)
   // outbound HTTP calls on every Platform Overview load, with no caching — fine at small
@@ -114,16 +123,15 @@ export async function getPlatformOverview(db: PrismaClient, actor: SessionUser):
   // grows large, since a single slow-but-not-timed-out upstream call still costs its full
   // latency even though allSettled isolates its *failure*.
   const settled = await Promise.allSettled(
-    configured.map(async (a) => {
-      const apiKey = decryptSecret(a.externalApiKeyEnc);
-      return fetchPartnerStats({
-        baseUrl,
-        apiKey,
-        partner: a.externalPartnerKey,
+    resolved.map(({ creds }) =>
+      fetchPartnerStats({
+        baseUrl: creds.baseUrl,
+        apiKey: creds.apiKey,
+        partner: creds.partner,
         dateFrom,
         dateTo,
-      });
-    }),
+      }),
+    ),
   );
 
   const appUsersByCompany = new Map<string, number>();
@@ -131,7 +139,7 @@ export async function getPlatformOverview(db: PrismaClient, actor: SessionUser):
   let contributed = 0;
 
   settled.forEach((res, i) => {
-    const a = configured[i];
+    const a = resolved[i].account;
     if (res.status === "rejected") {
       skipped += 1;
       return;

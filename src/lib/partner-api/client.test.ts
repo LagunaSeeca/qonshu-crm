@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fetchPartnerStats, fetchPartnerObjects } from "./client";
+import { fetchPartnerStats, fetchPartnerObjects, fetchPartners } from "./client";
 import {
   InvalidApiKeyError,
   UnknownPartnerError,
   PartnerApiUnavailableError,
 } from "./errors";
-import type { PartnerStatsResponse, PartnerObjectsResponse } from "./schema";
+import type { PartnerStatsResponse, PartnerObjectsResponse, PartnerListResponse } from "./schema";
 
 const BASE_URL = "https://partner.example.com";
 const API_KEY = "super-secret-key-value-9f3a";
@@ -312,6 +312,75 @@ describe("partner-api client", () => {
       await expect(
         fetchPartnerObjects({ baseUrl: BASE_URL, apiKey: API_KEY, partner: "ghost" }),
       ).rejects.toBeInstanceOf(UnknownPartnerError);
+    });
+  });
+
+  describe("fetchPartners", () => {
+    function validList(): PartnerListResponse {
+      return {
+        partners: [
+          { name: "Komplex B", type: "RESIDENTIAL" },
+          { name: "Sabah.City", type: "COMMERCIAL" },
+        ],
+      };
+    }
+
+    it("hits the partners path with no query params and the X-API-Key header", async () => {
+      fetchMock.mockResolvedValue(jsonResponse(validList()));
+      const out = await fetchPartners({ baseUrl: BASE_URL, apiKey: API_KEY });
+
+      expect(out.partners).toHaveLength(2);
+      expect(out.partners[0]).toEqual({ name: "Komplex B", type: "RESIDENTIAL" });
+      expect(out.partners[1].type).toBe("COMMERCIAL");
+
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe(`${BASE_URL}/api/qonshu/partners/`);
+      expect((init.headers as Record<string, string>)["X-API-Key"]).toBe(API_KEY);
+      // the key must never appear in the URL
+      expect(url).not.toContain(API_KEY);
+    });
+
+    it("uses PARTNER_API_BASE_URL when no baseUrl is passed", async () => {
+      process.env.PARTNER_API_BASE_URL = "https://env.example.com/";
+      fetchMock.mockResolvedValue(jsonResponse(validList()));
+      await fetchPartners({ apiKey: API_KEY });
+      const { url } = lastCall(fetchMock);
+      expect(url).toBe("https://env.example.com/api/qonshu/partners/");
+    });
+
+    it("maps 401 → InvalidApiKeyError without leaking the key", async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ detail: "no" }, 401));
+      const err = await fetchPartners({ baseUrl: BASE_URL, apiKey: API_KEY }).catch((e) => e);
+      expect(err).toBeInstanceOf(InvalidApiKeyError);
+      expect(err.message).not.toContain(API_KEY);
+    });
+
+    it("maps 404 → UnknownPartnerError", async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ detail: "no" }, 404));
+      await expect(fetchPartners({ baseUrl: BASE_URL, apiKey: API_KEY })).rejects.toBeInstanceOf(
+        UnknownPartnerError,
+      );
+    });
+
+    it("maps 500 → PartnerApiUnavailableError", async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ detail: "boom" }, 500));
+      await expect(fetchPartners({ baseUrl: BASE_URL, apiKey: API_KEY })).rejects.toBeInstanceOf(
+        PartnerApiUnavailableError,
+      );
+    });
+
+    it("maps a network error → PartnerApiUnavailableError and keeps the key out of the message", async () => {
+      fetchMock.mockRejectedValue(new Error(`socket to ${API_KEY} died`));
+      const err = await fetchPartners({ baseUrl: BASE_URL, apiKey: API_KEY }).catch((e) => e);
+      expect(err).toBeInstanceOf(PartnerApiUnavailableError);
+      expect(err.message).not.toContain(API_KEY);
+    });
+
+    it("throws when the response shape is invalid (zod)", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ partners: [{ name: "X", type: "INDUSTRIAL" }] }),
+      );
+      await expect(fetchPartners({ baseUrl: BASE_URL, apiKey: API_KEY })).rejects.toThrow();
     });
   });
 });

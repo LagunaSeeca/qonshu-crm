@@ -3,8 +3,8 @@ import { prisma } from "@/db/client";
 import { getSessionUser } from "@/lib/auth/session";
 import { getAccount } from "@/lib/tenant/accounts";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
-import { decryptSecret } from "@/lib/crypto/secret";
 import { fetchPartnerObjects } from "@/lib/partner-api/client";
+import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import {
   InvalidApiKeyError,
   UnknownPartnerError,
@@ -128,22 +128,28 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const account = await getAccount(prisma, user, (await params).id);
     if (!account) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-    const baseUrl = process.env.PARTNER_API_BASE_URL?.trim();
-    // If the integration isn't fully wired up, report it as a typed state — never call out.
-    if (!account.externalApiKeyEnc || !account.externalPartnerKey || !baseUrl) {
+    // If the integration isn't fully wired up (no partner name, or no resolvable key — neither
+    // an env PARTNER_API_KEY nor a per-account override), report it as a typed state — never
+    // call out.
+    let creds: PartnerCredentials | null;
+    try {
+      // A decrypt failure (tampered ciphertext / missing PARTNER_API_KEY_SECRET) on a
+      // per-account override key is an upstream-integration failure just like the network
+      // calls below, and must map to the same typed status — never a raw 500.
+      creds = resolvePartnerCredentials(account);
+    } catch {
+      return NextResponse.json({ status: "partner_api_unavailable" }, { status: 503 });
+    }
+    if (!creds) {
       return NextResponse.json({ status: "not_configured" }, { status: 200 });
     }
 
     let objects: PartnerObjectsResponse;
     try {
-      // decryptSecret lives inside this try too: a decrypt failure (tampered ciphertext /
-      // missing PARTNER_API_KEY_SECRET) is an upstream-integration failure just like the
-      // network calls below, and must map to the same typed status — never a raw 500.
-      const apiKey = decryptSecret(account.externalApiKeyEnc);
       objects = await fetchPartnerObjects({
-        baseUrl,
-        apiKey,
-        partner: account.externalPartnerKey,
+        baseUrl: creds.baseUrl,
+        apiKey: creds.apiKey,
+        partner: creds.partner,
       });
     } catch (e) {
       // Map each upstream failure to a distinct, typed status the Objects tab can branch on.
@@ -153,9 +159,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
         return NextResponse.json({ status: "unknown_partner" }, { status: 502 });
       if (e instanceof PartnerApiUnavailableError)
         return NextResponse.json({ status: "partner_api_unavailable" }, { status: 503 });
-      // Anything else — including a zod ValidationError from upstream response-shape drift, or a
-      // decrypt failure above — collapses to the same typed "unavailable" state. Never echo raw
-      // error text (it may carry field paths, the URL, or secret material) back to the client.
+      // Anything else — including a zod ValidationError from upstream response-shape drift —
+      // collapses to the same typed "unavailable" state. Never echo raw error text (it may
+      // carry field paths, the URL, or secret material) back to the client.
       return NextResponse.json({ status: "partner_api_unavailable" }, { status: 503 });
     }
 

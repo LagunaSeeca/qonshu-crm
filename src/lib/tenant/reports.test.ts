@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
 import { getReport, toCsv } from "./reports";
-import { encryptSecret } from "@/lib/crypto/secret";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
@@ -14,7 +13,10 @@ vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn() }));
 
 const range = { from: new Date("2026-07-01T00:00:00Z"), to: new Date("2026-07-31T23:59:59Z") };
 const KEY_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const SHARED_API_KEY = "test-shared-partner-api-key";
 
+// "Configured" now means only a partner NAME — the account goes live off the shared
+// PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
 async function setup(slug: string, opts?: { configured?: boolean; partnerKey?: string }) {
   const c = await testPrisma.company.create({ data: { name: "A", slug } });
   const u = await testPrisma.user.create({
@@ -25,13 +27,7 @@ async function setup(slug: string, opts?: { configured?: boolean; partnerKey?: s
       companyId: c.id,
       name: "Partner, Inc",
       accountManagerId: u.id,
-      ...(opts?.configured
-        ? {
-            externalPartnerKey: opts.partnerKey ?? `${slug}-p1`,
-            externalApiKeyEnc: encryptSecret(`key-${slug}`),
-            externalApiKeyLast4: "abcd",
-          }
-        : {}),
+      ...(opts?.configured ? { externalPartnerKey: opts.partnerKey ?? `${slug}-p1` } : {}),
     },
   });
   const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
@@ -40,16 +36,21 @@ async function setup(slug: string, opts?: { configured?: boolean; partnerKey?: s
 
 describe("reports (live partner API)", () => {
   let savedSecret: string | undefined;
+  let savedApiKey: string | undefined;
 
   beforeEach(async () => {
     await resetDb();
     savedSecret = process.env.PARTNER_API_KEY_SECRET;
+    savedApiKey = process.env.PARTNER_API_KEY;
     process.env.PARTNER_API_KEY_SECRET = KEY_SECRET;
+    process.env.PARTNER_API_KEY = SHARED_API_KEY;
     vi.mocked(fetchPartnerStats).mockReset();
   });
   afterEach(() => {
     if (savedSecret === undefined) delete process.env.PARTNER_API_KEY_SECRET;
     else process.env.PARTNER_API_KEY_SECRET = savedSecret;
+    if (savedApiKey === undefined) delete process.env.PARTNER_API_KEY;
+    else process.env.PARTNER_API_KEY = savedApiKey;
   });
   afterAll(() => testPrisma.$disconnect());
 
@@ -161,9 +162,7 @@ describe("reports (live partner API)", () => {
           companyId: c.id,
           name,
           accountManagerId: u.id,
-          ...(partnerKey
-            ? { externalPartnerKey: partnerKey, externalApiKeyEnc: encryptSecret(`k-${partnerKey}`), externalApiKeyLast4: "abcd" }
-            : {}),
+          ...(partnerKey ? { externalPartnerKey: partnerKey } : {}),
         },
       });
     const ok = await mk("OK", "rmix-ok");

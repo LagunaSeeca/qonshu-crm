@@ -8,7 +8,6 @@ import { leadVisibilityWhere } from "./visibility";
 import { createUser, InvalidUserRoleError } from "./users";
 import { ForbiddenError } from "@/lib/auth/guards";
 import type { SessionUser } from "@/lib/auth/guards";
-import { encryptSecret } from "@/lib/crypto/secret";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { makePartnerStats } from "@/test/partner-stats-fixture";
 
@@ -18,6 +17,7 @@ import { makePartnerStats } from "@/test/partner-stats-fixture";
 vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn() }));
 
 const KEY_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const SHARED_API_KEY = "test-shared-partner-api-key";
 const range = { from: new Date("2026-07-01T00:00:00Z"), to: new Date("2026-07-31T23:59:59Z") };
 
 // Partner keys registered here so the fetchPartnerStats mock (wired in beforeEach) can look up
@@ -36,20 +36,15 @@ async function seed(slug: string) {
   const memberUser: SessionUser = { id: member.id, companyId: c.id, role: "MEMBER" };
 
   // Two accounts, each with their own analytics/settlement/service-fee data. Both are wired up
-  // as partner-configured (key + partner mapping) so the live fan-out actually calls out for them.
+  // as partner-configured by NAME only — the shared PARTNER_API_KEY env var (set in beforeEach
+  // below) is what makes the live fan-out actually call out for them.
   const ownPartnerKey = `${slug}-own`;
   const otherPartnerKey = `${slug}-other`;
   const acc1 = await testPrisma.account.create({
-    data: {
-      companyId: c.id, name: "Own Account", accountManagerId: admin.id,
-      externalPartnerKey: ownPartnerKey, externalApiKeyEnc: encryptSecret(`key-${ownPartnerKey}`), externalApiKeyLast4: "abcd",
-    },
+    data: { companyId: c.id, name: "Own Account", accountManagerId: admin.id, externalPartnerKey: ownPartnerKey },
   });
   const acc2 = await testPrisma.account.create({
-    data: {
-      companyId: c.id, name: "Other Account", accountManagerId: admin.id,
-      externalPartnerKey: otherPartnerKey, externalApiKeyEnc: encryptSecret(`key-${otherPartnerKey}`), externalApiKeyLast4: "abcd",
-    },
+    data: { companyId: c.id, name: "Other Account", accountManagerId: admin.id, externalPartnerKey: otherPartnerKey },
   });
   statsByPartner.set(ownPartnerKey, makePartnerStats({ partner: ownPartnerKey, total_payments_amount: 150, total_debt: 40 }));
   statsByPartner.set(otherPartnerKey, makePartnerStats({ partner: otherPartnerKey, total_payments_amount: 5000, total_debt: 999 }));
@@ -73,10 +68,13 @@ async function seed(slug: string) {
 
 describe("partner portal security", () => {
   let savedSecret: string | undefined;
+  let savedApiKey: string | undefined;
   beforeEach(async () => {
     await resetDb();
     savedSecret = process.env.PARTNER_API_KEY_SECRET;
+    savedApiKey = process.env.PARTNER_API_KEY;
     process.env.PARTNER_API_KEY_SECRET = KEY_SECRET;
+    process.env.PARTNER_API_KEY = SHARED_API_KEY;
     statsByPartner.clear();
     vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) => {
       const s = statsByPartner.get(partner);
@@ -87,6 +85,8 @@ describe("partner portal security", () => {
   afterEach(() => {
     if (savedSecret === undefined) delete process.env.PARTNER_API_KEY_SECRET;
     else process.env.PARTNER_API_KEY_SECRET = savedSecret;
+    if (savedApiKey === undefined) delete process.env.PARTNER_API_KEY;
+    else process.env.PARTNER_API_KEY = savedApiKey;
   });
   afterAll(() => testPrisma.$disconnect());
 

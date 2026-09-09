@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
 import { getAccountAnalytics, listAccountPayments } from "./partner-analytics";
-import { encryptSecret } from "@/lib/crypto/secret";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
@@ -14,8 +13,11 @@ import type { SessionUser } from "@/lib/auth/guards";
 vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn() }));
 
 const KEY_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const SHARED_API_KEY = "test-shared-partner-api-key";
 const range = { from: new Date("2026-06-01T00:00:00Z"), to: new Date("2026-06-30T23:59:59Z") };
 
+// "Configured" now means only a partner NAME — the account goes live off the shared
+// PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
 async function seed(slug: string, opts?: { configured?: boolean }) {
   const c = await testPrisma.company.create({ data: { name: "A", slug } });
   const u = await testPrisma.user.create({
@@ -27,13 +29,7 @@ async function seed(slug: string, opts?: { configured?: boolean }) {
       companyId: c.id,
       name: "P",
       accountManagerId: u.id,
-      ...(configured
-        ? {
-            externalPartnerKey: `${slug}-partner`,
-            externalApiKeyEnc: encryptSecret(`key-${slug}`),
-            externalApiKeyLast4: "abcd",
-          }
-        : {}),
+      ...(configured ? { externalPartnerKey: `${slug}-partner` } : {}),
     },
   });
   const user: SessionUser = { id: u.id, companyId: c.id, role: "MEMBER" };
@@ -42,16 +38,21 @@ async function seed(slug: string, opts?: { configured?: boolean }) {
 
 describe("partner analytics (live)", () => {
   let savedSecret: string | undefined;
+  let savedApiKey: string | undefined;
 
   beforeEach(async () => {
     await resetDb();
     savedSecret = process.env.PARTNER_API_KEY_SECRET;
+    savedApiKey = process.env.PARTNER_API_KEY;
     process.env.PARTNER_API_KEY_SECRET = KEY_SECRET;
+    process.env.PARTNER_API_KEY = SHARED_API_KEY;
     vi.mocked(fetchPartnerStats).mockReset();
   });
   afterEach(() => {
     if (savedSecret === undefined) delete process.env.PARTNER_API_KEY_SECRET;
     else process.env.PARTNER_API_KEY_SECRET = savedSecret;
+    if (savedApiKey === undefined) delete process.env.PARTNER_API_KEY;
+    else process.env.PARTNER_API_KEY = savedApiKey;
   });
   afterAll(() => testPrisma.$disconnect());
 

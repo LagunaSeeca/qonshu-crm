@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vites
 import { testPrisma, resetDb } from "@/test/db";
 import { getPlatformOverview } from "./overview";
 import { ForbiddenError, type SessionUser } from "@/lib/auth/guards";
-import { encryptSecret } from "@/lib/crypto/secret";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError } from "@/lib/partner-api/errors";
 import { makePartnerStats } from "@/test/partner-stats-fixture";
@@ -15,6 +14,7 @@ vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn() }));
 
 const su: SessionUser = { id: "su", companyId: null, role: "SUPER_ADMIN" };
 const KEY_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const SHARED_API_KEY = "test-shared-partner-api-key";
 
 async function seedCompanyWithData(opts: {
   slug: string;
@@ -57,31 +57,33 @@ async function seedCompanyWithData(opts: {
   return { company, owner, accounts };
 }
 
-// Links an existing account to the external Partner API (encrypted key + mapping key) so the
-// live fan-out picks it up as "configured" instead of skipping it.
+// Links an existing account to the external Partner API by partner NAME only — the shared
+// PARTNER_API_KEY env var (set in beforeEach below) is what makes the live fan-out pick it up as
+// "configured" instead of skipping it. There is no per-account key entry anymore.
 async function configureAccount(accountId: string, partnerKey: string) {
   return testPrisma.account.update({
     where: { id: accountId },
-    data: {
-      externalPartnerKey: partnerKey,
-      externalApiKeyEnc: encryptSecret(`key-for-${partnerKey}`),
-      externalApiKeyLast4: "abcd",
-    },
+    data: { externalPartnerKey: partnerKey },
   });
 }
 
 describe("getPlatformOverview", () => {
   let savedSecret: string | undefined;
+  let savedApiKey: string | undefined;
 
   beforeEach(async () => {
     await resetDb();
     savedSecret = process.env.PARTNER_API_KEY_SECRET;
+    savedApiKey = process.env.PARTNER_API_KEY;
     process.env.PARTNER_API_KEY_SECRET = KEY_SECRET;
+    process.env.PARTNER_API_KEY = SHARED_API_KEY;
     vi.mocked(fetchPartnerStats).mockReset();
   });
   afterEach(() => {
     if (savedSecret === undefined) delete process.env.PARTNER_API_KEY_SECRET;
     else process.env.PARTNER_API_KEY_SECRET = savedSecret;
+    if (savedApiKey === undefined) delete process.env.PARTNER_API_KEY;
+    else process.env.PARTNER_API_KEY = savedApiKey;
   });
   afterAll(() => testPrisma.$disconnect());
 

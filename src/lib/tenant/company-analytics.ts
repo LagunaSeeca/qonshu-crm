@@ -3,7 +3,7 @@ import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
 import { listAccounts, getAccount } from "./accounts";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
-import { decryptSecret } from "@/lib/crypto/secret";
+import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import {
   InvalidApiKeyError,
   UnknownPartnerError,
@@ -47,14 +47,6 @@ type PartnerRow = {
   paymentsAmount: number;
 };
 
-// Partner-configured means BOTH the encrypted key and the partner mapping key are present —
-// either one missing and we can't authenticate a real call, so the account is skipped.
-function isConfigured(
-  a: Account,
-): a is Account & { externalApiKeyEnc: string; externalPartnerKey: string } {
-  return !!a.externalApiKeyEnc && !!a.externalPartnerKey;
-}
-
 // Map a per-account failure to a stable, secret-free reason for the status list. Covers the
 // typed Partner API errors plus decrypt/zod-validation failures (the catch-all "error").
 function skipReason(err: unknown): AccountSkipReason {
@@ -92,34 +84,42 @@ export async function getCompanyAnalytics(
   // The Partner API takes plain YYYY-MM-DD bounds.
   const dateFrom = range.from.toISOString().slice(0, 10);
   const dateTo = range.to.toISOString().slice(0, 10);
-  const baseUrl = process.env.PARTNER_API_BASE_URL;
 
-  // Split configured vs. the rest. Unconfigured accounts never touch the network; they're
-  // reported as skipped so the page can explain why they're absent from the totals.
-  const configured = accounts.filter(isConfigured);
-  const statuses: AccountFetchStatus[] = accounts
-    .filter((a) => !isConfigured(a))
-    .map((a) => ({
-      accountId: a.id,
-      accountName: a.name,
-      status: "skipped" as const,
-      reason: "not_configured" as const,
-    }));
+  // Resolve credentials for every account up front, synchronously. An account with no partner
+  // name (or no resolvable key — no env PARTNER_API_KEY and no per-account override) never
+  // touches the network; it's reported as skipped so the page can explain why it's absent from
+  // the totals. A decrypt failure on a (dormant) per-account override key is isolated the same
+  // way, immediately, without attempting the call.
+  const resolved: { account: Account; creds: PartnerCredentials }[] = [];
+  const statuses: AccountFetchStatus[] = [];
+  for (const a of accounts) {
+    let creds: PartnerCredentials | null;
+    try {
+      creds = resolvePartnerCredentials(a);
+    } catch {
+      statuses.push({ accountId: a.id, accountName: a.name, status: "skipped", reason: "error" });
+      continue;
+    }
+    if (!creds) {
+      statuses.push({ accountId: a.id, accountName: a.name, status: "skipped", reason: "not_configured" });
+      continue;
+    }
+    resolved.push({ account: a, creds });
+  }
 
-  // Fan out across every configured account IN PARALLEL. allSettled keeps one account's
-  // rejection (bad key / unknown partner / timeout / malformed body) from failing the batch,
-  // and preserves order so settled[i] lines up with configured[i].
+  // Fan out across every resolved account IN PARALLEL. allSettled keeps one account's rejection
+  // (bad key / unknown partner / timeout / malformed body) from failing the batch, and preserves
+  // order so settled[i] lines up with resolved[i].
   const settled = await Promise.allSettled(
-    configured.map(async (a) => {
-      const apiKey = decryptSecret(a.externalApiKeyEnc);
-      return fetchPartnerStats({
-        baseUrl,
-        apiKey,
-        partner: a.externalPartnerKey,
+    resolved.map(({ creds }) =>
+      fetchPartnerStats({
+        baseUrl: creds.baseUrl,
+        apiKey: creds.apiKey,
+        partner: creds.partner,
         dateFrom,
         dateTo,
-      });
-    }),
+      }),
+    ),
   );
 
   // Aggregators seeded to zero so an all-skipped company still yields a valid, empty page.
@@ -150,7 +150,7 @@ export async function getCompanyAnalytics(
   const partners: PartnerRow[] = [];
 
   settled.forEach((res, i) => {
-    const a = configured[i];
+    const a = resolved[i].account;
     if (res.status === "rejected") {
       statuses.push({
         accountId: a.id,

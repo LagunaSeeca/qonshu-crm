@@ -89,6 +89,17 @@ export const PartnerObjectsResponseSchema = z.object({
   buildings: z.array(BuildingSchema),
 });
 
+// GET /api/qonshu/partners/ — the global partner-LIST endpoint. Two fields per item, no
+// query params, not scoped to any single account (see fetchPartners in client.ts).
+export const PartnerSummarySchema = z.object({
+  name: z.string(),
+  type: z.enum(["RESIDENTIAL", "COMMERCIAL"]),
+});
+
+export const PartnerListResponseSchema = z.object({
+  partners: z.array(PartnerSummarySchema),
+});
+
 export type PaymentMethod = z.infer<typeof PaymentMethodSchema>;
 export type PaymentCategory = z.infer<typeof PaymentCategorySchema>;
 export type PartnerPayment = z.infer<typeof PartnerPaymentSchema>;
@@ -101,3 +112,6 @@ export type Office = z.infer<typeof OfficeSchema>;
 export type Block = z.infer<typeof BlockSchema>;
 export type Building = z.infer<typeof BuildingSchema>;
 export type PartnerObjectsResponse = z.infer<typeof PartnerObjectsResponseSchema>;
+
+export type PartnerSummary = z.infer<typeof PartnerSummarySchema>;
+export type PartnerListResponse = z.infer<typeof PartnerListResponseSchema>;

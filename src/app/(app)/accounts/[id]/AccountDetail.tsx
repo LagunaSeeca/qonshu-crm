@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { Combobox } from "@base-ui/react/combobox";
 import {
   MessageSquare,
   Phone,
@@ -15,6 +16,9 @@ import {
   Landmark,
   ReceiptText,
   Boxes,
+  ChevronDown,
+  Check,
+  X,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -103,6 +107,157 @@ function isOverdue(dueDate: string | null, done: boolean) {
   return new Date(dueDate) < new Date();
 }
 
+type Partner = { name: string; type: string };
+type PartnerListState =
+  | { status: "loading" }
+  | { status: "ready"; partners: Partner[] }
+  | { status: "error" };
+
+function usePartnerList(): PartnerListState {
+  const [state, setState] = useState<PartnerListState>({ status: "loading" });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/partners");
+        if (!r.ok) throw new Error("request failed");
+        const body = await r.json();
+        if (!Array.isArray(body?.partners)) throw new Error("unexpected response shape");
+        if (!cancelled) setState({ status: "ready", partners: body.partners });
+      } catch {
+        if (!cancelled) setState({ status: "error" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return state;
+}
+
+function formatPartnerType(type: string) {
+  return type.length > 0 ? type.charAt(0) + type.slice(1).toLowerCase() : type;
+}
+
+function PartnerTypeBadge({ type }: { type: string }) {
+  const cls =
+    type === "RESIDENTIAL"
+      ? "text-sky-700 border-sky-300 bg-sky-50 dark:text-sky-400 dark:border-sky-700 dark:bg-sky-950"
+      : type === "COMMERCIAL"
+      ? "text-violet-700 border-violet-300 bg-violet-50 dark:text-violet-400 dark:border-violet-700 dark:bg-violet-950"
+      : "text-muted-foreground";
+  return (
+    <Badge variant="outline" className={`h-4 shrink-0 px-1.5 py-0 text-[10px] font-medium ${cls}`}>
+      {formatPartnerType(type)}
+    </Badge>
+  );
+}
+
+/**
+ * Searchable partner picker bound to `externalPartnerKey`. Falls back to a plain
+ * text input whenever the partner list can't be loaded, so saving is never blocked.
+ */
+function PartnerPicker({
+  id,
+  value,
+  onChange,
+  description,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  description: string;
+}) {
+  const state = usePartnerList();
+
+  if (state.status === "loading") {
+    return <Input id={id} value={value} placeholder="Loading partners…" disabled readOnly />;
+  }
+
+  if (state.status === "error") {
+    return (
+      <>
+        <Input
+          id={id}
+          placeholder="Company name as known to the analytics provider"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Couldn&apos;t load the partner list — enter the exact partner name manually.
+        </p>
+      </>
+    );
+  }
+
+  const { partners } = state;
+  const typeByName = Object.fromEntries(partners.map((p) => [p.name, p.type]));
+  const isStale = value.length > 0 && !(value in typeByName);
+
+  return (
+    <>
+      <Combobox.Root
+        items={partners.map((p) => p.name)}
+        value={value.length > 0 ? value : null}
+        onValueChange={(v) => onChange(v ?? "")}
+      >
+        <Combobox.InputGroup className="flex h-8 w-full items-center gap-0.5 rounded-lg border border-input bg-transparent pl-2.5 pr-1 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30 dark:hover:bg-input/50">
+          <Combobox.Input
+            id={id}
+            placeholder="Search partners…"
+            className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          />
+          <Combobox.Clear
+            aria-label="Clear partner selection"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <X className="size-3.5" />
+          </Combobox.Clear>
+          <Combobox.Trigger
+            aria-label="Show all partners"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ChevronDown className="size-3.5" />
+          </Combobox.Trigger>
+        </Combobox.InputGroup>
+        <Combobox.Portal>
+          <Combobox.Positioner sideOffset={4} className="isolate z-50 outline-none">
+            <Combobox.Popup className="relative max-h-(--available-height) w-(--anchor-width) min-w-[14rem] origin-(--transform-origin) overflow-x-hidden overflow-y-auto rounded-lg bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95">
+              <Combobox.Empty className="px-3 py-4 text-center text-sm text-muted-foreground">
+                {partners.length === 0 ? "No partners available yet." : "No partners match your search."}
+              </Combobox.Empty>
+              <Combobox.List className="p-1">
+                {(name: string) => (
+                  <Combobox.Item
+                    key={name}
+                    value={name}
+                    className="relative flex w-full cursor-default items-center gap-2 rounded-md py-1.5 pr-2 pl-1.5 text-sm outline-hidden select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground"
+                  >
+                    <Combobox.ItemIndicator className="flex size-4 shrink-0 items-center justify-center">
+                      <Check className="size-3.5" />
+                    </Combobox.ItemIndicator>
+                    <span className="flex-1 truncate">{name}</span>
+                    <PartnerTypeBadge type={typeByName[name]} />
+                  </Combobox.Item>
+                )}
+              </Combobox.List>
+            </Combobox.Popup>
+          </Combobox.Positioner>
+        </Combobox.Portal>
+      </Combobox.Root>
+      {isStale ? (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          &ldquo;{value}&rdquo; is not in the current partner list (renamed or removed) — kept as-is.
+        </p>
+      ) : partners.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No partners returned by the analytics API yet.</p>
+      ) : (
+        <p className="text-xs text-muted-foreground">{description}</p>
+      )}
+    </>
+  );
+}
+
 type TabKey = "activity" | "tasks" | "asks" | "files" | "settlement" | "serviceFees" | "objects" | "analytics";
 
 export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false }: Props) {
@@ -120,26 +275,6 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
   const [externalPartnerKey, setExternalPartnerKey] = useState(account.externalPartnerKey ?? "");
   const [saving, setSaving] = useState(false);
 
-  // Partner API key: the server never sends the plaintext or ciphertext, only a masked
-  // hint ("••••1234" or null). page.tsx doesn't pass it as a prop, so admins fetch it
-  // client-side; non-admins never issue this request at all.
-  const [partnerApiKeyMasked, setPartnerApiKeyMasked] = useState<string | null>(null);
-  const [partnerApiKeyLoaded, setPartnerApiKeyLoaded] = useState(false);
-  const [partnerApiKeyInput, setPartnerApiKeyInput] = useState("");
-  const [showPartnerApiKeyInput, setShowPartnerApiKeyInput] = useState(false);
-  const [clearPartnerApiKey, setClearPartnerApiKey] = useState(false);
-
-  useEffect(() => {
-    if (!isAdmin) return;
-    let cancelled = false;
-    fetch(`/api/accounts/${account.id}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((body) => { if (!cancelled) setPartnerApiKeyMasked(body?.externalApiKeyMasked ?? null); })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setPartnerApiKeyLoaded(true); });
-    return () => { cancelled = true; };
-  }, [isAdmin, account.id]);
-
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -156,21 +291,12 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
         primaryContactEmail: primaryContactEmail || null,
         primaryContactPhone: primaryContactPhone || null,
         externalPartnerKey: externalPartnerKey || null,
-        partnerApiKey: isAdmin ? (partnerApiKeyInput || undefined) : undefined,
-        clearPartnerApiKey: isAdmin ? (clearPartnerApiKey || undefined) : undefined,
       }),
     });
     setSaving(false);
     if (!res.ok) {
       toast.error("Failed to save. Please try again.");
       return;
-    }
-    const body = await res.json().catch(() => null);
-    if (isAdmin) {
-      setPartnerApiKeyMasked(body?.externalApiKeyMasked ?? null);
-      setPartnerApiKeyInput("");
-      setShowPartnerApiKeyInput(false);
-      setClearPartnerApiKey(false);
     }
     toast.success("Account saved.");
     router.refresh();
@@ -351,88 +477,13 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
 
               <div className="space-y-1.5">
                 <Label htmlFor="externalPartnerKey">Partner name for analytics API</Label>
-                <Input
+                <PartnerPicker
                   id="externalPartnerKey"
                   value={externalPartnerKey}
-                  onChange={(e) => setExternalPartnerKey(e.target.value)}
-                  placeholder="Company name as known to the analytics provider"
+                  onChange={setExternalPartnerKey}
+                  description="Maps this account to its partner in the external API so only its own app users, payments & debt sync here."
                 />
-                <p className="text-xs text-muted-foreground">
-                  Maps this account to its partner in the external API so only its own app users, payments &amp; debt sync here.
-                </p>
               </div>
-
-              {isAdmin && (
-                <div className="space-y-1.5">
-                  <Label htmlFor="partnerApiKey">Partner API key</Label>
-                  {!showPartnerApiKeyInput ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-muted-foreground">
-                        {!partnerApiKeyLoaded
-                          ? "Loading…"
-                          : clearPartnerApiKey
-                          ? "Will be cleared on save"
-                          : (partnerApiKeyMasked ?? "Not set")}
-                      </span>
-                      {clearPartnerApiKey ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          onClick={() => setClearPartnerApiKey(false)}
-                        >
-                          Undo
-                        </Button>
-                      ) : (
-                        <>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-7 px-2 text-xs"
-                            onClick={() => setShowPartnerApiKeyInput(true)}
-                          >
-                            {partnerApiKeyMasked ? "Replace key" : "Set key"}
-                          </Button>
-                          {partnerApiKeyMasked && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="h-7 px-2 text-xs text-destructive"
-                              onClick={() => setClearPartnerApiKey(true)}
-                            >
-                              Clear
-                            </Button>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-1.5">
-                      <Input
-                        id="partnerApiKey"
-                        type="password"
-                        autoComplete="new-password"
-                        placeholder="Paste new Partner API key"
-                        value={partnerApiKeyInput}
-                        onChange={(e) => setPartnerApiKeyInput(e.target.value)}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => { setShowPartnerApiKeyInput(false); setPartnerApiKeyInput(""); }}
-                        className="text-xs text-muted-foreground hover:text-foreground underline cursor-pointer"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    Secret used to authenticate to the partner&apos;s analytics API. Stored encrypted — never shown in full again. Save to apply.
-                  </p>
-                </div>
-              )}
 
               <div className="space-y-1.5">
                 <Label>Status</Label>
