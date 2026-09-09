@@ -7,7 +7,8 @@ import { createAccount } from "./accounts";
 import { addAccountActivity, listAccountActivities } from "./account-activities";
 import { addAccountTask, toggleAccountTask, listAccountTasks } from "./account-tasks";
 import { addAccountAttachment, listAccountAttachments, getAccountAttachmentForDownload, deleteAccountAttachment } from "./account-attachments";
-import type { SessionUser } from "@/lib/auth/guards";
+import { recordPartnerLinkChange } from "./partner-link-audit";
+import { ForbiddenError, type SessionUser } from "@/lib/auth/guards";
 
 beforeAll(() => { process.env.UPLOADS_DIR = mkdtempSync(join(tmpdir(), "qonshu-acc-")); });
 
@@ -59,5 +60,48 @@ describe("account workspace", () => {
     // Delete attachment
     await deleteAccountAttachment(testPrisma, A.user, att.id);
     expect((await listAccountAttachments(testPrisma, A.user, A.acc.id)).length).toBe(0);
+  });
+});
+
+// AccountActivity carries the partner-link audit trail (./partner-link-audit.ts) as well as the
+// tenant's own timeline, and the tenant-facing writer takes a free-text outcome AND an arbitrary
+// occurredAt — so without a reservation the company being audited could plant rows that read
+// exactly like a platform admin's.
+describe("the partner_link: outcome prefix is reserved from tenant writers", () => {
+  beforeEach(resetDb);
+  afterAll(() => testPrisma.$disconnect());
+
+  it("refuses every partner_link: outcome a COMPANY_ADMIN/MEMBER could send, and writes nothing", async () => {
+    const A = await acct("a-reserved");
+    for (const outcome of ["partner_link:assign", "partner_link:clear", "partner_link:auto_link", "partner_link:"]) {
+      await expect(
+        addAccountActivity(testPrisma, A.user, A.acc.id, {
+          kind: "NOTE", body: "Partner link set to \"Komplex B\" by a platform admin",
+          outcome, occurredAt: new Date("2020-01-01"),
+        }),
+      ).rejects.toThrow(ForbiddenError);
+    }
+    expect(await testPrisma.accountActivity.count()).toBe(0);
+  });
+
+  it("still accepts an ordinary outcome — the reservation is the prefix, not the field", async () => {
+    const A = await acct("a-reserved-ok");
+    const row = await addAccountActivity(testPrisma, A.user, A.acc.id, {
+      kind: "CALL", body: "left a voicemail", outcome: "no answer",
+    });
+    expect(row.outcome).toBe("no answer");
+  });
+
+  it("lets a SUPER_ADMIN read the trail they write — they have no companyId to scope by", async () => {
+    const A = await acct("a-su-read");
+    await recordPartnerLinkChange(testPrisma, {
+      companyId: A.user.companyId!, accountId: A.acc.id, authorId: "su",
+      action: "assign", partnerName: "Komplex B",
+    });
+    const su: SessionUser = { id: "su", companyId: null, role: "SUPER_ADMIN" };
+    const rows = await listAccountActivities(testPrisma, su, A.acc.id);
+    expect(rows.map((r) => r.outcome)).toEqual(["partner_link:assign"]);
+    // ...and an account that doesn't exist is an empty list, not a throw.
+    expect(await listAccountActivities(testPrisma, su, "no-such-account")).toEqual([]);
   });
 });

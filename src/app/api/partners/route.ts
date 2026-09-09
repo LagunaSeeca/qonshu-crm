@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import { prisma } from "@/db/client";
 import { getSessionUser } from "@/lib/auth/session";
 import { assertRole } from "@/lib/auth/guards";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
+import { listTakenPartnerKeys } from "@/lib/tenant/accounts";
 import { fetchPartners } from "@/lib/partner-api/client";
 import { resolveGlobalCredentials } from "@/lib/partner-api/credentials";
 import {
@@ -11,12 +13,22 @@ import {
 } from "@/lib/partner-api/errors";
 import type { PartnerListResponse } from "@/lib/partner-api/schema";
 
-// LIVE, read-only list of every partner the shared PARTNER_API_KEY can see — powers the
-// partner picker shown while creating/editing an account. GLOBAL, not per-account: unlike
-// src/app/api/accounts/[id]/objects/route.ts there is no account row to resolve a partner
+// LIVE, read-only list of the UNCLAIMED partners the shared PARTNER_API_KEY can see — powers
+// the SUPER_ADMIN-only partner assignment card at /platform/accounts. GLOBAL, not per-account:
+// unlike src/app/api/accounts/[id]/objects/route.ts there is no account row to resolve a partner
 // name or per-account key override from, so this goes straight through
 // resolveGlobalCredentials() to the shared env key. Fetched fresh on every request — nothing
 // is persisted or cached.
+//
+// SUPER_ADMIN ONLY, deliberately. The partner namespace is shared across every tenant (one
+// PARTNER_API_KEY, `?partner=<name>` is the only discriminator), so this list names complexes
+// belonging to OTHER companies. Handing it to a COMPANY_ADMIN/MEMBER both leaks the tenant
+// roster and lets them link their own account to someone else's partner — which would expose
+// that partner's debt, payments and unit-level owner names/phones.
+//
+// Already-claimed names are filtered out for the same reason: two accounts on one name
+// double-count every analytics fan-out and cross-expose two tenants' data. One batched query
+// (listTakenPartnerKeys), not a lookup per partner.
 export const dynamic = "force-dynamic";
 
 type PartnersPayload = {
@@ -28,9 +40,7 @@ export async function GET() {
   try {
     const user = await getSessionUser();
     if (!user) throw new UnauthorizedError();
-    // Creating/editing accounts (which is where the picker lives) is admin/member work —
-    // match src/app/api/accounts/route.ts's POST gating.
-    assertRole(user, ["COMPANY_ADMIN", "MEMBER"]);
+    assertRole(user, ["SUPER_ADMIN"]);
 
     const creds = resolveGlobalCredentials();
     if (!creds) {
@@ -54,7 +64,12 @@ export async function GET() {
       return NextResponse.json({ status: "partner_api_unavailable" }, { status: 503 });
     }
 
-    const payload: PartnersPayload = { status: "ok", partners: list.partners };
+    // Only query the DB once the upstream call succeeded — a failed fetch short-circuits above.
+    const taken = await listTakenPartnerKeys(prisma);
+    const payload: PartnersPayload = {
+      status: "ok",
+      partners: list.partners.filter((p) => !taken.has(p.name)),
+    };
     return NextResponse.json(payload, { status: 200 });
   } catch (e) {
     return errorResponse(e);

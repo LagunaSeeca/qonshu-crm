@@ -4,6 +4,7 @@ import { getReport, toCsv } from "./reports";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
+import { dbWithPhantomPartnerKey } from "@/test/duplicate-partner-db";
 import type { SessionUser } from "@/lib/auth/guards";
 
 // Reports are a LIVE read of the external Partner API (paginated payments), so the client is
@@ -196,6 +197,67 @@ describe("reports (live partner API)", () => {
     expect(okRow.paymentsAmount).toBe(99);
     // not-configured accounts never hit the network
     expect(fetchPartnerStats).not.toHaveBeenCalledWith(expect.objectContaining({ partner: undefined }));
+  });
+
+  // Defence in depth for a duplicate that predates @@unique([externalPartnerKey]): two accounts on
+  // one complex would double both the aggregate row and the flattened payment detail, since
+  // paymentsCount/paymentsAmount are plain sums. The constraint makes a real duplicate row
+  // uninsertable now, so the second claim is injected at the query boundary — see
+  // src/test/duplicate-partner-db.ts. Same dedup approach as company-analytics.ts / overview.ts.
+  it("counts a partner ONCE when two accounts hold the same externalPartnerKey", async () => {
+    const slug = `r-dupe-${Date.now()}-${Math.random()}`;
+    const c = await testPrisma.company.create({ data: { name: "Co", slug } });
+    const u = await testPrisma.user.create({
+      data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
+    });
+    const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const partnerKey = `${slug}-shared`;
+    await testPrisma.account.create({
+      data: { companyId: c.id, name: "Account A", accountManagerId: u.id, externalPartnerKey: partnerKey },
+    });
+    const b = await testPrisma.account.create({
+      data: { companyId: c.id, name: "Account B", accountManagerId: u.id },
+    });
+    const db = dbWithPhantomPartnerKey(b.id, partnerKey);
+
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner, page }) =>
+      makePartnerStats({
+        partner,
+        total_payments_count: 2,
+        total_payments_amount: 100,
+        payments_page: page ?? 1,
+        payments_page_count: 1,
+        payments_total_count: 2,
+        payments: [makePartnerPayment({ id: `pay-${partner}` })],
+      }),
+    );
+
+    const r = await getReport(db, user, { range, label: "July 2026" });
+
+    // Isolate this report's own paginated calls from the page-less calls made by
+    // getDashboardStats' internal getCompanyAnalytics fan-out (which already dedups on its own —
+    // see company-analytics.test.ts). Only one account should ever be fetched, not two.
+    const pagedCalls = vi
+      .mocked(fetchPartnerStats)
+      .mock.calls.map((call) => call[0] as { page?: number })
+      .filter((a) => a.page !== undefined);
+    expect(pagedCalls).toHaveLength(1);
+
+    // Every account is still a row (shape preserved) — the loser shows 0, not hidden, and the
+    // totals across both rows reflect ONE partner's figures, not two.
+    expect(r.partnerRows).toHaveLength(2);
+    expect(r.partnerRows.reduce((sum, row) => sum + row.paymentsAmount, 0)).toBe(100);
+    expect(r.partnerRows.reduce((sum, row) => sum + row.paymentsCount, 0)).toBe(2);
+    expect(r.payments).toHaveLength(1);
+
+    // The loser is reported rather than silently dropped, so the CSV export stays honest.
+    const dupeStatus = r.accountStatuses.find((s) => s.reason === "duplicate_partner");
+    expect(dupeStatus).toBeDefined();
+    expect(r.accountStatuses.filter((s) => s.status === "ok")).toHaveLength(1);
+
+    const csv = toCsv(r);
+    expect(csv).toContain("Skipped accounts");
+    expect(csv).toContain(`${dupeStatus!.accountName},duplicate partner`);
   });
 
   it("PARTNER scope rejects another tenant's account", async () => {

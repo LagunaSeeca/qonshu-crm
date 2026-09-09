@@ -17,8 +17,10 @@ describe("moveLeadStage", () => {
     const lead = await createLead(testPrisma, user, { title: "D", contactName: "C", stageId: stages[0].id });
     const lost = stages.find((s) => s.type === "LOST")!;
     const moved = await moveLeadStage(testPrisma, user, lead.id, lost.id, "budget");
-    expect(moved.stageId).toBe(lost.id);
-    expect(moved.lostReason).toBe("budget");
+    expect(moved.lead.stageId).toBe(lost.id);
+    expect(moved.lead.lostReason).toBe("budget");
+    // A Lost move never converts, so the flag is false — it is not a failure signal here.
+    expect(moved.autoConverted).toBe(false);
     const acts = await testPrisma.activity.findMany({ where: { leadId: lead.id, kind: "STAGE_CHANGE" } });
     expect(acts.length).toBe(1);
     expect(acts[0].body).toContain("New");

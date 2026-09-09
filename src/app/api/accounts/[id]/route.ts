@@ -5,20 +5,8 @@ import { prisma } from "@/db/client";
 import { getSessionUser } from "@/lib/auth/session";
 import { assertRole } from "@/lib/auth/guards";
 import { getAccount, updateAccount, deleteAccount } from "@/lib/tenant/accounts";
+import { maskAccount } from "@/lib/tenant/account-dto";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
-
-// Strip the partner-API secret columns from an account row before it ever reaches JSON. There is
-// no per-account key entry anymore (the Partner API uses one shared X-API-Key from env — see
-// src/lib/partner-api/credentials.ts), but the `externalApiKeyEnc`/`externalApiKeyLast4` columns
-// still exist as a dormant override and must never leak to a client even if a row somehow has one
-// set (e.g. seeded directly in the DB).
-function maskAccount(account: Account) {
-  return {
-    ...account,
-    externalApiKeyEnc: undefined,
-    externalApiKeyLast4: undefined,
-  };
-}
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -34,10 +22,11 @@ const Patch = z.object({
   accountManagerId: z.string().optional(),
   primaryContactName: z.string().nullable().optional(), primaryContactEmail: z.string().email().nullable().optional(),
   primaryContactPhone: z.string().nullable().optional(),
-  // Partner NAME for the external analytics API — the account goes "live" off this plus the
-  // shared PARTNER_API_KEY env var (see src/lib/partner-api/credentials.ts). No per-account
-  // key entry: the Django backend authenticates every partner with one shared X-API-Key.
-  externalPartnerKey: z.string().nullable().optional(),
+  // NO `externalPartnerKey` HERE, ON PURPOSE. The external partner namespace is GLOBAL (one
+  // shared PARTNER_API_KEY; `?partner=<name>` is the only discriminator), so letting a tenant
+  // re-point their account at any partner name would expose another company's debt, payments
+  // and unit-level owner names/phones. Assigning/clearing the link is SUPER_ADMIN-only — see
+  // src/lib/platform/account-partners.ts. Zod strips the field if a client sends it anyway.
 });
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {

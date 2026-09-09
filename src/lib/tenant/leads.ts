@@ -1,16 +1,9 @@
 import type { PrismaClient, Lead, Priority, Prisma } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
-import { leadVisibilityWhere } from "./visibility";
+import { leadScopeWhere } from "./visibility";
 import { removeLeadDir } from "@/lib/files/storage";
-
-async function shareFlag(db: PrismaClient, companyId: string): Promise<boolean> {
-  const c = await db.company.findUnique({ where: { id: companyId } });
-  return c?.shareAllLeads ?? true;
-}
-async function scopeWhere(db: PrismaClient, user: SessionUser) {
-  return leadVisibilityWhere(user, await shareFlag(db, user.companyId!));
-}
+import { convertLeadToAccount } from "./lead-conversion";
 
 export async function createLead(db: PrismaClient, user: SessionUser, data: {
   title: string; contactName: string; stageId: string; email?: string; phone?: string;
@@ -34,7 +27,7 @@ export async function createLead(db: PrismaClient, user: SessionUser, data: {
 export async function listLeads(db: PrismaClient, user: SessionUser, opts?: {
   stageId?: string; ownerId?: string; q?: string; sort?: "createdAt"; skip?: number; take?: number;
 }): Promise<Lead[]> {
-  const where: Prisma.LeadWhereInput = { ...(await scopeWhere(db, user)) };
+  const where: Prisma.LeadWhereInput = { ...(await leadScopeWhere(db, user)) };
   if (opts?.stageId) where.stageId = opts.stageId;
   if (opts?.ownerId) where.ownerId = opts.ownerId;
   if (opts?.q) {
@@ -60,7 +53,7 @@ export type LeadCard = {
 export async function listLeadCards(db: PrismaClient, user: SessionUser, opts?: {
   stageId?: string; q?: string;
 }): Promise<LeadCard[]> {
-  const where: Prisma.LeadWhereInput = { ...(await scopeWhere(db, user)) };
+  const where: Prisma.LeadWhereInput = { ...(await leadScopeWhere(db, user)) };
   if (opts?.stageId) where.stageId = opts.stageId;
   if (opts?.q) where.OR = [
     { title: { contains: opts.q, mode: "insensitive" } },
@@ -85,7 +78,7 @@ export async function listLeadCards(db: PrismaClient, user: SessionUser, opts?: 
 }
 
 export async function getLead(db: PrismaClient, user: SessionUser, id: string): Promise<Lead | null> {
-  return db.lead.findFirst({ where: { id, ...(await scopeWhere(db, user)) } });
+  return db.lead.findFirst({ where: { id, ...(await leadScopeWhere(db, user)) } });
 }
 
 export async function updateLead(db: PrismaClient, user: SessionUser, id: string, data: Partial<{
@@ -108,7 +101,17 @@ export async function deleteLead(db: PrismaClient, user: SessionUser, id: string
   await db.lead.delete({ where: { id } });
 }
 
-export async function moveLeadStage(db: PrismaClient, user: SessionUser, leadId: string, toStageId: string, lostReason?: string): Promise<Lead> {
+// Result of a stage move. `autoConverted` reports the outcome of the convert-on-Won side effect
+// so the caller can tell "moved to Won AND the account is there" from "moved to Won but the
+// conversion silently didn't happen" — the failure is swallowed below (by design), and without
+// this flag it was invisible to the client.
+//
+// true  = the move landed in Won and the lead now has an account (created just now, or the
+//         existing one reused — convertLeadToAccount is idempotent).
+// false = not a Won move at all, or the conversion failed and was swallowed.
+export type MoveLeadStageResult = { lead: Lead; autoConverted: boolean };
+
+export async function moveLeadStage(db: PrismaClient, user: SessionUser, leadId: string, toStageId: string, lostReason?: string): Promise<MoveLeadStageResult> {
   const lead = await getLead(db, user, leadId);
   if (!lead) throw new NotFoundError("lead not in scope");
   const from = await db.stage.findFirst({ where: { id: lead.stageId, companyId: user.companyId! } });
@@ -118,5 +121,21 @@ export async function moveLeadStage(db: PrismaClient, user: SessionUser, leadId:
     db.lead.update({ where: { id: leadId }, data: { stageId: toStageId, lostReason: to.type === "LOST" ? (lostReason ?? null) : null } }),
     db.activity.create({ data: { companyId: user.companyId!, leadId, authorId: user.id, kind: "STAGE_CHANGE", body: `Moved from ${from?.name ?? "?"} to ${to.name}` } }),
   ]);
-  return updated;
+  // Landing in Won auto-creates the account, so nobody has to remember the button. Deliberately
+  // AFTER the transaction commits: the stage move is the user's action and must stand on its own,
+  // so a conversion failure is logged and swallowed rather than left as a stuck lead. The lead
+  // stays in Won either way. convertLeadToAccount is idempotent, so moving out of Won and back
+  // in — or double-clicking — reuses the existing account instead of creating a second one.
+  let autoConverted = false;
+  if (to.type === "WON") {
+    try {
+      await convertLeadToAccount(db, user, leadId);
+      autoConverted = true;
+    } catch (e) {
+      console.error("[moveLeadStage] auto-convert to account failed", {
+        leadId, reason: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  return { lead: updated, autoConverted };
 }

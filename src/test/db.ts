@@ -20,6 +20,9 @@ export async function resetDb() {
   await testPrisma.accountTask.deleteMany();
   await testPrisma.accountActivity.deleteMany();
   await testPrisma.account.deleteMany();
+  // Cascades from Company below anyway; deleted explicitly so a leaked grant can never make the
+  // unique partnerName/normalizedName collide across test files.
+  await testPrisma.partnerAllowlist.deleteMany();
   await testPrisma.attachment.deleteMany();
   await testPrisma.task.deleteMany();
   await testPrisma.activity.deleteMany();

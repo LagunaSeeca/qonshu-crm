@@ -1,24 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import type { Account } from "@prisma/client";
 import { prisma } from "@/db/client";
 import { getSessionUser } from "@/lib/auth/session";
 import { assertRole } from "@/lib/auth/guards";
 import { listAccounts, createAccountWithLogin } from "@/lib/tenant/accounts";
+import { maskAccount } from "@/lib/tenant/account-dto";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
-
-// Strip the partner-API secret columns from an account row before it ever reaches JSON. There is
-// no per-account key entry anymore (the Partner API uses one shared X-API-Key from env — see
-// src/lib/partner-api/credentials.ts), but the `externalApiKeyEnc`/`externalApiKeyLast4` columns
-// still exist as a dormant override and must never leak to a client even if a row somehow has one
-// set (e.g. seeded directly in the DB).
-function maskAccount(account: Account) {
-  return {
-    ...account,
-    externalApiKeyEnc: undefined,
-    externalApiKeyLast4: undefined,
-  };
-}
 
 export async function GET(req: NextRequest) {
   try {
@@ -35,10 +22,14 @@ const Create = z.object({ name: z.string().min(1), website: z.string().optional(
   status: z.enum(["ACTIVE","AT_RISK","CHURNED"]).optional(), accountManagerId: z.string().optional(),
   primaryContactName: z.string().optional(),
   primaryContactEmail: z.string().email().optional().or(z.literal("")), primaryContactPhone: z.string().optional(),
-  // Partner NAME for the external analytics API — the account goes "live" off this plus the
-  // shared PARTNER_API_KEY env var (see src/lib/partner-api/credentials.ts). No per-account
-  // key entry: the Django backend authenticates every partner with one shared X-API-Key.
-  externalPartnerKey: z.string().optional(),
+  // NO `externalPartnerKey` HERE, ON PURPOSE. The external partner namespace is GLOBAL (one
+  // shared PARTNER_API_KEY; `?partner=<name>` is the only discriminator), so a tenant naming an
+  // arbitrary partner would pull another company's debt, payments and unit-level owner
+  // names/phones into their own account. Assigning a partner is SUPER_ADMIN-only — see
+  // src/lib/platform/account-partners.ts. Zod strips the field if a client sends it anyway.
+  //
+  // The automatic link still happens: createAccountWithLogin resolves an exact, unambiguous,
+  // UNCLAIMED name match as a SYSTEM action (src/lib/tenant/accounts.ts).
   partnerLogin: z.object({
     name: z.string().min(1),
     email: z.string().email(),

@@ -274,6 +274,38 @@ describe("partner-api client", () => {
       ).rejects.toBeInstanceOf(PartnerApiUnavailableError);
     });
 
+    // Regression: the abort timer used to be cleared as soon as HEADERS arrived, so a server
+    // that returned 200 and then stalled the BODY was unbounded (undici's ~300s body timeout).
+    // The timer must stay live across res.json() too, or the 3s auto-link budget that keeps a
+    // Won drag responsive means nothing.
+    it("aborts a stalled BODY, not just stalled headers → PartnerApiUnavailableError", async () => {
+      fetchMock.mockImplementation(async (_url: string, init: RequestInit) => ({
+        ok: true,
+        status: 200,
+        // Headers land immediately; the body never resolves until the signal aborts.
+        json: () =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          }),
+      }));
+
+      const started = Date.now();
+      await expect(
+        fetchPartnerStats({
+          baseUrl: BASE_URL,
+          apiKey: API_KEY,
+          partner: "acme",
+          dateFrom: "2026-01-01",
+          dateTo: "2026-01-31",
+          timeoutMs: 20,
+        }),
+      ).rejects.toBeInstanceOf(PartnerApiUnavailableError);
+      // Bounded by timeoutMs, not by the body stream giving up on its own.
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
     it("throws when the response shape is invalid (zod)", async () => {
       fetchMock.mockResolvedValue(jsonResponse(validStats({ total_users: "lots" as unknown as number })));
       await expect(

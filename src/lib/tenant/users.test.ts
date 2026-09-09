@@ -104,3 +104,89 @@ describe("createUser (direct creation, replaces invites)", () => {
     ).rejects.toThrow();
   });
 });
+
+describe("createUser — SUPER_ADMIN direct company-user creation", () => {
+  beforeEach(resetDb);
+  afterAll(() => testPrisma.$disconnect());
+
+  it("SUPER_ADMIN creates a MEMBER in an explicitly named company", async () => {
+    const { a } = await seedTwoCompanies();
+    const superAdmin: SessionUser = { id: "super-1", companyId: null, role: "SUPER_ADMIN" };
+    const created = await createUser(testPrisma, superAdmin, {
+      name: "New Manager", email: `sa-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER", companyId: a.id,
+    });
+    expect(created.companyId).toBe(a.id);
+    expect(created.role).toBe("MEMBER");
+    expect(await verifyPassword("pw123456", created.passwordHash)).toBe(true);
+  });
+
+  it("SUPER_ADMIN without companyId is rejected", async () => {
+    const superAdmin: SessionUser = { id: "super-2", companyId: null, role: "SUPER_ADMIN" };
+    await expect(
+      createUser(testPrisma, superAdmin, { name: "X", email: `sa2-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER" }),
+    ).rejects.toThrow(InvalidUserRoleError);
+  });
+
+  it("SUPER_ADMIN with a nonexistent companyId is rejected", async () => {
+    const superAdmin: SessionUser = { id: "super-3", companyId: null, role: "SUPER_ADMIN" };
+    await expect(
+      createUser(testPrisma, superAdmin, {
+        name: "X", email: `sa3-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER", companyId: "does-not-exist",
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("SUPER_ADMIN cannot provision a user into a SUSPENDED company", async () => {
+    const { a } = await seedTwoCompanies();
+    await testPrisma.company.update({ where: { id: a.id }, data: { status: "SUSPENDED" } });
+    const superAdmin: SessionUser = { id: "super-suspended", companyId: null, role: "SUPER_ADMIN" };
+    await expect(
+      createUser(testPrisma, superAdmin, {
+        name: "X", email: `sa-susp-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER", companyId: a.id,
+      }),
+    ).rejects.toThrow(InvalidUserRoleError);
+  });
+
+  it("COMPANY_ADMIN passing another company's id is rejected outright (no misleading success)", async () => {
+    const { a, b, ua } = await seedTwoCompanies();
+    const actor: SessionUser = { id: ua.id, companyId: a.id, role: "COMPANY_ADMIN" };
+    await expect(
+      createUser(testPrisma, actor, {
+        name: "Sneaky", email: `sneaky-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER", companyId: b.id,
+      }),
+    ).rejects.toThrow(InvalidUserRoleError);
+  });
+
+  it("COMPANY_ADMIN passing their OWN companyId still succeeds", async () => {
+    const { a, ua } = await seedTwoCompanies();
+    const actor: SessionUser = { id: ua.id, companyId: a.id, role: "COMPANY_ADMIN" };
+    const created = await createUser(testPrisma, actor, {
+      name: "Explicit Own", email: `explicit-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER", companyId: a.id,
+    });
+    expect(created.companyId).toBe(a.id);
+  });
+
+  it("SUPER_ADMIN creates a PARTNER_VIEWER scoped to an account in the named company", async () => {
+    const { a, ua } = await seedTwoCompanies();
+    const account = await testPrisma.account.create({ data: { companyId: a.id, name: "SA Acc", accountManagerId: ua.id } });
+    const superAdmin: SessionUser = { id: "super-4", companyId: null, role: "SUPER_ADMIN" };
+    const created = await createUser(testPrisma, superAdmin, {
+      name: "Partner", email: `sap-${Date.now()}@a.com`, password: "pw123456", role: "PARTNER_VIEWER",
+      companyId: a.id, accountId: account.id,
+    });
+    expect(created.companyId).toBe(a.id);
+    expect(created.accountId).toBe(account.id);
+  });
+
+  it("SUPER_ADMIN creating a PARTNER_VIEWER with an accountId from a different company is rejected", async () => {
+    const { a, b, ua } = await seedTwoCompanies();
+    const otherAccount = await testPrisma.account.create({ data: { companyId: b.id, name: "Other Co Account", accountManagerId: ua.id } });
+    const superAdmin: SessionUser = { id: "super-5", companyId: null, role: "SUPER_ADMIN" };
+    await expect(
+      createUser(testPrisma, superAdmin, {
+        name: "Partner", email: `sap2-${Date.now()}@a.com`, password: "pw123456", role: "PARTNER_VIEWER",
+        companyId: a.id, accountId: otherAccount.id,
+      }),
+    ).rejects.toThrow(InvalidUserRoleError);
+  });
+});

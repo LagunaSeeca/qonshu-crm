@@ -17,7 +17,7 @@ export default async function CrmBoardPage() {
     <div className="space-y-6">
       <PageHeader title="Sales CRM" subtitle="Manage your pipeline" />
       <Board
-        stages={stages.map((s) => ({ id: s.id, name: s.name, probability: s.probability }))}
+        stages={stages.map((s) => ({ id: s.id, name: s.name, probability: s.probability, type: s.type }))}
         leads={leads}
         isAdmin={user.role === "COMPANY_ADMIN"}
       />

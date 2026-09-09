@@ -5,6 +5,7 @@ import { ForbiddenError, type SessionUser } from "@/lib/auth/guards";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError } from "@/lib/partner-api/errors";
 import { makePartnerStats } from "@/test/partner-stats-fixture";
+import { dbWithPhantomPartnerKey } from "@/test/duplicate-partner-db";
 
 // Platform Overview's app-user/payment figures are now a LIVE fan-out over the external
 // Partner API (see src/lib/platform/overview.ts) instead of reads from the persisted
@@ -180,6 +181,65 @@ describe("getPlatformOverview", () => {
     // Non-partner counts (accounts/leads/users) are unaffected by the live fan-out outcome.
     expect(rowA.accounts).toBe(2);
     expect(rowB.accounts).toBe(1);
+  });
+
+  // Cross-company version of the double-claim guard. The partner namespace is global (one shared
+  // X-API-Key), so before @@unique([externalPartnerKey]) two companies could hold the same partner
+  // name — and this page sums across every tenant, so counting both inflated the platform totals
+  // AND a company row while quietly cross-exposing one complex to two tenants.
+  it("counts a duplicated complex ONCE and REPORTS it by name when the accounts live in DIFFERENT companies", async () => {
+    const ts = Date.now();
+    const a = await seedCompanyWithData({ slug: `ov-dupe-a-${ts}`, admins: 1, members: 0, accounts: 1 });
+    const b = await seedCompanyWithData({ slug: `ov-dupe-b-${ts}`, admins: 1, members: 0, accounts: 1 });
+
+    const shared = `${ts}-shared`;
+    await configureAccount(a.accounts[0].id, shared);
+    // The constraint makes the second claim uninsertable now, so b's row is given the same key at
+    // the query boundary — standing in for a duplicate that predates the migration.
+    const db = dbWithPhantomPartnerKey(b.accounts[0].id, shared);
+
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) =>
+      makePartnerStats({ partner, total_users: 9, total_payments_amount: 90 }),
+    );
+
+    const overview = await getPlatformOverview(db, su);
+
+    // One upstream call for the partner, and its figures land in exactly one company row.
+    expect(fetchPartnerStats).toHaveBeenCalledTimes(1);
+    expect(overview.totals.appUsers).toBe(9);
+    expect(overview.totals.paymentsAmount).toBe(90);
+    const rowA = overview.companies.find((c) => c.id === a.company.id)!;
+    const rowB = overview.companies.find((c) => c.id === b.company.id)!;
+    expect(rowA.appUsers + rowB.appUsers).toBe(9);
+    // The account that lost the dedup is counted as skipped, so the coverage line stays honest.
+    expect(overview.liveData.contributed).toBe(1);
+    expect(overview.liveData.skipped).toBe(1);
+
+    // ...and, crucially, it is no longer ONLY a number. The super admin is the only person who can
+    // unlink one of these accounts, so the duplicate is named and attributed to both companies.
+    expect(overview.duplicatePartners).toHaveLength(1);
+    const dupe = overview.duplicatePartners[0];
+    expect(dupe.partnerName).toBe(shared);
+    expect(dupe.accounts.map((x) => x.id).sort()).toEqual(
+      [a.accounts[0].id, b.accounts[0].id].sort(),
+    );
+    expect(dupe.accounts.map((x) => x.companyId).sort()).toEqual(
+      [a.company.id, b.company.id].sort(),
+    );
+  });
+
+  it("reports no duplicates when every complex is claimed once", async () => {
+    const ts = Date.now();
+    const a = await seedCompanyWithData({ slug: `ov-nodupe-${ts}`, admins: 1, members: 0, accounts: 2 });
+    await configureAccount(a.accounts[0].id, `${ts}-p0`);
+    await configureAccount(a.accounts[1].id, `${ts}-p1`);
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) =>
+      makePartnerStats({ partner, total_users: 1, total_payments_amount: 1 }),
+    );
+
+    const overview = await getPlatformOverview(testPrisma, su);
+    expect(overview.duplicatePartners).toEqual([]);
+    expect(overview.liveData.contributed).toBe(2);
   });
 
   it("never calls the external API and returns a valid zeroed liveData when no accounts are configured", async () => {

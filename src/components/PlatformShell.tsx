@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Building } from "lucide-react";
+import { LayoutDashboard, Building, Link2 } from "lucide-react";
 import { Topbar } from "@/components/Topbar";
 import { SidebarDrawer } from "@/components/SidebarDrawer";
 import { cn } from "@/lib/utils";
@@ -17,6 +17,7 @@ interface PlatformShellProps {
 const PLATFORM_NAV = [
   { href: "/platform", label: "Overview", icon: LayoutDashboard },
   { href: "/platform/companies", label: "Companies", icon: Building },
+  { href: "/platform/accounts", label: "Partner links", icon: Link2 },
 ];
 
 function PlatformNav({ onNavigate }: { onNavigate?: () => void }) {

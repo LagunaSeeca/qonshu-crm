@@ -25,6 +25,7 @@ type CategoryKey = (typeof CATEGORY_ORDER)[number];
 
 export type AccountSkipReason =
   | "not_configured"
+  | "duplicate_partner"
   | "invalid_key"
   | "unknown_partner"
   | "unavailable"
@@ -92,6 +93,13 @@ export async function getCompanyAnalytics(
   // way, immediately, without attempting the call.
   const resolved: { account: Account; creds: PartnerCredentials }[] = [];
   const statuses: AccountFetchStatus[] = [];
+  // Defensive dedup by partner name. The partner namespace is global (one shared X-API-Key, so
+  // `?partner=<name>` is the same upstream complex for everyone), and every figure below is a
+  // plain SUM over accounts — so two accounts pointing at one partner would silently double every
+  // total on this page. `@@unique([externalPartnerKey])` now prevents that at the DB, so this is
+  // defence in depth for rows predating the constraint. First account wins (listAccounts() hands
+  // them over newest-updated first, with id breaking ties); the rest are reported, not hidden.
+  const claimed = new Set<string>();
   for (const a of accounts) {
     let creds: PartnerCredentials | null;
     try {
@@ -104,6 +112,11 @@ export async function getCompanyAnalytics(
       statuses.push({ accountId: a.id, accountName: a.name, status: "skipped", reason: "not_configured" });
       continue;
     }
+    if (claimed.has(creds.partner)) {
+      statuses.push({ accountId: a.id, accountName: a.name, status: "skipped", reason: "duplicate_partner" });
+      continue;
+    }
+    claimed.add(creds.partner);
     resolved.push({ account: a, creds });
   }
 

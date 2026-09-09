@@ -4,6 +4,7 @@ import { getCompanyAnalytics } from "./company-analytics";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats } from "@/test/partner-stats-fixture";
+import { dbWithPhantomPartnerKey } from "@/test/duplicate-partner-db";
 import type { SessionUser } from "@/lib/auth/guards";
 
 // Company analytics is now a LIVE fan-out: never reads persisted payment/debt tables, just
@@ -51,6 +52,38 @@ describe("company analytics (live fan-out)", () => {
     else process.env.PARTNER_API_KEY = savedApiKey;
   });
   afterAll(() => testPrisma.$disconnect());
+
+  // Defence in depth for a duplicate that predates @@unique([externalPartnerKey]): every figure
+  // here is a plain SUM, so two accounts on one complex would double the whole page. A real
+  // duplicate row is uninsertable now, so the second claim is injected at the query boundary —
+  // see src/test/duplicate-partner-db.ts.
+  it("counts a partner ONCE when two accounts hold the same externalPartnerKey", async () => {
+    const slug = `ca-dupe-${Date.now()}-${Math.random()}`;
+    const { c, u, user } = await makeCompanyAndAdmin(slug);
+    const partnerKey = `${slug}-shared`;
+    await makeConfiguredAccount(c.id, u.id, "Account A", partnerKey);
+    const b = await testPrisma.account.create({
+      data: { companyId: c.id, name: "Account B", accountManagerId: u.id },
+    });
+    const db = dbWithPhantomPartnerKey(b.id, partnerKey); // same partner, second claim
+
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) =>
+      makePartnerStats({ partner, total_users: 10, total_payments_amount: 100, total_payments_count: 2 }),
+    );
+
+    const a = await getCompanyAnalytics(db, user, range);
+
+    // One upstream call, one contribution, one partner row — not two of each.
+    expect(vi.mocked(fetchPartnerStats)).toHaveBeenCalledTimes(1);
+    expect(a.totals.appUsers).toBe(10);
+    expect(a.totals.paymentsAmount).toBe(100);
+    expect(a.totals.accounts).toBe(1);
+    expect(a.partners).toHaveLength(1);
+    // The loser is reported rather than silently dropped, so the coverage line stays honest.
+    expect(a.contributed).toBe(1);
+    expect(a.skipped).toBe(1);
+    expect(a.accountStatuses.filter((st) => st.reason === "duplicate_partner")).toHaveLength(1);
+  });
 
   it("aggregates totals/byMethod/byCategory/partners across configured accounts and skips unconfigured ones", async () => {
     const slug = `ca-agg-${Date.now()}-${Math.random()}`;

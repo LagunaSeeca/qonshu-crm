@@ -48,6 +48,20 @@ export type PlatformOverview = {
     skipped: number;
     windowDays: number;
   };
+  // Complexes claimed by more than one account, named and attributed.
+  //
+  // The dedup below used to fold these into the bare `skipped` counter, which meant the ONLY
+  // person who can fix a cross-tenant duplicate got no signal that one existed — while both
+  // tenants happily read the same complex's debt, payments and unit-level owner names/phones.
+  // `@@unique([externalPartnerKey])` now makes new duplicates impossible, so in a healthy
+  // database this is always empty; it stays as the alarm for anything that predates the
+  // constraint or arrives around it, and it must be surfaced, never counted.
+  duplicatePartners: DuplicatePartner[];
+};
+
+export type DuplicatePartner = {
+  partnerName: string;
+  accounts: { id: string; companyId: string }[];
 };
 
 // The one sanctioned cross-company read in the app: every other tenant-scoped query in
@@ -67,8 +81,10 @@ export async function getPlatformOverview(db: PrismaClient, actor: SessionUser):
       db.lead.groupBy({ by: ["companyId"], _count: { _all: true } }),
       // Cross-company enumeration, unfiltered by status — same "no default status filter"
       // behavior as listAccounts() in src/lib/tenant/accounts.ts. This is only used below to
-      // drive the live partner fan-out; it never gets persisted or grouped in the DB.
-      db.account.findMany(),
+      // drive the live partner fan-out; it never gets persisted or grouped in the DB. Ordered so
+      // the partner dedup below has a deterministic winner rather than whatever the DB returns —
+      // `id` breaks ties, since equal updatedAt values would otherwise pick a random winner.
+      db.account.findMany({ orderBy: [{ updatedAt: "desc" }, { id: "asc" }] }),
     ]);
 
   const toMap = <T extends { companyId: string | null }>(rows: T[]) =>
@@ -100,6 +116,14 @@ export async function getPlatformOverview(db: PrismaClient, actor: SessionUser):
   // isolated the same way. Both count toward `skipped` up front, before any network call.
   const resolved: { account: Account; creds: PartnerCredentials }[] = [];
   let skipped = 0;
+  // Defensive dedup by partner name, same reasoning as company-analytics.ts: the partner
+  // namespace is global (one shared X-API-Key) and appUsers/paymentsAmount below are plain sums
+  // over accounts, so two accounts on one partner would double-count here AND across the company
+  // rows — worse than in company-analytics, since this page spans every tenant, so the duplicates
+  // need not even be in the same company. `@@unique([externalPartnerKey])` now prevents them at
+  // the DB, so this is defence in depth for rows that predate the constraint; anything it finds
+  // is a genuine cross-tenant exposure and is reported by name below, not just counted.
+  const claimed = new Map<string, { id: string; companyId: string }[]>();
   for (const a of accounts) {
     let creds: PartnerCredentials | null;
     try {
@@ -112,8 +136,22 @@ export async function getPlatformOverview(db: PrismaClient, actor: SessionUser):
       skipped += 1;
       continue;
     }
+    const holders = claimed.get(creds.partner);
+    if (holders) {
+      // Still skipped from the fan-out (counting it twice is the bug the dedup exists to stop),
+      // but now also RECORDED with its partner name and owning company, so the super admin can
+      // see which complex is doubly claimed and by whom instead of reading a bare number.
+      holders.push({ id: a.id, companyId: a.companyId });
+      skipped += 1;
+      continue;
+    }
+    claimed.set(creds.partner, [{ id: a.id, companyId: a.companyId }]);
     resolved.push({ account: a, creds });
   }
+
+  const duplicatePartners: DuplicatePartner[] = [...claimed.entries()]
+    .filter(([, holders]) => holders.length > 1)
+    .map(([partnerName, holders]) => ({ partnerName, accounts: holders }));
 
   // Fan out across EVERY resolved account of EVERY company, in parallel. allSettled keeps one
   // account's rejection (bad key / unknown partner / timeout / malformed body) from failing the
@@ -182,5 +220,6 @@ export async function getPlatformOverview(db: PrismaClient, actor: SessionUser):
     totals,
     companies: companyRows,
     liveData: { contributed, skipped, windowDays },
+    duplicatePartners,
   };
 }

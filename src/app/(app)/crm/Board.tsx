@@ -19,7 +19,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { LayoutGrid, List, Plus, Settings2, Phone, Clock, CalendarClock, User as UserIcon } from "lucide-react";
 
-type Stage = { id: string; name: string; probability: number };
+type Stage = { id: string; name: string; probability: number; type: string };
 type Lead = {
   id: string;
   title: string;
@@ -141,6 +141,26 @@ function Column({ stage, leads }: { stage: Stage; leads: Lead[] }) {
   );
 }
 
+// Decides what toast (if any) follows a successful move, given the stage the lead landed on and
+// whether moveLeadStage's auto-convert-to-account side effect actually succeeded. Won moves try
+// to auto-create the account (see moveLeadStage in src/lib/tenant/leads.ts); the creation can
+// fail and is swallowed server-side so the stage move still stands, so the board must surface
+// that failure itself instead of reporting an unqualified success. Every other move (including
+// LOST and any OPEN stage) keeps the existing silent-success behavior — no toast, just a refresh.
+// Exported for testing.
+export function moveResultToast(
+  targetStage: Pick<Stage, "type"> | undefined,
+  autoConverted: boolean,
+): { variant: "success" | "warning"; message: string } | null {
+  if (targetStage?.type !== "WON") return null;
+  return autoConverted
+    ? { variant: "success", message: "Lead marked Won — account created." }
+    : {
+        variant: "warning",
+        message: 'Lead marked Won, but the account could not be created automatically. Use "Convert to Account" to retry.',
+      };
+}
+
 interface BoardProps {
   stages: Stage[];
   leads: Lead[];
@@ -178,6 +198,15 @@ export function Board({ stages, leads, isAdmin, searchQuery }: BoardProps) {
       router.refresh();
       return;
     }
+    // Body is `{ lead, autoConverted }` — see moveResultToast above for why this matters for
+    // Won moves specifically.
+    const { autoConverted } = (await res.json()) as { autoConverted: boolean };
+    const outcome = moveResultToast(
+      stages.find((s) => s.id === toStageId),
+      autoConverted,
+    );
+    if (outcome?.variant === "success") toast.success(outcome.message);
+    else if (outcome?.variant === "warning") toast.warning(outcome.message);
     router.refresh();
   }
 

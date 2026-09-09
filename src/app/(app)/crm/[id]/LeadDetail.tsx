@@ -88,6 +88,26 @@ function isOverdue(dueDate: string | null, done: boolean) {
   return new Date(dueDate) < new Date();
 }
 
+// Decides what toast (if any) follows a successful stage move, given the stage the lead landed
+// on and whether moveLeadStage's auto-convert-to-account side effect actually succeeded. Won
+// moves try to auto-create the account (see moveLeadStage in src/lib/tenant/leads.ts); the
+// creation can fail and is swallowed server-side so the stage move still stands, so this page
+// must surface that failure itself instead of reporting an unqualified success. Every other move
+// (including LOST and any OPEN stage) keeps the existing silent-success behavior — no toast, just
+// a refresh. Exported for testing.
+export function moveResultToast(
+  targetStage: Pick<Stage, "type"> | undefined,
+  autoConverted: boolean,
+): { variant: "success" | "warning"; message: string } | null {
+  if (targetStage?.type !== "WON") return null;
+  return autoConverted
+    ? { variant: "success", message: "Lead marked Won — account created." }
+    : {
+        variant: "warning",
+        message: 'Lead marked Won, but the account could not be created automatically. Use "Convert to Account" to retry.',
+      };
+}
+
 export function LeadDetail({ lead, stages, activities, tasks, attachments, members }: Props) {
   const router = useRouter();
 
@@ -135,6 +155,12 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
       setStageId(lead.stageId);
       return;
     }
+    // Body is `{ lead, autoConverted }` — see moveResultToast above for why this matters for
+    // Won moves specifically.
+    const { autoConverted } = (await res.json()) as { autoConverted: boolean };
+    const outcome = moveResultToast(targetStage, autoConverted);
+    if (outcome?.variant === "success") toast.success(outcome.message);
+    else if (outcome?.variant === "warning") toast.warning(outcome.message);
     router.refresh();
   }
 
@@ -237,16 +263,12 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ leadId: lead.id }),
       });
-      if (res.status === 409) {
-        toast.error("Lead already converted");
-        return;
-      }
       if (!res.ok) {
         toast.error("Failed to convert lead");
         return;
       }
       const created = await res.json();
-      toast.success("Converted to account");
+      toast.success(res.status === 201 ? "Converted to account" : "Opening existing account");
       router.push("/accounts/" + created.id);
     } catch {
       toast.error("Failed to convert lead");

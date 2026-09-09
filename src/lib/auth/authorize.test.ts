@@ -40,4 +40,37 @@ describe("authorizeCredentials", () => {
       await authorizeCredentials(testPrisma, { email: "u@a.com", password: "pw123456" }),
     ).toBeNull();
   });
+
+  // A suspended company must block login outright, not just new user provisioning — otherwise
+  // an existing COMPANY_ADMIN in a suspended company could still log in and keep operating.
+  it("rejects login when the user's company is SUSPENDED", async () => {
+    await seedUser("ACTIVE");
+    await testPrisma.company.update({ where: { slug: "a" }, data: { status: "SUSPENDED" } });
+    expect(
+      await authorizeCredentials(testPrisma, { email: "u@a.com", password: "pw123456" }),
+    ).toBeNull();
+  });
+
+  it("allows login when the user's company is ACTIVE (unaffected by the suspension check)", async () => {
+    await seedUser("ACTIVE");
+    const u = await authorizeCredentials(testPrisma, { email: "u@a.com", password: "pw123456" });
+    expect(u?.companyId).not.toBeNull();
+  });
+
+  it("allows a SUPER_ADMIN (no company) to log in regardless of any company's status", async () => {
+    await testPrisma.company.create({ data: { name: "B", slug: "b", status: "SUSPENDED" } });
+    await testPrisma.user.create({
+      data: {
+        companyId: null,
+        email: "root@platform.com",
+        passwordHash: await hashPassword("pw123456"),
+        name: "Root",
+        role: "SUPER_ADMIN",
+        status: "ACTIVE",
+      },
+    });
+    const u = await authorizeCredentials(testPrisma, { email: "root@platform.com", password: "pw123456" });
+    expect(u?.role).toBe("SUPER_ADMIN");
+    expect(u?.companyId).toBeNull();
+  });
 });

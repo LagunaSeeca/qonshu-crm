@@ -10,8 +10,9 @@ describe("guards", () => {
     expect(can(su, "manage_companies")).toBe(true);
     expect(can(admin, "manage_companies")).toBe(false);
   });
-  it("company admin manages users", () => {
+  it("company admin and super admin manage users; members do not", () => {
     expect(can(admin, "manage_users")).toBe(true);
+    expect(can(su, "manage_users")).toBe(true);
     expect(can(member, "manage_users")).toBe(false);
   });
   it("members view company data", () => {

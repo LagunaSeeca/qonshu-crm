@@ -87,35 +87,52 @@ async function requestJson(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  let res: Response;
+  // `timeoutMs` bounds the WHOLE request — headers AND body. The timer used to be cleared in a
+  // `finally` on the fetch alone, i.e. the moment response headers arrived, which left `res.json()`
+  // reading the body with no timer and a dead abort signal: a server that returns 200 headers and
+  // then stalls the body blocked until undici's ~300s body timeout. That broke the guarantee the
+  // page-level fan-outs depend on (src/lib/tenant/company-analytics.ts, ./reports.ts and
+  // src/lib/platform/overview.ts each issue one call per configured account), so a single stalled
+  // body could hold a whole page open. So: one try/finally around both awaits, cleared once at the
+  // end.
   try {
-    res = await fetch(url, {
-      method: "GET",
-      headers: { "X-API-Key": apiKey, Accept: "application/json" },
-      signal: controller.signal,
-    });
-  } catch (cause) {
-    // Network failure or timeout (AbortError). Do NOT surface `cause` details to
-    // callers as a message — it could echo the URL; attach it only as `.cause`.
-    throw new PartnerApiUnavailableError("Partner API request failed", { cause });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "GET",
+        headers: { "X-API-Key": apiKey, Accept: "application/json" },
+        signal: controller.signal,
+      });
+    } catch (cause) {
+      // Network failure or timeout (AbortError). Do NOT surface `cause` details to
+      // callers as a message — it could echo the URL; attach it only as `.cause`.
+      throw new PartnerApiUnavailableError("Partner API request failed", { cause });
+    }
+
+    if (res.status === 401) throw new InvalidApiKeyError();
+    if (res.status === 404) throw new UnknownPartnerError();
+    if (res.status >= 500) {
+      throw new PartnerApiUnavailableError(`Partner API returned status ${res.status}`);
+    }
+    if (!res.ok) {
+      // Any other non-2xx (e.g. 400/403/429) — treat as unavailable rather than leak.
+      throw new PartnerApiUnavailableError(`Partner API returned status ${res.status}`);
+    }
+
+    try {
+      return await res.json();
+    } catch (cause) {
+      // A body-read abort lands here too; report it as the timeout it is rather than
+      // mislabelling a stalled stream as malformed JSON.
+      throw new PartnerApiUnavailableError(
+        controller.signal.aborted
+          ? "Partner API request failed"
+          : "Partner API returned a non-JSON response",
+        { cause },
+      );
+    }
   } finally {
     clearTimeout(timer);
-  }
-
-  if (res.status === 401) throw new InvalidApiKeyError();
-  if (res.status === 404) throw new UnknownPartnerError();
-  if (res.status >= 500) {
-    throw new PartnerApiUnavailableError(`Partner API returned status ${res.status}`);
-  }
-  if (!res.ok) {
-    // Any other non-2xx (e.g. 400/403/429) — treat as unavailable rather than leak.
-    throw new PartnerApiUnavailableError(`Partner API returned status ${res.status}`);
-  }
-
-  try {
-    return await res.json();
-  } catch (cause) {
-    throw new PartnerApiUnavailableError("Partner API returned a non-JSON response", { cause });
   }
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: () => {}, refresh: () => {} }) }));
 import { AccountDetail } from "./AccountDetail";
 
@@ -12,37 +12,14 @@ const base = {
   attachments: [{ id: "f1", filename: "msa.pdf", size: 10, mime: "application/pdf" }],
 };
 
-const partners = [
-  { name: "Komplex B", type: "RESIDENTIAL" },
-  { name: "Sabah.City", type: "COMMERCIAL" },
-];
-
-// AccountDetail also renders sibling components (AccountFields, Analytics, …)
-// that fetch their own data on mount — every panel stays in the DOM (see the
-// "Manual tabs" comment below). Unmocked, those calls just reject (relative
-// URLs can't be parsed outside a browser) and each component already handles
-// that gracefully — it's how the base "renders account, activity…" test above
-// passes with no fetch mock at all. So route only `/api/partners` through our
-// mock and let every other URL reject the same way, instead of resolving with
-// a shape those siblings don't expect (which does crash them).
-function mockFetchWithPartners() {
-  return vi.fn((input: string | URL | Request) => {
-    const url = String(input);
-    if (url.includes("/api/partners")) {
-      return Promise.resolve({ ok: true, json: async () => ({ partners }) });
-    }
-    return Promise.reject(new Error("not mocked"));
-  });
-}
-
-function mockFetchWithFailingPartners() {
-  return vi.fn((input: string | URL | Request) => {
-    const url = String(input);
-    if (url.includes("/api/partners")) {
-      return Promise.reject(new Error("network down"));
-    }
-    return Promise.reject(new Error("not mocked"));
-  });
+// AccountDetail renders sibling components (AccountFields, Analytics, …) that fetch their own
+// data on mount — every panel stays in the DOM. Unmocked, those calls just reject (relative URLs
+// can't be parsed outside a browser) and each component already handles that gracefully, which
+// is why these tests need no fetch mock at all. This spy exists only to prove that AccountDetail
+// itself no longer reaches for /api/partners: that endpoint is SUPER_ADMIN-only now, so a
+// COMPANY_ADMIN loading this page would just get a 403.
+function fetchSpy() {
+  return vi.fn((input: string | URL | Request) => Promise.reject(new Error(`not mocked: ${String(input)}`)));
 }
 
 afterEach(() => {
@@ -59,36 +36,29 @@ describe("AccountDetail", () => {
     expect(screen.getByText("msa.pdf")).toBeInTheDocument();
   });
 
-  it("preselects the account's current partner in the searchable picker", async () => {
-    vi.stubGlobal("fetch", mockFetchWithPartners());
+  it("shows the linked partner READ-ONLY — no editable control, no picker", () => {
     render(<AccountDetail {...base} account={{ ...base.account, externalPartnerKey: "Komplex B" }} />);
-    await waitFor(() => {
-      expect(screen.getByLabelText("Partner name for analytics API")).toHaveValue("Komplex B");
-    });
-    expect(screen.queryByText(/not in the current partner list/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Analytics partner link")).toBeInTheDocument();
+    expect(screen.getByText("Komplex B")).toBeInTheDocument();
+    expect(screen.getByText(/managed by a platform admin/i)).toBeInTheDocument();
+    // The name must not be inside any form control a company user could change.
+    const editable = screen
+      .queryAllByRole("textbox")
+      .concat(screen.queryAllByRole("combobox"))
+      .filter((el) => (el as HTMLInputElement).value === "Komplex B");
+    expect(editable).toEqual([]);
   });
 
-  it("flags a stale externalPartnerKey that is no longer in the fetched partner list", async () => {
-    vi.stubGlobal("fetch", mockFetchWithPartners());
-    render(<AccountDetail {...base} account={{ ...base.account, externalPartnerKey: "Old Renamed Partner" }} />);
-    await waitFor(() => {
-      expect(screen.getByText(/not in the current partner list/i)).toBeInTheDocument();
-    });
-    // The stale value is still shown, never silently wiped (the combobox input
-    // plus its hidden form-submission mirror both carry the value; assert on
-    // the visible, labelled one).
-    expect(screen.getByLabelText("Partner name for analytics API")).toHaveValue("Old Renamed Partner");
+  it("shows a clear 'not linked yet' state when the account has no partner", () => {
+    render(<AccountDetail {...base} />);
+    expect(screen.getByText("Not linked yet")).toBeInTheDocument();
   });
 
-  it("falls back to a plain text input when the partner list fails to load", async () => {
-    vi.stubGlobal("fetch", mockFetchWithFailingPartners());
+  it("never calls the SUPER_ADMIN-only /api/partners endpoint", () => {
+    const spy = fetchSpy();
+    vi.stubGlobal("fetch", spy);
     render(<AccountDetail {...base} account={{ ...base.account, externalPartnerKey: "Komplex B" }} />);
-    await waitFor(() => {
-      expect(screen.getByText(/couldn.?t load the partner list/i)).toBeInTheDocument();
-    });
-    // Still editable and pre-filled — never blocks saving.
-    const input = screen.getByLabelText("Partner name for analytics API");
-    expect(input).toHaveValue("Komplex B");
-    expect(input).not.toBeDisabled();
+    const partnerCalls = spy.mock.calls.filter(([input]) => String(input).includes("/api/partners"));
+    expect(partnerCalls).toEqual([]);
   });
 });

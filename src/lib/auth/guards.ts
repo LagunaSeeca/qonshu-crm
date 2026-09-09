@@ -7,7 +7,7 @@ export class NotFoundError extends Error {}
 
 const MATRIX: Record<Action, Role[]> = {
   manage_companies: ["SUPER_ADMIN"],
-  manage_users: ["COMPANY_ADMIN"],
+  manage_users: ["COMPANY_ADMIN", "SUPER_ADMIN"],
   view_company_data: ["COMPANY_ADMIN", "MEMBER"],
 };
 

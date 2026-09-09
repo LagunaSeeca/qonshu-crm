@@ -50,6 +50,7 @@ export type PaymentRow = {
 
 export type AccountReportReason =
   | "not_configured" // no partner name, or no resolvable key (env + override both absent) — never hit the network
+  | "duplicate_partner" // another account already claimed this partner name — see dedup note below
   | "invalid_key" // Partner API rejected the key (401)
   | "unknown_partner" // Partner API does not recognize the partner (404)
   | "unavailable" // network failure / timeout / 5xx
@@ -147,7 +148,14 @@ export async function getReport(
     accounts = [acc];
     accountName = acc.name;
   } else {
-    accounts = await db.account.findMany({ where: { companyId } });
+    // Ordered so the partner dedup below has a deterministic winner rather than whatever the DB
+    // returns — same as listAccounts() in ./accounts.ts and the cross-company read in
+    // src/lib/platform/overview.ts. `id` breaks ties: equal updatedAt values would otherwise
+    // hand the win to a different account run to run, moving rows between "counted" and
+    // "duplicate partner" in the export for no reason.
+    accounts = await db.account.findMany({
+      where: { companyId }, orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
+    });
   }
 
   // The Partner API takes plain YYYY-MM-DD bounds.
@@ -166,6 +174,14 @@ export async function getReport(
   // immediately, without attempting the call.
   const resolved: { account: Account; creds: PartnerCredentials }[] = [];
   const statuses: AccountReportStatus[] = [];
+  // Defensive dedup by partner name, same reasoning as company-analytics.ts and
+  // platform/overview.ts: the partner namespace is global (one shared X-API-Key, so
+  // `?partner=<name>` is the same upstream complex for everyone), and every figure below is a
+  // plain SUM over accounts — so two accounts pointing at one partner would silently double every
+  // total (and duplicate every payment row) in this report. `@@unique([externalPartnerKey])` now
+  // prevents that at the DB, so this is defence in depth for rows predating the constraint. First
+  // account wins (newest-updated first, id breaking ties); the rest are reported, not hidden.
+  const claimed = new Set<string>();
   for (const a of accounts) {
     let creds: PartnerCredentials | null;
     try {
@@ -178,6 +194,11 @@ export async function getReport(
       statuses.push({ accountId: a.id, accountName: a.name, status: "skipped", reason: "not_configured" });
       continue;
     }
+    if (claimed.has(creds.partner)) {
+      statuses.push({ accountId: a.id, accountName: a.name, status: "skipped", reason: "duplicate_partner" });
+      continue;
+    }
+    claimed.add(creds.partner);
     resolved.push({ account: a, creds });
   }
 
@@ -262,6 +283,7 @@ function esc(v: string | number): string {
 
 const REASON_LABEL: Record<AccountReportReason, string> = {
   not_configured: "not configured",
+  duplicate_partner: "duplicate partner",
   invalid_key: "invalid API key",
   unknown_partner: "unknown partner",
   unavailable: "Partner API unavailable",

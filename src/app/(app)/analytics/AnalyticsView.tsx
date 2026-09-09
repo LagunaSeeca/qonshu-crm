@@ -77,7 +77,7 @@ type AccountFetchStatus = {
   accountId: string;
   accountName: string;
   status: "ok" | "skipped";
-  reason?: "not_configured" | "invalid_key" | "unknown_partner" | "unavailable" | "error";
+  reason?: "not_configured" | "duplicate_partner" | "invalid_key" | "unknown_partner" | "unavailable" | "error";
 };
 
 export type CompanyAnalyticsData = {
@@ -131,6 +131,8 @@ function buildQuery(period: PeriodType, from: string, to: string, accountId: str
 // secret-free — they never echo a key or a URL.
 const SKIP_REASON_LABELS: Record<string, string> = {
   not_configured: "Not connected",
+  // Another account already covers this partner; counting both would double every total.
+  duplicate_partner: "Duplicate partner",
   invalid_key: "Invalid API key",
   unknown_partner: "Unknown partner",
   unavailable: "Unreachable",

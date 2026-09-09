@@ -53,6 +53,7 @@ model Company {
   accountFieldValues  AccountFieldValue[]
   serviceFees         ServiceFee[]
   installSnapshots    PlatformInstallSnapshot[]
+  partnerAllowlist    PartnerAllowlist[]
 }
 
 model User {
@@ -249,6 +250,13 @@ model Account {
   serviceFees         ServiceFee[]
   partnerUsers        User[]
   installSnapshots    PlatformInstallSnapshot[]
+  // DB backstop for the GLOBAL partner namespace: one shared X-API-Key means `?partner=<name>`
+  // addresses the same upstream complex for every tenant, so two accounts holding one name
+  // double-count every analytics fan-out AND cross-expose two companies' debt/payments/unit
+  // owners. Every claim path (auto-link, SUPER_ADMIN assign) is check-then-act and therefore
+  // racy on its own; this constraint is what actually makes a double claim impossible. Postgres
+  // ignores NULLs in a unique index, so any number of unlinked accounts coexist.
+  @@unique([externalPartnerKey])
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, accountManagerId])
@@ -335,6 +343,32 @@ model PlatformInstallSnapshot {
   createdAt       DateTime @default(now())
   @@unique([accountId, capturedOn])
   @@index([companyId, capturedOn])
+}
+
+// SUPER_ADMIN-managed authorization table: which company is allowed to auto-link to which
+// external partner (complex). WHY IT EXISTS: auto-link used to resolve a partner from the
+// account NAME — free text the tenant supplies — so any MEMBER could create an account named
+// after another tenant's complex and claim it, and the 201 response confirmed the hit, making
+// account creation an enumeration oracle over the global partner namespace. Auto-link is now a
+// LOOKUP against this table instead of a CLAIM on a name, and a name that isn't allowlisted to
+// the caller's company is indistinguishable from a name that doesn't exist at all.
+//
+// NORMALIZATION: `partnerName` stores the EXACT upstream name (it is what gets sent as
+// `?partner=` and persisted to Account.externalPartnerKey); `normalizedName` is the trimmed,
+// lowercased form and is the ONLY column looked up by. Both are unique, so one complex can be
+// granted to at most one company however it is cased.
+//
+// createdById is a bare String (no relation), matching AccountActivity.authorId: it records
+// which super admin added the grant without making the row depend on that user still existing.
+model PartnerAllowlist {
+  id             String   @id @default(cuid())
+  partnerName    String   @unique
+  normalizedName String   @unique
+  companyId      String
+  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdById    String?
+  createdAt      DateTime @default(now())
+  @@index([companyId])
 }
 
 enum SettlementType {

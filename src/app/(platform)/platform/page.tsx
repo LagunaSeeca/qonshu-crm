@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { Building2, Users, Briefcase, Target, Smartphone, DollarSign, Plus } from "lucide-react";
+import { Building2, Users, Briefcase, Target, Smartphone, DollarSign, Plus, ShieldAlert } from "lucide-react";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
 import { getPlatformOverview } from "@/lib/platform/overview";
@@ -68,6 +68,48 @@ export default async function PlatformOverviewPage() {
           </Link>
         }
       />
+
+      {/* A cross-tenant duplicate means two companies are reading ONE complex's debt, payments
+          and unit-level owner names/phones — and the super admin is the only person who can
+          unlink one of them. It used to vanish into an anonymous `skipped` count on this page,
+          so nobody was told. @@unique([externalPartnerKey]) makes new ones impossible; this
+          block is what surfaces anything older than the constraint. */}
+      {overview.duplicatePartners.length > 0 && (
+        <div className="rounded-lg border border-red-300 bg-red-50 p-4 dark:border-red-800 dark:bg-red-950">
+          <div className="flex items-center gap-2 text-red-800 dark:text-red-300">
+            <ShieldAlert className="size-4 shrink-0" />
+            <p className="text-sm font-semibold">
+              {overview.duplicatePartners.length === 1
+                ? "1 complex is claimed by more than one account"
+                : `${overview.duplicatePartners.length} complexes are claimed by more than one account`}
+            </p>
+          </div>
+          <p className="mt-1 text-xs text-red-800/80 dark:text-red-300/80">
+            Every account below reads the same external complex, so its debt, payments and unit
+            owners are exposed to each of their companies, and its figures are double-counted
+            above. Clear the link on all but one, on the Partner links page.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {overview.duplicatePartners.map((d) => (
+              <li key={d.partnerName} className="text-xs text-red-900 dark:text-red-200">
+                <span className="font-medium">{d.partnerName}</span>
+                <span className="text-red-800/80 dark:text-red-300/80">
+                  {" — "}
+                  {d.accounts
+                    .map((a) => `account ${a.id} (company ${a.companyId})`)
+                    .join(", ")}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <Link
+            href="/platform/accounts"
+            className="mt-2 inline-block text-xs font-medium underline text-red-900 dark:text-red-200"
+          >
+            Go to Partner links
+          </Link>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         <KpiCard label="Companies" value={overview.totals.companies.toLocaleString()} icon={Building2} />
