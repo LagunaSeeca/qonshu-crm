@@ -21,5 +21,5 @@ export async function authorizeCredentials(
     const company = await db.company.findUnique({ where: { id: user.companyId } });
     if (!company || company.status !== "ACTIVE") return null;
   }
-  return { id: user.id, companyId: user.companyId, role: user.role, accountId: user.accountId };
+  return { id: user.id, companyId: user.companyId, teamId: user.teamId, role: user.role, accountId: user.accountId };
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
 import { ForbiddenError, NotFoundError } from "@/lib/auth/guards";
+import { BuildingClaimedError } from "@/lib/tenant/building-claim";
 export { ForbiddenError, NotFoundError };
 
 export class UnauthorizedError extends Error {}
@@ -21,6 +22,11 @@ export function errorResponse(e: unknown): NextResponse {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   if (e instanceof ZodError)
     return NextResponse.json({ error: e.message }, { status: 400 });
+  // A taken building is a 409 carrying the per-caller message built in building-claim.ts.
+  // Checked BEFORE the generic P2002 branch so the person is told who holds the building
+  // rather than the bare "conflict" a unique-index violation would produce.
+  if (e instanceof BuildingClaimedError)
+    return NextResponse.json({ error: "building_claimed", message: e.message }, { status: 409 });
   if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
     return NextResponse.json({ error: "conflict" }, { status: 409 });
   }
