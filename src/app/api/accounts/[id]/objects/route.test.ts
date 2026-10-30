@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import type { SessionUser } from "@/lib/auth/guards";
 import type { PartnerObjectsResponse } from "@/lib/partner-api/schema";
@@ -59,14 +60,13 @@ function rawObjects(): PartnerObjectsResponse {
 // "Configured" now means only a partner NAME — the account goes live off the shared
 // PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
 async function seedConfiguredAccount(slug: string) {
-  const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
+  const team = await makeTeam({ name: slug });
+  const c = { id: team.companyId };
+  const u = await makeUser("COMPANY_ADMIN", team);
   const acc = await testPrisma.account.create({
-    data: { companyId: c.id, name: "Partner", accountManagerId: u.id, externalPartnerKey: "acme" },
+    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Partner"), name: "Partner", accountManagerId: u.id, externalPartnerKey: "acme" },
   });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+  const user: SessionUser = su(u);
   return { c, u, acc, user };
 }
 
@@ -152,10 +152,11 @@ describe("GET /api/accounts/[id]/objects — live normalization", () => {
   });
 
   it("reports not_configured without calling the API when the account has no partner key/API key", async () => {
-    const c = await testPrisma.company.create({ data: { name: "Co", slug: `obj-noconf-${Date.now()}-${Math.random()}` } });
-    const u = await testPrisma.user.create({ data: { companyId: c.id, email: `u-${Date.now()}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" } });
-    const acc = await testPrisma.account.create({ data: { companyId: c.id, name: "Unlinked", accountManagerId: u.id } });
-    mockUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const team = await makeTeam();
+    const c = { id: team.companyId };
+    const u = await makeUser("COMPANY_ADMIN", team);
+    const acc = await testPrisma.account.create({ data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Unlinked"), name: "Unlinked", accountManagerId: u.id } });
+    mockUser = su(u);
 
     const res = await GET(new NextRequest(`http://localhost/api/accounts/${acc.id}/objects`), { params: Promise.resolve({ id: acc.id }) });
     const body = await res.json();
@@ -192,9 +193,8 @@ describe("GET /api/accounts/[id]/objects — live normalization", () => {
 
   it("404s for a foreign (cross-tenant) account without calling the API", async () => {
     const { acc: foreignAcc } = await seedConfiguredAccount("obj-x1");
-    const c = await testPrisma.company.create({ data: { name: "Co2", slug: `obj-x2-${Date.now()}-${Math.random()}` } });
-    const u = await testPrisma.user.create({ data: { companyId: c.id, email: `u2-${Date.now()}@a.com`, passwordHash: "x", name: "U2", role: "COMPANY_ADMIN" } });
-    mockUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const u = await makeUser("COMPANY_ADMIN", await makeTeam());
+    mockUser = su(u);
 
     const res = await GET(new NextRequest(`http://localhost/x`), { params: Promise.resolve({ id: foreignAcc.id }) });
     expect(res.status).toBe(404);

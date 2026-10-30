@@ -111,18 +111,31 @@ export type ClaimArgs = {
 export async function assertBuildingUnclaimed(tx: ClaimTx, args: ClaimArgs): Promise<void> {
   const { companyId, key, user, exceptLeadId, exceptAccountId } = args;
 
-  // A full PrismaClient has $transaction; an interactive-transaction client does not. Passing
-  // the client would put the lock in its own implicit transaction, which commits at the end of
-  // that one statement and releases the lock before the caller ever writes — i.e. the guard
-  // would look like it worked while serialising nothing. Fail loudly instead.
-  if ("$transaction" in tx) {
+  // Passing a full PrismaClient would put the lock in its own implicit transaction, which
+  // commits at the end of that one statement and releases the lock before the caller ever
+  // writes — i.e. the guard would look like it worked while serialising nothing. Fail loudly.
+  //
+  // DISCRIMINATED ON $connect, NOT $transaction. This check was written as `"$transaction" in tx`
+  // on the reasonable-sounding theory that only a full client has it. On Prisma 7 (7.8.0 here)
+  // that is false: the interactive-transaction client supports NESTED transactions and so carries
+  // `$transaction` too — making the condition true for both, and this guard a function that threw
+  // for every caller without exception. `$connect`/`$extends` are the properties the itx client
+  // genuinely lacks (ITXClientDenyList), so `$connect` is the discriminator that holds.
+  if ("$connect" in tx) {
     throw new Error("assertBuildingUnclaimed must be called with a transaction client");
   }
 
   // Lock FIRST, then read. hashtext() maps the key to the int4 the advisory-lock API wants;
   // a hash collision between two different buildings costs one needless wait, never a wrong
   // answer, because the reads below still compare the real strings.
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`${companyId}:${key}`}))`;
+  //
+  // THE SUBSELECT IS LOAD-BEARING. pg_advisory_xact_lock() returns `void`, and the pg driver
+  // adapter has no mapping for that native type: selecting it directly made every call fail with
+  // P2010 / UnsupportedNativeDataType { type: "void" }, so the lock was never taken. Keeping the
+  // void column inside the subquery means the driver only ever decodes the int4 `locked` column,
+  // while the function still executes (and the lock is still held to the end of this
+  // transaction) because the subquery is evaluated.
+  await tx.$queryRaw`SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext(${`${companyId}:${key}`}))) AS lock_taken`;
 
   const holder =
     (await findLeadHolder(tx, companyId, key, exceptLeadId)) ??

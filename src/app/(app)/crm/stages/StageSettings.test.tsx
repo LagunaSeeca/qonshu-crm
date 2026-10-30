@@ -7,9 +7,18 @@ vi.mock("next/navigation", () => ({
 }));
 
 describe("StageSettings", () => {
-  it("renders stages and the visibility toggle", () => {
-    render(<StageSettings initialStages={[{ id: "s1", name: "New", type: "OPEN", probability: 10, order: 0 }]} shareAllLeads={true} />);
+  it("renders stages and no visibility toggle (member isolation is absolute)", () => {
+    render(<StageSettings initialStages={[{ id: "s1", name: "New", type: "OPEN", probability: 10, order: 0 }]} />);
     expect(screen.getByText("New")).toBeInTheDocument();
-    expect(screen.getByLabelText(/share all leads/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/share all leads/i)).toBeNull();
+    expect(screen.queryByText(/lead visibility/i)).toBeNull();
+  });
+});
+
+describe("StageSettings template mode", () => {
+  it("warns that editing the default template only affects teams created later", () => {
+    render(<StageSettings initialStages={[]} isTemplate scopeQuery="?teamId=" />);
+    expect(screen.getByText(/default template/i, { selector: "span" })).toBeInTheDocument();
+    expect(screen.getByText(/only to teams created later/i)).toBeInTheDocument();
   });
 });

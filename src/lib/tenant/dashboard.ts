@@ -1,7 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
-import { leadVisibilityWhere } from "./visibility";
-import { getCompanySettings } from "./company";
+import { leadScopeWhere } from "./scope";
 import { listCompanySettlements } from "./settlements";
 import { listCompanyServiceFees } from "./service-fees";
 import { listAccounts } from "./accounts";
@@ -21,12 +20,18 @@ export type DashboardStats = {
 // silently excluded from the totals (never fatal to the page); account/activeAccount counts stay
 // a local DB read since Account itself is CRM data, not partner-app data. No DB writes occur.
 export async function getDashboardStats(db: PrismaClient, user: SessionUser, range: { from: Date; to: Date }): Promise<DashboardStats> {
-  const companyId = user.companyId!;
-  const { shareAllLeads } = await getCompanySettings(db, { companyId });
-  const leadWhere = leadVisibilityWhere(user, shareAllLeads);
+  // leadScopeWhere throws for PARTNER_VIEWER / companyless callers, so the CRM numbers below can
+  // never be computed outside a scope. Member = own leads, team admin = team, super admin = company.
+  const leadWhere = leadScopeWhere(user);
+  const { companyId } = leadWhere;
+  // Stages of the teams in view: the caller's own team, or every team's (not the org template
+  // rows, teamId null) for a super admin.
+  const stageWhere = user.role === "SUPER_ADMIN"
+    ? { companyId, teamId: { not: null } }
+    : { companyId, teamId: user.teamId! };
   const [leads, stages, accounts, analytics, settlements, serviceFees] = await Promise.all([
     db.lead.findMany({ where: leadWhere }),
-    db.stage.findMany({ where: { companyId } }),
+    db.stage.findMany({ where: stageWhere }),
     listAccounts(db, user),
     getCompanyAnalytics(db, user, range),
     listCompanySettlements(db, user),
@@ -34,13 +39,17 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
   ]);
   const stageById = new Map(stages.map((s) => [s.id, s]));
   const openLeads = leads.filter((l) => stageById.get(l.stageId)?.type === "OPEN");
-  const wonInPeriod = leads.filter((l) => stageById.get(l.stageId)?.type === "WON" && l.updatedAt >= range.from && l.updatedAt <= range.to).length;
+  // Counted on wonAt (set once at the WON transition), NOT updatedAt, which any edit bumps.
+  const wonInPeriod = leads.filter(
+    (l) => stageById.get(l.stageId)?.type === "WON" && l.wonAt && l.wonAt >= range.from && l.wonAt <= range.to,
+  ).length;
   const leadIds = leads.map((l) => l.id);
+  const accountIds = accounts.map((a) => a.id);
   const [leadMeetings, acctMeetings, leadTasks, acctTasks] = await Promise.all([
     db.activity.count({ where: { companyId, leadId: { in: leadIds }, kind: "MEETING", occurredAt: { gte: range.from, lte: range.to } } }),
-    db.accountActivity.count({ where: { companyId, kind: "MEETING", occurredAt: { gte: range.from, lte: range.to } } }),
+    db.accountActivity.count({ where: { companyId, accountId: { in: accountIds }, kind: "MEETING", occurredAt: { gte: range.from, lte: range.to } } }),
     db.task.findMany({ where: { companyId, leadId: { in: leadIds }, done: false } }),
-    db.accountTask.findMany({ where: { companyId, done: false } }),
+    db.accountTask.findMany({ where: { companyId, accountId: { in: accountIds }, done: false } }),
   ]);
   const allOpenTasks = [...leadTasks, ...acctTasks];
   return {

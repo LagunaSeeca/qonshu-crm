@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import { encryptSecret } from "@/lib/crypto/secret";
 import type { SessionUser } from "@/lib/auth/guards";
 
@@ -43,22 +44,21 @@ describe("account routes — partner key columns never leak", () => {
   afterAll(() => testPrisma.$disconnect());
 
   async function seedCompanyAndAdmin(slug: string) {
-    const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-    const u = await testPrisma.user.create({
-      data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-    });
-    mockUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
-    return { c, u };
+    const team = await makeTeam({ name: slug });
+    const c = { id: team.companyId };
+    const u = await makeUser("COMPANY_ADMIN", team);
+    mockUser = su(u);
+    return { c, u, team };
   }
 
   it("GET /api/accounts/[id]: strips externalApiKeyEnc/externalApiKeyLast4 even when a dormant override key is set on the row", async () => {
     const slug = `mask-one-${Date.now()}-${Math.random()}`;
-    const { c, u } = await seedCompanyAndAdmin(slug);
+    const { c, u, team } = await seedCompanyAndAdmin(slug);
     const plaintext = "sk_live_abcd1234";
     const ciphertext = encryptSecret(plaintext);
     const acc = await testPrisma.account.create({
       data: {
-        companyId: c.id, name: "Masked Partner", accountManagerId: u.id,
+        companyId: c.id, teamId: team.id, buildingKey: buildingKey("Masked Partner"), name: "Masked Partner", accountManagerId: u.id,
         externalPartnerKey: "partner-x", externalApiKeyEnc: ciphertext, externalApiKeyLast4: "1234",
       },
     });
@@ -79,9 +79,9 @@ describe("account routes — partner key columns never leak", () => {
 
   it("GET /api/accounts/[id]: an account configured by partner name alone (no override column) never mentions a key field", async () => {
     const slug = `mask-none-${Date.now()}-${Math.random()}`;
-    const { c, u } = await seedCompanyAndAdmin(slug);
+    const { c, u, team } = await seedCompanyAndAdmin(slug);
     const acc = await testPrisma.account.create({
-      data: { companyId: c.id, name: "Name Only", accountManagerId: u.id, externalPartnerKey: "partner-only-name" },
+      data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Name Only"), name: "Name Only", accountManagerId: u.id, externalPartnerKey: "partner-only-name" },
     });
 
     const req = new NextRequest(`http://localhost/api/accounts/${acc.id}`);
@@ -96,17 +96,17 @@ describe("account routes — partner key columns never leak", () => {
 
   it("GET /api/accounts (list): strips the columns from every row", async () => {
     const slug = `mask-list-${Date.now()}-${Math.random()}`;
-    const { c, u } = await seedCompanyAndAdmin(slug);
+    const { c, u, team } = await seedCompanyAndAdmin(slug);
     const plaintext = "sk_live_zzzz9999";
     const ciphertext = encryptSecret(plaintext);
     await testPrisma.account.create({
       data: {
-        companyId: c.id, name: "Configured", accountManagerId: u.id,
+        companyId: c.id, teamId: team.id, buildingKey: buildingKey("Configured"), name: "Configured", accountManagerId: u.id,
         externalPartnerKey: "partner-y", externalApiKeyEnc: ciphertext, externalApiKeyLast4: "9999",
       },
     });
     await testPrisma.account.create({
-      data: { companyId: c.id, name: "Unconfigured", accountManagerId: u.id },
+      data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Unconfigured"), name: "Unconfigured", accountManagerId: u.id },
     });
 
     const req = new NextRequest("http://localhost/api/accounts");
@@ -128,10 +128,10 @@ describe("account routes — partner key columns never leak", () => {
   it("GET /api/accounts/[id]: a foreign (cross-tenant) account 404s instead of leaking anything", async () => {
     const slugA = `mask-x1-${Date.now()}-${Math.random()}`;
     const slugB = `mask-x2-${Date.now()}-${Math.random()}`;
-    const { c: cB, u: uB } = await seedCompanyAndAdmin(slugB);
+    const { c: cB, u: uB, team: teamB } = await seedCompanyAndAdmin(slugB);
     const foreignAcc = await testPrisma.account.create({
       data: {
-        companyId: cB.id, name: "Foreign", accountManagerId: uB.id,
+        companyId: cB.id, teamId: teamB.id, buildingKey: buildingKey("Foreign"), name: "Foreign", accountManagerId: uB.id,
         externalPartnerKey: "partner-z", externalApiKeyEnc: encryptSecret("other-tenant-key"), externalApiKeyLast4: "9999",
       },
     });

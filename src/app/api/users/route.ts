@@ -12,40 +12,34 @@ const CreateBody = z.object({
   password: z.string().min(8),
   role: z.enum(["COMPANY_ADMIN", "MEMBER", "PARTNER_VIEWER"]),
   accountId: z.string().min(1).optional(),
-  // Only meaningful when the actor is a SUPER_ADMIN (who has no company of their own, so must
-  // name the target company). For a COMPANY_ADMIN actor, createUser() always uses their own
-  // companyId; passing a DIFFERENT company's id here is rejected (400) rather than silently
-  // ignored, so a tenant-scoped caller can't smuggle a cross-tenant create through this field
-  // and get back a misleading 201.
-  companyId: z.string().min(1).optional(),
+  // Replaces the old `companyId` field, which is gone: with one org, the question is never "which
+  // company" but "which TEAM". A SUPER_ADMIN must name it (it has no team of its own). A team
+  // admin may omit it — createUser() uses their own team — but if they DO send one it has to be
+  // their own: createUser rejects another team's id outright (400) rather than quietly
+  // substituting their own team and reporting 201 for something other than what was asked.
+  teamId: z.string().min(1).optional(),
 });
 
 export async function GET(req: NextRequest) {
   try {
     const user = await getSessionUser();
     if (!user) throw new UnauthorizedError();
-    assertRole(user, ["COMPANY_ADMIN", "SUPER_ADMIN"]);
-    const companyIdParam = req.nextUrl.searchParams.get("companyId");
-    let companyId: string;
-    if (user.companyId) {
-      // COMPANY_ADMIN is always scoped to their own company. A companyId param naming a
-      // DIFFERENT company is rejected outright (400) — silently substituting their own company
-      // would return 200 for something other than what was asked (same rationale as the
-      // companyId check in createUser).
-      if (companyIdParam && companyIdParam !== user.companyId) {
-        return NextResponse.json({ error: "cannot list another company's users" }, { status: 400 });
-      }
-      companyId = user.companyId;
-    } else {
-      // SUPER_ADMIN has no company of their own, so the target must be named explicitly.
-      if (!companyIdParam) {
-        return NextResponse.json({ error: "companyId is required to list users as a super admin" }, { status: 400 });
-      }
-      companyId = companyIdParam;
-    }
-    const users = await listUsers(prisma, { companyId });
+    // Includes SUPER_ADMIN via assertRole's widening (see guards.ts).
+    assertRole(user, ["COMPANY_ADMIN"]);
+    // Optional filter, SUPER_ADMIN-facing: pick one team out of the org. A team admin passing
+    // another team's id is rejected inside listUsers (403), not narrowed to their own.
+    const teamId = req.nextUrl.searchParams.get("teamId") ?? undefined;
+    const users = await listUsers(prisma, user, { teamId });
     return NextResponse.json(
-      users.map((u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, status: u.status }))
+      users.map((u) => ({
+        id: u.id,
+        email: u.email,
+        name: u.name,
+        role: u.role,
+        status: u.status,
+        teamId: u.teamId,
+        accountId: u.accountId,
+      })),
     );
   } catch (e) {
     return errorResponse(e);
@@ -56,11 +50,18 @@ export async function POST(req: NextRequest) {
   try {
     const user = await getSessionUser();
     if (!user) throw new UnauthorizedError();
-    assertRole(user, ["COMPANY_ADMIN", "SUPER_ADMIN"]);
+    assertRole(user, ["COMPANY_ADMIN"]);
     const data = CreateBody.parse(await req.json());
     const created = await createUser(prisma, user, data);
     return NextResponse.json(
-      { id: created.id, email: created.email, name: created.name, role: created.role, status: created.status },
+      {
+        id: created.id,
+        email: created.email,
+        name: created.name,
+        role: created.role,
+        status: created.status,
+        teamId: created.teamId,
+      },
       { status: 201 },
     );
   } catch (e) {

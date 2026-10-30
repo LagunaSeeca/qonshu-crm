@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import { getAccount, listAccounts } from "./accounts";
 import { getCompanyAnalytics } from "./company-analytics";
 import { listCompanySettlements, addSettlementEntry } from "./settlements";
 import { listCompanyServiceFees, addServiceFee } from "./service-fees";
-import { leadVisibilityWhere } from "./visibility";
+import { leadScopeWhere, accountScopeWhere } from "./scope";
 import { createUser, InvalidUserRoleError } from "./users";
 import { ForbiddenError } from "@/lib/auth/guards";
 import type { SessionUser } from "@/lib/auth/guards";
@@ -25,15 +26,12 @@ const range = { from: new Date("2026-07-01T00:00:00Z"), to: new Date("2026-07-31
 const statsByPartner = new Map<string, ReturnType<typeof makePartnerStats>>();
 
 async function seed(slug: string) {
-  const c = await testPrisma.company.create({ data: { name: "PartnerCo", slug } });
-  const admin = await testPrisma.user.create({
-    data: { companyId: c.id, email: `admin-${slug}@a.com`, passwordHash: "x", name: "Admin", role: "COMPANY_ADMIN" },
-  });
-  const member = await testPrisma.user.create({
-    data: { companyId: c.id, email: `member-${slug}@a.com`, passwordHash: "x", name: "Member", role: "MEMBER" },
-  });
-  const adminUser: SessionUser = { id: admin.id, companyId: c.id, role: "COMPANY_ADMIN" };
-  const memberUser: SessionUser = { id: member.id, companyId: c.id, role: "MEMBER" };
+  const team = await makeTeam({ name: slug });
+  const c = { id: team.companyId };
+  const admin = await makeUser("COMPANY_ADMIN", team);
+  const member = await makeUser("MEMBER", team);
+  const adminUser: SessionUser = su(admin);
+  const memberUser: SessionUser = su(member);
 
   // Two accounts, each with their own analytics/settlement/service-fee data. Both are wired up
   // as partner-configured by NAME only — the shared PARTNER_API_KEY env var (set in beforeEach
@@ -41,19 +39,17 @@ async function seed(slug: string) {
   const ownPartnerKey = `${slug}-own`;
   const otherPartnerKey = `${slug}-other`;
   const acc1 = await testPrisma.account.create({
-    data: { companyId: c.id, name: "Own Account", accountManagerId: admin.id, externalPartnerKey: ownPartnerKey },
+    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Own Account"), name: "Own Account", accountManagerId: admin.id, externalPartnerKey: ownPartnerKey },
   });
   const acc2 = await testPrisma.account.create({
-    data: { companyId: c.id, name: "Other Account", accountManagerId: admin.id, externalPartnerKey: otherPartnerKey },
+    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Other Account"), name: "Other Account", accountManagerId: admin.id, externalPartnerKey: otherPartnerKey },
   });
   statsByPartner.set(ownPartnerKey, makePartnerStats({ partner: ownPartnerKey, total_payments_amount: 150, total_debt: 40 }));
   statsByPartner.set(otherPartnerKey, makePartnerStats({ partner: otherPartnerKey, total_payments_amount: 5000, total_debt: 999 }));
 
-  const partnerRecord = await testPrisma.user.create({
-    data: { companyId: c.id, email: `partner-${slug}@a.com`, passwordHash: "x", name: "Partner", role: "PARTNER_VIEWER", accountId: acc1.id },
-  });
-  const partnerUser: SessionUser = { id: partnerRecord.id, companyId: c.id, role: "PARTNER_VIEWER", accountId: acc1.id };
-  const partnerUserNoAccount: SessionUser = { id: partnerRecord.id, companyId: c.id, role: "PARTNER_VIEWER", accountId: null };
+  const partnerRecord = await makeUser("PARTNER_VIEWER", team, { accountId: acc1.id });
+  const partnerUser: SessionUser = su(partnerRecord);
+  const partnerUserNoAccount: SessionUser = { ...su(partnerRecord), accountId: null };
 
   // Settlement entries on both accounts.
   await addSettlementEntry(testPrisma, adminUser, acc1.id, { type: "COLLECTED", amount: 200, method: "CASH", occurredAt: new Date() });
@@ -63,7 +59,7 @@ async function seed(slug: string) {
   await addServiceFee(testPrisma, adminUser, acc1.id, { periodMonth: new Date("2026-07-01"), amount: 100 });
   await addServiceFee(testPrisma, adminUser, acc2.id, { periodMonth: new Date("2026-07-01"), amount: 3000 });
 
-  return { c, admin, member, adminUser, memberUser, acc1, acc2, partnerUser, partnerUserNoAccount };
+  return { c, team, admin, member, adminUser, memberUser, acc1, acc2, partnerUser, partnerUserNoAccount };
 }
 
 describe("partner portal security", () => {
@@ -155,10 +151,14 @@ describe("partner portal security", () => {
     expect(f.totals.billed).toBe(0);
   });
 
-  it("leadVisibilityWhere throws ForbiddenError for PARTNER_VIEWER", async () => {
-    const { partnerUser } = await seed("pp-crm");
-    expect(() => leadVisibilityWhere(partnerUser, true)).toThrow(ForbiddenError);
-    expect(() => leadVisibilityWhere(partnerUser, false)).toThrow(ForbiddenError);
+  // leadVisibilityWhere(user, shareAll) is gone with shareAllLeads; leadScopeWhere has no flag, so
+  // there is no longer a "shared" variant of the partner refusal to assert.
+  it("leadScopeWhere throws ForbiddenError for PARTNER_VIEWER; accountScopeWhere pins them to their one account", async () => {
+    const { partnerUser, partnerUserNoAccount, acc1 } = await seed("pp-crm");
+    expect(() => leadScopeWhere(partnerUser)).toThrow(ForbiddenError);
+    expect(accountScopeWhere(partnerUser)).toEqual({ companyId: partnerUser.companyId, id: acc1.id });
+    // A partner with no accountId gets a sentinel id that matches nothing, never an unfiltered scope.
+    expect(accountScopeWhere(partnerUserNoAccount).id).toBe("__no_access__");
   });
 
   it("direct creation: PARTNER_VIEWER without accountId is rejected", async () => {
@@ -194,15 +194,19 @@ describe("partner portal security", () => {
     expect(created.accountId).toBe(acc2.id);
   });
 
-  it("regression: COMPANY_ADMIN and MEMBER still see company-wide data across both accounts", async () => {
-    const { adminUser, memberUser } = await seed("pp-regression");
+  // CHANGED ON PURPOSE (teams refactor): this used to assert a MEMBER sees the whole company's
+  // accounts (2). A MEMBER now sees only the accounts they MANAGE; both seeded accounts are managed
+  // by the team admin, so the member sees none of them until one is assigned to them.
+  it("COMPANY_ADMIN (team admin) sees both accounts; a MEMBER sees only the accounts they manage", async () => {
+    const { adminUser, memberUser, member, team, c } = await seed("pp-regression");
 
     const aAdmin = await getCompanyAnalytics(testPrisma, adminUser, range);
     expect(aAdmin.totals.accounts).toBe(2);
     expect(aAdmin.totals.paymentsAmount).toBe(5150); // 150 + 5000
 
     const aMember = await getCompanyAnalytics(testPrisma, memberUser, range);
-    expect(aMember.totals.accounts).toBe(2);
+    expect(aMember.totals.accounts).toBe(0);
+    expect(await listAccounts(testPrisma, memberUser)).toEqual([]);
 
     const sAdmin = await listCompanySettlements(testPrisma, adminUser);
     expect(sAdmin.rows).toHaveLength(2);
@@ -215,9 +219,16 @@ describe("partner portal security", () => {
     const listAdmin = await listAccounts(testPrisma, adminUser);
     expect(listAdmin).toHaveLength(2);
 
-    // leadVisibilityWhere still works fine for admin/member (no throw)
-    expect(leadVisibilityWhere(adminUser, false)).toEqual({ companyId: adminUser.companyId });
-    expect(leadVisibilityWhere(memberUser, false)).toEqual({ companyId: memberUser.companyId, ownerId: memberUser.id });
+    // Scope: admin = their team; member = their team AND their own rows.
+    expect(leadScopeWhere(adminUser)).toEqual({ companyId: adminUser.companyId, teamId: adminUser.teamId });
+    expect(leadScopeWhere(memberUser)).toEqual({ companyId: memberUser.companyId, teamId: memberUser.teamId, ownerId: memberUser.id });
+
+    // Give the member one account of their own: they see exactly that one, not the admin's two.
+    const mine = await testPrisma.account.create({
+      data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Member Account"), name: "Member Account", accountManagerId: member.id },
+    });
+    const mineList = await listAccounts(testPrisma, memberUser);
+    expect(mineList.map((a) => a.id)).toEqual([mine.id]);
   });
 
   it("PARTNER_VIEWER cannot read another tenant's data at all (companyId isolation still holds)", async () => {

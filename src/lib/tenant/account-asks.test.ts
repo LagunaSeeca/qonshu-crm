@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su } from "@/test/fixtures";
 import { createAccount } from "./accounts";
 import { addAsk, listAsks, resolveAsk, reopenAsk } from "./account-asks";
 import type { SessionUser } from "@/lib/auth/guards";
 
 async function acct() {
-  const c = await testPrisma.company.create({ data: { name: "A", slug: "a-ask" } });
-  const u = await testPrisma.user.create({ data: { companyId: c.id, email: "u@a.com", passwordHash: "x", name: "U", role: "MEMBER" } });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "MEMBER" };
+  const team = await makeTeam();
+  const u = await makeUser("MEMBER", team);
+  const user: SessionUser = su(u);
   return { user, acc: await createAccount(testPrisma, user, { name: "P" }) };
 }
 

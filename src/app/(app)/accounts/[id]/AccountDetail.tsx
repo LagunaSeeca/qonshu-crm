@@ -36,6 +36,8 @@ import { Settlement } from "./Settlement";
 import { ServiceFees } from "./ServiceFees";
 import { Objects } from "./Objects";
 import { AccountFields } from "./AccountFields";
+import { PartnerAccess, type PartnerLogin } from "./PartnerAccess";
+import { OwnerSelectItems } from "@/components/OwnerSelectItems";
 
 type Activity = { id: string; kind: string; body: string; outcome: string | null; occurredAt: string; authorId: string | null };
 type Task = { id: string; title: string; dueDate: string | null; done: boolean };
@@ -64,6 +66,12 @@ type Props = {
   asks: Ask[];
   attachments: Attachment[];
   isAdmin?: boolean;
+  /** People the viewer may reassign the account to. Only used when `isAdmin`. */
+  owners?: { id: string; name: string; teamId: string | null; teamName: string | null }[];
+  /** The owner sees several teams, so the manager picker groups people by team. */
+  groupOwners?: boolean;
+  /** The building's representative logins (the "Partner access" card). */
+  partnerLogins?: PartnerLogin[];
 };
 
 const ACTIVITY_KINDS = ["NOTE", "CALL", "MEETING", "EMAIL"] as const;
@@ -105,7 +113,7 @@ function isOverdue(dueDate: string | null, done: boolean) {
 
 type TabKey = "activity" | "tasks" | "asks" | "files" | "settlement" | "serviceFees" | "objects" | "analytics";
 
-export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false }: Props) {
+export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false, owners = [], groupOwners = false, partnerLogins = [] }: Props) {
   const router = useRouter();
 
   // Account fields
@@ -130,7 +138,8 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
         website: website || null,
         industry: industry || null,
         status,
-        accountManagerId: accountManagerId || undefined,
+        // Only admins may reassign; a manager's save must not carry an owner field at all.
+        accountManagerId: isAdmin ? accountManagerId || undefined : undefined,
         primaryContactName: primaryContactName || null,
         primaryContactEmail: primaryContactEmail || null,
         primaryContactPhone: primaryContactPhone || null,
@@ -138,7 +147,10 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
     });
     setSaving(false);
     if (!res.ok) {
-      toast.error("Failed to save. Please try again.");
+      // 409 building_claimed: another salesperson already registered that building. Show the
+      // server's message as-is; the form keeps the typed name so it can be edited and resubmitted.
+      const body = await res.json().catch(() => ({}));
+      toast.error(res.status === 409 && body?.message ? body.message : "Failed to save. Please try again.");
       return;
     }
     toast.success("Account saved.");
@@ -270,7 +282,8 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
   const [activeTab, setActiveTab] = useState<TabKey>("activity");
 
   const memberMap = Object.fromEntries(members.map((m) => [m.id, m.name]));
-  const managerItems = Object.fromEntries(members.map((m) => [m.id, m.name]));
+  // Names for the read-only view come from `members`; the admin picker lists `owners`.
+  const managerItems = Object.fromEntries([...members, ...owners].map((m) => [m.id, m.name]));
 
   const tabs: { key: TabKey; label: string; disabled?: boolean }[] = [
     { key: "activity", label: "Activity" },
@@ -304,7 +317,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
           <CardContent className="pt-4">
             <form onSubmit={handleSave} className="space-y-4">
               <div className="space-y-1.5">
-                <Label htmlFor="accName">Name <span className="text-destructive">*</span></Label>
+                <Label htmlFor="accName">Building name <span className="text-destructive">*</span></Label>
                 <Input id="accName" value={name} onChange={(e) => setName(e.target.value)} required />
               </div>
 
@@ -321,7 +334,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
               {/* Read-only by design. The external partner namespace is shared across every
                   company on the platform, so re-pointing this account at another name would pull
                   another tenant's debt, payments and unit-level owner names/phones in here.
-                  Assigning/clearing is SUPER_ADMIN-only (Platform Admin -> Partner links), and
+                  Assigning/clearing is SUPER_ADMIN-only (Partner links), and
                   PATCH /api/accounts/[id] no longer accepts the field at all. */}
               <div className="space-y-1.5">
                 <Label>Analytics partner link</Label>
@@ -333,7 +346,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Managed by a platform admin — this link decides which partner&apos;s app users,
+                  Managed by the owner — this link decides which partner&apos;s app users,
                   payments &amp; debt sync into this account.
                 </p>
               </div>
@@ -354,16 +367,20 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
 
               <div className="space-y-1.5">
                 <Label>Account Manager</Label>
-                <Select items={managerItems} value={accountManagerId} onValueChange={(val) => { if (val) setAccountManagerId(val); }}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select manager…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {members.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {isAdmin ? (
+                  <Select items={managerItems} value={accountManagerId} onValueChange={(val) => { if (val) setAccountManagerId(val); }}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select manager…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <OwnerSelectItems owners={owners} grouped={groupOwners} />
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="rounded-lg border border-input bg-muted/40 px-2.5 py-2 text-sm">
+                    {managerItems[accountManagerId] ?? <span className="text-muted-foreground">—</span>}
+                  </div>
+                )}
               </div>
 
               <Separator />
@@ -398,6 +415,8 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
         </Card>
 
         <AccountFields accountId={account.id} isAdmin={isAdmin} />
+
+        <PartnerAccess accountId={account.id} logins={partnerLogins} />
         </div>
 
         {/* RIGHT: Manual tabs — all panels stay in DOM */}

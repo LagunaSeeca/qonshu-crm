@@ -2,10 +2,8 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
-import { getTenantContext } from "@/lib/tenant/context";
-import { listStages } from "@/lib/tenant/stages";
 import { listLeadCards } from "@/lib/tenant/leads";
-import { listUsers } from "@/lib/tenant/users";
+import { loadOwnerOptions, loadOwnStages, loadStagesByTeam, loadTeams } from "../../_lib/pickers";
 import { LeadCreate } from "../LeadCreate";
 import { LeadTable, type LeadRow } from "../LeadTable";
 import { Input } from "@/components/ui/input";
@@ -15,13 +13,20 @@ import { LayoutGrid, List } from "lucide-react";
 export default async function CrmListPage({ searchParams }: { searchParams: Promise<{ q?: string; stageId?: string }> }) {
   const user = await getSessionUser();
   if (!user) redirect("/login");
-  const ctx = getTenantContext(user);
   const sp = await searchParams;
-  const [stages, leads, users] = await Promise.all([
-    listStages(prisma, ctx),
+  const isSuper = user.role === "SUPER_ADMIN";
+  const teams = await loadTeams(user);
+  // The owner has no team, so their stage list spans every team ("Team · Stage" labels keep the
+  // same-named stages apart); everyone else has exactly their own pipeline.
+  const [stagesByTeam, ownStages, owners, leads] = await Promise.all([
+    isSuper ? loadStagesByTeam(user, teams) : Promise.resolve(undefined),
+    isSuper ? Promise.resolve([]) : loadOwnStages(user),
+    loadOwnerOptions(user, teams),
     listLeadCards(prisma, user, { q: sp.q, stageId: sp.stageId }),
-    listUsers(prisma, ctx),
   ]);
+  const stages = stagesByTeam
+    ? teams.flatMap((t) => (stagesByTeam[t.id] ?? []).map((s) => ({ id: s.id, name: `${t.name} · ${s.name}` })))
+    : ownStages;
 
   const stageMap = Object.fromEntries(stages.map((s) => [s.id, s.name]));
 
@@ -89,8 +94,11 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
         {/* New Lead button */}
         <div className="ml-auto">
           <LeadCreate
-            stages={stages.map((s) => ({ id: s.id, name: s.name }))}
-            members={users.map((u) => ({ id: u.id, name: u.name ?? u.email }))}
+            stages={ownStages}
+            stagesByTeam={stagesByTeam}
+            owners={owners}
+            currentUserId={user.id}
+            role={user.role}
           />
         </div>
       </div>

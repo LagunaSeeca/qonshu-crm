@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { OwnerSelectItems } from "@/components/OwnerSelectItems";
 import { PageHeader } from "@/components/PageHeader";
 
 type Stage = { id: string; name: string; type: string };
@@ -46,6 +47,7 @@ type Lead = {
   priority: string;
   stageId: string;
   lostReason: string | null;
+  ownerId?: string;
 };
 
 type Props = {
@@ -55,6 +57,12 @@ type Props = {
   tasks: Task[];
   attachments: Attachment[];
   members: Member[];
+  /** People this viewer may reassign the lead to. Only used when `isAdmin`. */
+  owners?: { id: string; name: string; teamId: string | null; teamName: string | null }[];
+  /** Only admins (team admin / owner) may change the owner; a member never sees the picker. */
+  isAdmin?: boolean;
+  /** The owner sees several teams, so the picker groups people by team. */
+  groupOwners?: boolean;
 };
 
 const ACTIVITY_KINDS = ["NOTE", "CALL", "MEETING", "EMAIL"] as const;
@@ -98,17 +106,22 @@ function isOverdue(dueDate: string | null, done: boolean) {
 export function moveResultToast(
   targetStage: Pick<Stage, "type"> | undefined,
   autoConverted: boolean,
+  reason?: string,
 ): { variant: "success" | "warning"; message: string } | null {
   if (targetStage?.type !== "WON") return null;
-  return autoConverted
-    ? { variant: "success", message: "Lead marked Won — account created." }
-    : {
-        variant: "warning",
-        message: 'Lead marked Won, but the account could not be created automatically. Use "Convert to Account" to retry.',
-      };
+  if (autoConverted) return { variant: "success", message: "Lead marked Won — account created." };
+  // `building_claimed`: the building is already held by someone else, so retrying as-is will fail
+  // too — point at fixing the building name first. Anything else is a generic failure.
+  return {
+    variant: "warning",
+    message:
+      reason === "building_claimed"
+        ? 'Lead marked Won, but no account was created: another salesperson already has this building. Fix the building name, then use "Convert to Account".'
+        : 'Lead marked Won, but the account could not be created automatically. Use "Convert to Account" to retry.',
+  };
 }
 
-export function LeadDetail({ lead, stages, activities, tasks, attachments, members }: Props) {
+export function LeadDetail({ lead, stages, activities, tasks, attachments, members, owners = [], isAdmin = false, groupOwners = false }: Props) {
   const router = useRouter();
 
   // Lead fields
@@ -119,6 +132,7 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
   const [companyName, setCompanyName] = useState(lead.companyName ?? "");
   const [priority, setPriority] = useState(lead.priority);
   const [stageId, setStageId] = useState(lead.stageId);
+  const [ownerId, setOwnerId] = useState(lead.ownerId ?? "");
   const [saving, setSaving] = useState(false);
 
   async function handleSave(e: React.FormEvent) {
@@ -127,11 +141,14 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
     const res = await fetch(`/api/leads/${lead.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title, contactName, email: email || null, phone: phone || null, companyName: companyName || null, priority }),
+      body: JSON.stringify({ title, contactName, email: email || null, phone: phone || null, companyName, priority, ...(isAdmin && ownerId && ownerId !== lead.ownerId ? { ownerId } : {}) }),
     });
     setSaving(false);
     if (!res.ok) {
-      toast.error("Failed to save. Please try again.");
+      // 409 building_claimed: another salesperson already registered that building. Show the
+      // server's message as-is; the form keeps the typed name so it can be edited and resubmitted.
+      const body = await res.json().catch(() => ({}));
+      toast.error(res.status === 409 && body?.message ? body.message : "Failed to save. Please try again.");
       return;
     }
     toast.success("Lead saved.");
@@ -157,8 +174,8 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
     }
     // Body is `{ lead, autoConverted }` — see moveResultToast above for why this matters for
     // Won moves specifically.
-    const { autoConverted } = (await res.json()) as { autoConverted: boolean };
-    const outcome = moveResultToast(targetStage, autoConverted);
+    const { autoConverted, reason } = (await res.json()) as { autoConverted: boolean; reason?: string };
+    const outcome = moveResultToast(targetStage, autoConverted, reason);
     if (outcome?.variant === "success") toast.success(outcome.message);
     else if (outcome?.variant === "warning") toast.warning(outcome.message);
     router.refresh();
@@ -332,9 +349,23 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="companyName">Company</Label>
-                <Input id="companyName" value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+                <Label htmlFor="companyName">Building <span className="text-destructive">*</span></Label>
+                <Input id="companyName" value={companyName} onChange={(e) => setCompanyName(e.target.value)} required />
               </div>
+
+              {isAdmin && owners.length > 0 && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="ownerId">Owner</Label>
+                  <Select items={Object.fromEntries(owners.map((o) => [o.id, o.name]))} value={ownerId} onValueChange={(val) => { if (val) setOwnerId(val); }}>
+                    <SelectTrigger id="ownerId" className="w-full">
+                      <SelectValue placeholder="Select owner…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <OwnerSelectItems owners={owners} grouped={groupOwners} />
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
 
               <div className="space-y-1.5">
                 <Label>Priority</Label>

@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, buildingKey } from "@/test/fixtures";
 
 describe("account schema", () => {
   beforeEach(resetDb);
   afterAll(() => testPrisma.$disconnect());
 
   it("creates an account with workspace items and cascades on delete", async () => {
-    const c = await testPrisma.company.create({ data: { name: "A", slug: "a-acct" } });
-    const u = await testPrisma.user.create({ data: { companyId: c.id, email: "u@a.com", passwordHash: "x", name: "U", role: "MEMBER" } });
-    const acc = await testPrisma.account.create({ data: { companyId: c.id, name: "Partner Co", accountManagerId: u.id } });
+    const team = await makeTeam();
+    const c = { id: team.companyId };
+    const u = await makeUser("MEMBER", team);
+    const acc = await testPrisma.account.create({ data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Partner Co"), name: "Partner Co", accountManagerId: u.id } });
     await testPrisma.accountActivity.create({ data: { companyId: c.id, accountId: acc.id, authorId: u.id, kind: "MEETING", body: "kickoff" } });
     await testPrisma.accountTask.create({ data: { companyId: c.id, accountId: acc.id, title: "send deck" } });
     await testPrisma.accountAsk.create({ data: { companyId: c.id, accountId: acc.id, title: "need API key", authorId: u.id } });

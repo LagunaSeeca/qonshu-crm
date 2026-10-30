@@ -7,7 +7,7 @@ import {
   setAccountPartner,
   UnknownPartnerNameError,
   PartnerAlreadyClaimedError,
-  PartnerAllowlistMismatchError,
+  PartnerNameHeldError,
   PartnerListUnavailableError,
 } from "@/lib/platform/account-partners";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
@@ -41,8 +41,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     // Distinct, typed statuses so the platform card can tell the admin which rule they hit.
     if (e instanceof PartnerAlreadyClaimedError)
       return NextResponse.json({ error: "partner_already_claimed" }, { status: 409 });
-    if (e instanceof PartnerAllowlistMismatchError)
-      return NextResponse.json({ error: "partner_allowlist_mismatch" }, { status: 409 });
+    // The name is claimed as a BUILDING by another lead or account. `message` is carried onto the
+    // wire (unlike every other branch here) because it names the holding record, and this route is
+    // SUPER_ADMIN-only — the admin cannot resolve the clash without knowing what to reassign.
+    if (e instanceof PartnerNameHeldError)
+      return NextResponse.json(
+        { error: "partner_name_held", message: e.message, holder: { kind: e.holderKind, id: e.holderId } },
+        { status: 409 },
+      );
     if (e instanceof UnknownPartnerNameError)
       return NextResponse.json({ error: "unknown_partner" }, { status: 400 });
     if (e instanceof PartnerListUnavailableError)

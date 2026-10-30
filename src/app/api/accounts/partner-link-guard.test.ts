@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import type { SessionUser } from "@/lib/auth/guards";
 import type { PartnerListResponse } from "@/lib/partner-api/schema";
 
@@ -8,7 +9,8 @@ import type { PartnerListResponse } from "@/lib/partner-api/schema";
 // discriminator), so a tenant that could name a partner could read another tenant's debt,
 // payments and unit-level owner names/phones. These tests pin the boundary: the company-facing
 // account routes must IGNORE `externalPartnerKey` in the request body no matter who sends it,
-// while the SYSTEM auto-link keeps working untouched.
+// while the SYSTEM auto-link keeps working untouched. (Auto-link now resolves against the LIVE
+// upstream list — the per-company PartnerAllowlist is gone — so there is nothing to "grant".)
 vi.mock("@/db/client", () => ({ prisma: testPrisma }));
 
 let mockUser: SessionUser | null = null;
@@ -29,13 +31,6 @@ function liveList(): PartnerListResponse {
       { name: "Sabah.City", type: "COMMERCIAL" },
     ],
   };
-}
-
-// Grants a complex to a company — the only thing that lets the SYSTEM auto-link fire at all.
-async function grant(companyId: string, partnerName: string) {
-  return testPrisma.partnerAllowlist.create({
-    data: { companyId, partnerName, normalizedName: partnerName.trim().toLowerCase() },
-  });
 }
 
 function jsonReq(url: string, method: string, body: unknown) {
@@ -69,12 +64,23 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
   afterAll(() => testPrisma.$disconnect());
 
   async function seed(slug: string, role: SessionUser["role"] = "COMPANY_ADMIN") {
-    const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-    const u = await testPrisma.user.create({
-      data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role },
+    const team = await makeTeam({ name: slug });
+    const c = { id: team.companyId };
+    const u = await makeUser(role, team);
+    mockUser = su(u);
+    return { c, u, team };
+  }
+
+  // An account in a different company already holding `partnerKey` (the namespace is global).
+  async function seedForeignHolder(label: string, partnerKey: string, name: string) {
+    const otherTeam = await makeTeam({ name: `${label}-${ts}` });
+    const otherMgr = await makeUser("COMPANY_ADMIN", otherTeam);
+    return testPrisma.account.create({
+      data: {
+        companyId: otherTeam.companyId, teamId: otherTeam.id, buildingKey: buildingKey(name),
+        name, accountManagerId: otherMgr.id, externalPartnerKey: partnerKey,
+      },
     });
-    mockUser = { id: u.id, companyId: c.id, role };
-    return { c, u };
   }
 
   it("POST: a COMPANY_ADMIN's externalPartnerKey is not persisted", async () => {
@@ -105,13 +111,7 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
   });
 
   it("POST: a body key cannot steal a partner already claimed by ANOTHER company", async () => {
-    const other = await testPrisma.company.create({ data: { name: "Other", slug: `other-${ts}` } });
-    const otherMgr = await testPrisma.user.create({
-      data: { companyId: other.id, email: `o-${ts}@a.com`, passwordHash: "x", name: "O", role: "COMPANY_ADMIN" },
-    });
-    const holder = await testPrisma.account.create({
-      data: { companyId: other.id, name: "Holder", accountManagerId: otherMgr.id, externalPartnerKey: "Komplex B" },
-    });
+    const holder = await seedForeignHolder("other", "Komplex B", "Holder");
 
     await seed(`thief-${ts}`);
     const res = await POST(jsonReq("http://localhost/api/accounts", "POST", {
@@ -125,9 +125,8 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     expect(holderRow?.externalPartnerKey).toBe("Komplex B");
   });
 
-  it("POST: the SYSTEM auto-link still fires when the complex is granted to this company", async () => {
-    const { c } = await seed(`autolink-${ts}`);
-    await grant(c.id, "Komplex B");
+  it("POST: the SYSTEM auto-link still fires when the account's name matches a live upstream complex", async () => {
+    await seed(`autolink-${ts}`);
 
     const res = await POST(jsonReq("http://localhost/api/accounts", "POST", { name: "Komplex B" }));
     expect(res.status).toBe(201);
@@ -135,49 +134,31 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     expect(row?.externalPartnerKey).toBe("Komplex B");
   });
 
-  it("POST: naming an account after an UNGRANTED complex links nothing and reveals nothing", async () => {
-    await seed(`autolink-nogrant-${ts}`);
+  // CHANGED ON PURPOSE (teams refactor): this was "naming an account after an UNGRANTED complex
+  // links nothing and reveals nothing", guarding an enumeration oracle between TENANTS. The
+  // allowlist (and Company as the customer boundary) is gone: there is one org and the boundary is
+  // the team, enforced by the building claim guard. Auto-link now keys purely off the live upstream
+  // list, so a name that matches a real complex DOES link and a made-up one does not. The
+  // security-relevant half of the old test is kept: a body externalPartnerKey still has no effect
+  // (see the tests above) and the stored key is the upstream's exact spelling, never the caller's.
+  it("POST: naming an account after a live complex links it (exact upstream spelling); a made-up name links nothing", async () => {
+    await seed(`autolink-live-${ts}`);
 
-    // "Komplex B" is a real upstream complex, but this company was never granted it. The 201 body
-    // must be identical to one for a made-up name — no key, no error, no flag — or the response
-    // becomes an oracle for enumerating every complex on the platform.
-    const real = await POST(jsonReq("http://localhost/api/accounts", "POST", { name: "Komplex B" }));
+    const real = await POST(jsonReq("http://localhost/api/accounts", "POST", { name: "  komplex b " }));
     const fake = await POST(jsonReq("http://localhost/api/accounts", "POST", { name: "No Such Complex At All" }));
     expect(real.status).toBe(201);
     expect(fake.status).toBe(201);
 
-    const realBody = (await real.json()).account;
-    const fakeBody = (await fake.json()).account;
-    expect(realBody.externalPartnerKey).toBeNull();
-    expect(fakeBody.externalPartnerKey).toBeNull();
-    // Same shape, same fields, nothing that separates "exists but not yours" from "doesn't exist".
-    expect(Object.keys(realBody).sort()).toEqual(Object.keys(fakeBody).sort());
-  });
-
-  it("POST: a grant to ANOTHER company does not let this company claim the complex", async () => {
-    const other = await testPrisma.company.create({ data: { name: "Other", slug: `grant-other-${ts}` } });
-    await grant(other.id, "Komplex B");
-
-    await seed(`grant-thief-${ts}`);
-    const res = await POST(jsonReq("http://localhost/api/accounts", "POST", { name: "Komplex B" }));
-    expect(res.status).toBe(201);
-    const row = await testPrisma.account.findUnique({ where: { id: (await res.json()).account.id } });
-    expect(row?.externalPartnerKey).toBeNull();
+    expect((await real.json()).account.externalPartnerKey).toBe("Komplex B");
+    expect((await fake.json()).account.externalPartnerKey).toBeNull();
   });
 
   it("POST: auto-link still refuses a name already claimed elsewhere", async () => {
-    const other = await testPrisma.company.create({ data: { name: "Other", slug: `auto-taken-${ts}` } });
-    const otherMgr = await testPrisma.user.create({
-      data: { companyId: other.id, email: `at-${ts}@a.com`, passwordHash: "x", name: "O", role: "COMPANY_ADMIN" },
-    });
-    await testPrisma.account.create({
-      data: { companyId: other.id, name: "Komplex B", accountManagerId: otherMgr.id, externalPartnerKey: "Komplex B" },
-    });
+    await seedForeignHolder("auto-taken", "Komplex B", "Komplex B");
 
-    // Granted to US, yet already claimed by that other account: the grant authorizes the link,
-    // it does not override the one-account-per-complex rule.
-    const { c } = await seed(`auto-taken-me-${ts}`);
-    await grant(c.id, "Komplex B");
+    // A real upstream complex, but already claimed by that other company's account: auto-link
+    // does not override the one-account-per-complex rule, and creation still succeeds, unlinked.
+    await seed(`auto-taken-me-${ts}`);
     const res = await POST(jsonReq("http://localhost/api/accounts", "POST", { name: "Komplex B" }));
     expect(res.status).toBe(201);
     const row = await testPrisma.account.findUnique({ where: { id: (await res.json()).account.id } });
@@ -185,9 +166,9 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
   });
 
   it("PATCH: a COMPANY_ADMIN cannot set the link on an unlinked account", async () => {
-    const { c, u } = await seed(`patch-set-${ts}`);
+    const { c, u, team } = await seed(`patch-set-${ts}`);
     const acc = await testPrisma.account.create({
-      data: { companyId: c.id, name: "Unlinked", accountManagerId: u.id },
+      data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Unlinked"), name: "Unlinked", accountManagerId: u.id },
     });
 
     const res = await PATCH(
@@ -200,9 +181,9 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
   });
 
   it("PATCH: a MEMBER cannot re-point an already-linked account at another partner", async () => {
-    const { c, u } = await seed(`patch-repoint-${ts}`, "MEMBER");
+    const { c, u, team } = await seed(`patch-repoint-${ts}`, "MEMBER");
     const acc = await testPrisma.account.create({
-      data: { companyId: c.id, name: "Linked", accountManagerId: u.id, externalPartnerKey: "Komplex B" },
+      data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Linked"), name: "Linked", accountManagerId: u.id, externalPartnerKey: "Komplex B" },
     });
 
     const res = await PATCH(
@@ -218,9 +199,9 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
   });
 
   it("PATCH: a COMPANY_ADMIN cannot CLEAR the link either", async () => {
-    const { c, u } = await seed(`patch-clear-${ts}`);
+    const { c, u, team } = await seed(`patch-clear-${ts}`);
     const acc = await testPrisma.account.create({
-      data: { companyId: c.id, name: "Linked", accountManagerId: u.id, externalPartnerKey: "Komplex B" },
+      data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Linked"), name: "Linked", accountManagerId: u.id, externalPartnerKey: "Komplex B" },
     });
 
     const res = await PATCH(

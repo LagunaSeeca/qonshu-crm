@@ -1,7 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
-import { leadVisibilityWhere } from "./visibility";
-import { getCompanySettings } from "./company";
+import { leadScopeWhere, accountScopeWhere } from "./scope";
 
 export type WorkParentType = "LEAD" | "ACCOUNT";
 
@@ -27,35 +26,52 @@ export type WorkMeeting = {
 export type MyWork = { tasks: WorkTask[]; meetings: WorkMeeting[] };
 
 /**
- * Cross-entity "my work" view: open tasks + recent meetings across leads (tenant-visibility scoped)
- * and accounts (company-wide). Mirrors the scoping approach used by getDashboardStats.
+ * Cross-entity "my work": open tasks + recent meetings that are MINE.
+ *  - Task / AccountTask: assigneeId = me, OR unassigned on a lead/account I own.
+ *  - Meetings: on a lead/account I own, or authored by me (capped at 20).
+ * Ownership applies to every role (a team admin's "my work" is their own, not the team's).
+ * The parent must also sit inside the caller's team scope, so a task still assigned to me on a
+ * record that has since moved to another team does not leak that record's title.
+ * leadScopeWhere/accountScopeWhere also reject PARTNER_VIEWER and companyless callers.
  */
 export async function getMyWork(db: PrismaClient, user: SessionUser): Promise<MyWork> {
-  const companyId = user.companyId!;
-  const { shareAllLeads } = await getCompanySettings(db, { companyId });
-  const leadWhere = leadVisibilityWhere(user, shareAllLeads);
-  const visibleLeads = await db.lead.findMany({ where: leadWhere, select: { id: true } });
-  const leadIds = visibleLeads.map((l) => l.id);
+  const { ownerId: _ownerId, ...leadBase } = leadScopeWhere(user);
+  const { accountManagerId: _managerId, ...acctBase } = accountScopeWhere(user);
+  void _ownerId; void _managerId;
+  const companyId = leadBase.companyId;
+  const me = user.id;
 
   const [leadTasks, acctTasks, leadMeetings, acctMeetings] = await Promise.all([
     db.task.findMany({
-      where: { companyId, leadId: { in: leadIds }, done: false },
+      where: {
+        companyId, done: false, lead: leadBase,
+        OR: [{ assigneeId: me }, { assigneeId: null, lead: { ownerId: me } }],
+      },
       include: { lead: { select: { title: true } } },
       orderBy: { dueDate: "asc" },
     }),
     db.accountTask.findMany({
-      where: { companyId, done: false },
+      where: {
+        companyId, done: false, account: acctBase,
+        OR: [{ assigneeId: me }, { assigneeId: null, account: { accountManagerId: me } }],
+      },
       include: { account: { select: { name: true } } },
       orderBy: { dueDate: "asc" },
     }),
     db.activity.findMany({
-      where: { companyId, leadId: { in: leadIds }, kind: "MEETING" },
+      where: {
+        companyId, kind: "MEETING", lead: leadBase,
+        OR: [{ authorId: me }, { lead: { ownerId: me } }],
+      },
       include: { lead: { select: { title: true } } },
       orderBy: { occurredAt: "desc" },
       take: 20,
     }),
     db.accountActivity.findMany({
-      where: { companyId, kind: "MEETING" },
+      where: {
+        companyId, kind: "MEETING", account: acctBase,
+        OR: [{ authorId: me }, { account: { accountManagerId: me } }],
+      },
       include: { account: { select: { name: true } } },
       orderBy: { occurredAt: "desc" },
       take: 20,

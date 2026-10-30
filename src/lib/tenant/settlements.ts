@@ -2,6 +2,7 @@ import type { PrismaClient, SettlementEntry, SettlementType, SettlementMethod } 
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
 import { getAccount } from "./accounts";
+import { accountScopeWhere } from "./scope";
 
 const num = (d: { toNumber: () => number }) => d.toNumber();
 const sum = (rows: SettlementEntry[], t: SettlementType) =>
@@ -20,21 +21,26 @@ export async function addSettlementEntry(db: PrismaClient, user: SessionUser, ac
   const acc = await getAccount(db, user, accountId);
   if (!acc) throw new NotFoundError("account not in scope");
   return db.settlementEntry.create({ data: {
-    companyId: user.companyId!, accountId, type: args.type, amount: args.amount,
+    companyId: acc.companyId, accountId, type: args.type, amount: args.amount,
     method: args.method, occurredAt: args.occurredAt, note: args.note ?? null, createdById: user.id,
   } });
 }
 
+// THE PARENT ACCOUNT IS THE AUTHORIZATION. This used to be `{ id: entryId, companyId }`, which
+// under Teams is the whole org: any MEMBER could delete any money row on any account in any team
+// just by naming its id — on a ledger they could never see, and with the deletion changing that
+// team's "owed" total. The entry's own account decides, via getAccount -> accountScopeWhere, and
+// "no such entry" and "not your account" give the same answer so the pair is not an id oracle.
 export async function deleteSettlementEntry(db: PrismaClient, user: SessionUser, entryId: string): Promise<void> {
-  const found = await db.settlementEntry.findFirst({ where: { id: entryId, companyId: user.companyId! } });
-  if (!found) throw new NotFoundError("entry not in tenant");
+  const found = await db.settlementEntry.findUnique({ where: { id: entryId }, select: { accountId: true } });
+  if (!found || !(await getAccount(db, user, found.accountId))) throw new NotFoundError("entry not in scope");
   await db.settlementEntry.delete({ where: { id: entryId } });
 }
 
 export async function getAccountSettlement(db: PrismaClient, user: SessionUser, accountId: string) {
   const acc = await getAccount(db, user, accountId);
   if (!acc) throw new NotFoundError("account not in scope");
-  const entries = await db.settlementEntry.findMany({ where: { companyId: user.companyId!, accountId }, orderBy: { occurredAt: "desc" } });
+  const entries = await db.settlementEntry.findMany({ where: { companyId: acc.companyId, accountId }, orderBy: { occurredAt: "desc" } });
   const collected = sum(entries, "COLLECTED");
   const transferred = sum(entries, "TRANSFER");
   return {
@@ -47,15 +53,21 @@ export async function getAccountSettlement(db: PrismaClient, user: SessionUser, 
   };
 }
 
+// The settlement roll-up, over the accounts the caller may actually see.
+//
+// It used to be the whole company for every role bar PARTNER_VIEWER, which it narrowed with its
+// own hand-rolled sentinel. Under Teams "the whole company" is the whole org, so a MEMBER's cash
+// page showed every team's collections. accountScopeWhere decides instead — own accounts for a
+// MEMBER, own team for a team admin, the one account for a partner login — and the entry query is
+// confined to exactly those account ids rather than re-deriving the rule a second time.
 export async function listCompanySettlements(db: PrismaClient, user: SessionUser) {
-  if (!user.companyId) throw new Error("no tenant context");
-  // Partner logins only ever see their own account's ledger — fail closed (sentinel that
-  // matches nothing) when the login has no accountId set.
-  const accountFilter = user.role === "PARTNER_VIEWER" ? (user.accountId ?? "__no_access__") : undefined;
-  const [accounts, entries] = await Promise.all([
-    db.account.findMany({ where: { companyId: user.companyId, ...(accountFilter ? { id: accountFilter } : {}) }, orderBy: { name: "asc" } }),
-    db.settlementEntry.findMany({ where: { companyId: user.companyId, ...(accountFilter ? { accountId: accountFilter } : {}) } }),
-  ]);
+  const scope = accountScopeWhere(user);
+  const accounts = await db.account.findMany({ where: scope, orderBy: { name: "asc" } });
+  const entries = accounts.length
+    ? await db.settlementEntry.findMany({
+        where: { companyId: scope.companyId, accountId: { in: accounts.map((a) => a.id) } },
+      })
+    : [];
   const rows = accounts.map((a) => {
     const mine = entries.filter((e) => e.accountId === a.id);
     const collected = sum(mine, "COLLECTED");

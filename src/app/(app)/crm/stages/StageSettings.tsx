@@ -8,8 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -31,7 +29,16 @@ type Stage = {
 
 type Props = {
   initialStages: Stage[];
-  shareAllLeads: boolean;
+  /**
+   * Query string appended to every stages API call. A team admin leaves it empty (the server uses
+   * their own team); the owner passes `?teamId=<id>` for a team, or `?teamId=` (present but empty)
+   * for the org default template.
+   */
+  scopeQuery?: string;
+  /** Owner only: a team picker rendered beside the title. */
+  switcher?: React.ReactNode;
+  /** True when editing the default template, which only affects teams created later. */
+  isTemplate?: boolean;
 };
 
 const STAGE_TYPES: StageType[] = ["OPEN", "WON", "LOST"];
@@ -48,10 +55,9 @@ function StageBadge({ type }: { type: StageType }) {
   }
 }
 
-export function StageSettings({ initialStages, shareAllLeads: initialShare }: Props) {
+export function StageSettings({ initialStages, scopeQuery = "", switcher, isTemplate = false }: Props) {
   const router = useRouter();
   const [stages, setStages] = useState<Stage[]>(initialStages);
-  const [shareAll, setShareAll] = useState(initialShare);
 
   // Inline edit state
   const [editing, setEditing] = useState<Record<string, Partial<Stage>>>({});
@@ -67,7 +73,7 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
   async function saveEdit(stage: Stage) {
     const patch = editing[stage.id];
     if (!patch) return;
-    const res = await fetch(`/api/stages/${stage.id}`, {
+    const res = await fetch(`/api/stages/${stage.id}${scopeQuery}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(patch),
@@ -82,7 +88,7 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
   }
 
   async function handleDelete(id: string) {
-    const res = await fetch(`/api/stages/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/stages/${id}${scopeQuery}`, { method: "DELETE" });
     if (res.status === 409) {
       toast.error("Move its leads first before deleting this stage.");
     } else if (res.ok) {
@@ -102,7 +108,7 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
     if (swapIdx < 0 || swapIdx >= next.length) return;
     [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
     setStages(next);
-    const res = await fetch("/api/stages/reorder", {
+    const res = await fetch(`/api/stages/reorder${scopeQuery}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ orderedIds: next.map((s) => s.id) }),
@@ -124,7 +130,7 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setAdding(true);
-    const res = await fetch("/api/stages", {
+    const res = await fetch(`/api/stages${scopeQuery}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: newName, type: newType, probability: newProb }),
@@ -142,49 +148,20 @@ export function StageSettings({ initialStages, shareAllLeads: initialShare }: Pr
     router.refresh();
   }
 
-  async function handleShareToggle(checked: boolean) {
-    setShareAll(checked);
-    const res = await fetch("/api/company/settings", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ shareAllLeads: checked }),
-    });
-    if (!res.ok) {
-      setShareAll(!checked);
-      toast.error("Failed to update setting. Please try again.");
-      return;
-    }
-    toast.success(checked ? "Leads shared with everyone." : "Lead sharing restricted.");
-    router.refresh();
-  }
-
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      <PageHeader title="Stage Settings" subtitle="Manage your pipeline stages and visibility." />
+      <PageHeader
+        title="Stage Settings"
+        subtitle={isTemplate ? "Default stages for newly created teams." : "Manage your team's pipeline stages."}
+        action={switcher}
+      />
 
-      {/* Visibility toggle */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Lead Visibility</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p id="share-all-leads-label" className="text-sm font-medium text-foreground">
-                Share all leads with everyone
-              </p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                When on, all team members can view every lead regardless of owner.
-              </p>
-            </div>
-            <Switch
-              aria-labelledby="share-all-leads-label"
-              checked={shareAll}
-              onCheckedChange={handleShareToggle}
-            />
-          </div>
-        </CardContent>
-      </Card>
+      {isTemplate && (
+        <p className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          You are editing the <span className="font-medium text-foreground">default template</span>.
+          Changes apply only to teams created later; existing teams keep their own stages.
+        </p>
+      )}
 
       {/* Pipeline stages card */}
       <Card>

@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
-import { getAccount } from "./accounts";
+import { getAccount, tryAutoLink } from "./accounts";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import { InvalidApiKeyError, UnknownPartnerError } from "@/lib/partner-api/errors";
@@ -127,8 +127,16 @@ export async function getAccountAnalytics(
   accountId: string,
   range: { from: Date; to: Date },
 ): Promise<AccountAnalytics> {
-  const acc = await getAccount(db, user, accountId); // tenancy chokepoint: foreign account -> null
-  if (!acc) throw new NotFoundError("account not in scope");
+  const found = await getAccount(db, user, accountId); // tenancy chokepoint: foreign account -> null
+  if (!found) throw new NotFoundError("account not in scope");
+
+  // LAST-CHANCE AUTO-LINK. The link is normally resolved at account creation, over HTTP — so a
+  // Django outage in the minute the building was registered leaves the account unlinked, and
+  // nothing else ever re-runs that resolution. Opening the Analytics tab is exactly the moment
+  // somebody cares, so retry it here under the same claim rules. No-ops in O(0) queries for an
+  // already-linked account, and never throws: a refusal or a lost race returns `found` unchanged
+  // and the page renders "not configured" as before.
+  const acc = await tryAutoLink(db, user, found);
 
   let creds: PartnerCredentials | null;
   try {

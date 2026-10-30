@@ -5,7 +5,7 @@ import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
 import { dbWithPhantomPartnerKey } from "@/test/duplicate-partner-db";
-import type { SessionUser } from "@/lib/auth/guards";
+import { makeTeam, makeUser, su, uniq, buildingKey } from "@/test/fixtures";
 
 // Reports are a LIVE read of the external Partner API (paginated payments), so the client is
 // mocked here — a real network call would make these tests flaky and slow. The DB is still used
@@ -18,21 +18,29 @@ const SHARED_API_KEY = "test-shared-partner-api-key";
 
 // "Configured" now means only a partner NAME — the account goes live off the shared
 // PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
-async function setup(slug: string, opts?: { configured?: boolean; partnerKey?: string }) {
-  const c = await testPrisma.company.create({ data: { name: "A", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
-  const acc = await testPrisma.account.create({
+// Accounts need a teamId + buildingKey; both follow the manager so the row is consistent with the
+// team wiring. `partnerKey` omitted = a not-linked account.
+async function makeAccount(managerId: string, name: string, partnerKey?: string) {
+  const m = await testPrisma.user.findUniqueOrThrow({ where: { id: managerId } });
+  return testPrisma.account.create({
     data: {
-      companyId: c.id,
-      name: "Partner, Inc",
-      accountManagerId: u.id,
-      ...(opts?.configured ? { externalPartnerKey: opts.partnerKey ?? `${slug}-p1` } : {}),
+      companyId: m.companyId!, teamId: m.teamId!, buildingKey: buildingKey(`${name}-${uniq()}`),
+      name, accountManagerId: managerId,
+      ...(partnerKey ? { externalPartnerKey: partnerKey } : {}),
     },
   });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
-  return { c, u, acc, user };
+}
+
+async function mkAdmin() {
+  const team = await makeTeam();
+  const u = await makeUser("COMPANY_ADMIN", team);
+  return { team, u, user: su(u) };
+}
+
+async function setup(slug: string, opts?: { configured?: boolean; partnerKey?: string }) {
+  const { team, u, user } = await mkAdmin();
+  const acc = await makeAccount(u.id, "Partner, Inc", opts?.configured ? (opts.partnerKey ?? `${slug}-p1`) : undefined);
+  return { c: { id: team.companyId }, u, acc, user };
 }
 
 describe("reports (live partner API)", () => {
@@ -152,20 +160,8 @@ describe("reports (live partner API)", () => {
   });
 
   it("skips unconfigured accounts and isolates per-error reasons; one bad account never fails the export", async () => {
-    const c = await testPrisma.company.create({ data: { name: "Co", slug: "rmix" } });
-    const u = await testPrisma.user.create({
-      data: { companyId: c.id, email: "u-rmix@a.com", passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-    });
-    const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
-    const mk = (name: string, partnerKey?: string) =>
-      testPrisma.account.create({
-        data: {
-          companyId: c.id,
-          name,
-          accountManagerId: u.id,
-          ...(partnerKey ? { externalPartnerKey: partnerKey } : {}),
-        },
-      });
+    const { u, user } = await mkAdmin();
+    const mk = (name: string, partnerKey?: string) => makeAccount(u.id, name, partnerKey);
     const ok = await mk("OK", "rmix-ok");
     const badKey = await mk("Bad Key", "rmix-badkey");
     const unknown = await mk("Unknown", "rmix-unknown");
@@ -206,18 +202,10 @@ describe("reports (live partner API)", () => {
   // src/test/duplicate-partner-db.ts. Same dedup approach as company-analytics.ts / overview.ts.
   it("counts a partner ONCE when two accounts hold the same externalPartnerKey", async () => {
     const slug = `r-dupe-${Date.now()}-${Math.random()}`;
-    const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-    const u = await testPrisma.user.create({
-      data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-    });
-    const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const { u, user } = await mkAdmin();
     const partnerKey = `${slug}-shared`;
-    await testPrisma.account.create({
-      data: { companyId: c.id, name: "Account A", accountManagerId: u.id, externalPartnerKey: partnerKey },
-    });
-    const b = await testPrisma.account.create({
-      data: { companyId: c.id, name: "Account B", accountManagerId: u.id },
-    });
+    await makeAccount(u.id, "Account A", partnerKey);
+    const b = await makeAccount(u.id, "Account B");
     const db = dbWithPhantomPartnerKey(b.id, partnerKey);
 
     vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner, page }) =>
@@ -268,4 +256,20 @@ describe("reports (live partner API)", () => {
     ).rejects.toThrow();
   });
 
+  it("ALL scope only reports accounts in the caller's scope (own team; never a sibling team's)", async () => {
+    const { team, u, user } = await mkAdmin();
+    const sibling = await makeTeam({ companyId: team.companyId });
+    const siblingAdmin = await makeUser("COMPANY_ADMIN", sibling);
+    const mine = await makeAccount(u.id, "Mine", "rscope-mine");
+    const foreign = await makeAccount(siblingAdmin.id, "Foreign", "rscope-foreign");
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) =>
+      makePartnerStats({ partner, total_payments_count: 1, total_payments_amount: 5 }),
+    );
+
+    const r = await getReport(testPrisma, user, { range, label: "x" });
+    const ids = r.accountStatuses.map((s) => s.accountId);
+    expect(ids).toContain(mine.id);
+    expect(ids).not.toContain(foreign.id);
+    expect(fetchPartnerStats).not.toHaveBeenCalledWith(expect.objectContaining({ partner: "rscope-foreign" }));
+  });
 });

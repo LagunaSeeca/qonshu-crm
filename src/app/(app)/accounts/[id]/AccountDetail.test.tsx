@@ -40,7 +40,7 @@ describe("AccountDetail", () => {
     render(<AccountDetail {...base} account={{ ...base.account, externalPartnerKey: "Komplex B" }} />);
     expect(screen.getByText("Analytics partner link")).toBeInTheDocument();
     expect(screen.getByText("Komplex B")).toBeInTheDocument();
-    expect(screen.getByText(/managed by a platform admin/i)).toBeInTheDocument();
+    expect(screen.getByText(/managed by the owner/i)).toBeInTheDocument();
     // The name must not be inside any form control a company user could change.
     const editable = screen
       .queryAllByRole("textbox")

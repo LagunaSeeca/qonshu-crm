@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
+import { buildingKey, makeTeam, makeTeamWithUsers, makeUser, su, uniq } from "@/test/fixtures";
 import type { SessionUser } from "@/lib/auth/guards";
 
-// Route handlers use `@/db/client`'s `prisma` singleton and `@/lib/auth/session`'s
-// getSessionUser (backed by next-auth, which needs a real request-scoped context we don't have
-// here). Mock both so the handler runs against testPrisma with a session we control. Mirrors the
-// pattern in src/app/api/accounts/route.test.ts.
+// Route handlers use `@/db/client`'s `prisma` singleton and `@/lib/auth/session`'s getSessionUser
+// (backed by next-auth, which needs a real request-scoped context we don't have here). Mock both
+// so the handler runs against testPrisma with a session we control.
 vi.mock("@/db/client", () => ({ prisma: testPrisma }));
 
 let mockUser: SessionUser | null = null;
@@ -29,12 +29,8 @@ function getReq(query?: Record<string, string>) {
   return new NextRequest(`http://localhost/api/users${qs}`, { method: "GET" });
 }
 
-async function seedTwoCompanies() {
-  const ts = `users-route-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-  const a = await testPrisma.company.create({ data: { name: "A", slug: `a-${ts}` } });
-  const b = await testPrisma.company.create({ data: { name: "B", slug: `b-${ts}` } });
-  const ua = await testPrisma.user.create({ data: { companyId: a.id, email: `ua-${ts}@a.com`, passwordHash: "x", name: "UA", role: "COMPANY_ADMIN" } });
-  return { a, b, ua };
+function creds(role: "COMPANY_ADMIN" | "MEMBER" | "PARTNER_VIEWER") {
+  return { name: "New Person", email: `${uniq("rt-")}@test.local`, password: "pw123456", role };
 }
 
 describe("POST /api/users", () => {
@@ -44,75 +40,102 @@ describe("POST /api/users", () => {
   });
   afterAll(() => testPrisma.$disconnect());
 
-  it("SUPER_ADMIN creates a MEMBER in a named company", async () => {
-    const { a } = await seedTwoCompanies();
-    mockUser = { id: "super-1", companyId: null, role: "SUPER_ADMIN" };
-    const res = await POST(postReq({
-      name: "New Manager", email: `sam-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER", companyId: a.id,
-    }));
+  it("SUPER_ADMIN creates a MEMBER in a named team", async () => {
+    const team = await makeTeam();
+    mockUser = su(await makeUser("SUPER_ADMIN"));
+    const res = await POST(postReq({ ...creds("MEMBER"), teamId: team.id }));
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.role).toBe("MEMBER");
-    const stored = await testPrisma.user.findUnique({ where: { id: body.id } });
-    expect(stored?.companyId).toBe(a.id);
+    expect(body.teamId).toBe(team.id);
+    const stored = await testPrisma.user.findUniqueOrThrow({ where: { id: body.id } });
+    expect(stored.companyId).toBe(team.companyId);
   });
 
-  it("SUPER_ADMIN without companyId gets 400", async () => {
-    mockUser = { id: "super-2", companyId: null, role: "SUPER_ADMIN" };
-    const res = await POST(postReq({
-      name: "X", email: `sam2-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER",
-    }));
-    expect(res.status).toBe(400);
-  });
-
-  it("SUPER_ADMIN with a nonexistent companyId gets 404 or 400", async () => {
-    mockUser = { id: "super-3", companyId: null, role: "SUPER_ADMIN" };
-    const res = await POST(postReq({
-      name: "X", email: `sam3-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER", companyId: "does-not-exist",
-    }));
-    expect([400, 404]).toContain(res.status);
-  });
-
-  it("COMPANY_ADMIN still creates a user in their own company", async () => {
-    const { a, ua } = await seedTwoCompanies();
-    mockUser = { id: ua.id, companyId: a.id, role: "COMPANY_ADMIN" };
-    const res = await POST(postReq({
-      name: "Own Member", email: `own-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER",
-    }));
+  it("SUPER_ADMIN creates a team admin for a named team", async () => {
+    const team = await makeTeam();
+    mockUser = su(await makeUser("SUPER_ADMIN"));
+    const res = await POST(postReq({ ...creds("COMPANY_ADMIN"), teamId: team.id }));
     expect(res.status).toBe(201);
-    const body = await res.json();
-    const stored = await testPrisma.user.findUnique({ where: { id: body.id } });
-    expect(stored?.companyId).toBe(a.id);
+    expect((await res.json()).role).toBe("COMPANY_ADMIN");
   });
 
-  it("COMPANY_ADMIN passing another company's id gets 400 (no misleading success)", async () => {
-    const { a, b, ua } = await seedTwoCompanies();
-    mockUser = { id: ua.id, companyId: a.id, role: "COMPANY_ADMIN" };
-    const res = await POST(postReq({
-      name: "Sneaky", email: `sneaky-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER", companyId: b.id,
-    }));
+  it("SUPER_ADMIN without a teamId gets 400", async () => {
+    await makeTeam();
+    mockUser = su(await makeUser("SUPER_ADMIN"));
+    const res = await POST(postReq(creds("MEMBER")));
     expect(res.status).toBe(400);
   });
 
-  it("MEMBER is forbidden from creating users", async () => {
-    const { a } = await seedTwoCompanies();
-    const member = await testPrisma.user.create({ data: { companyId: a.id, email: `mem-${Date.now()}@a.com`, passwordHash: "x", name: "Mem", role: "MEMBER" } });
-    mockUser = { id: member.id, companyId: a.id, role: "MEMBER" };
-    const res = await POST(postReq({
-      name: "X", email: `blocked-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER",
-    }));
+  it("SUPER_ADMIN naming a nonexistent team gets 404", async () => {
+    mockUser = su(await makeUser("SUPER_ADMIN"));
+    const res = await POST(postReq({ ...creds("MEMBER"), teamId: "does-not-exist" }));
+    expect(res.status).toBe(404);
+  });
+
+  it("a team admin creates a MEMBER in their own team without naming it", async () => {
+    const { team, suAdmin } = await makeTeamWithUsers();
+    mockUser = suAdmin;
+    const res = await POST(postReq(creds("MEMBER")));
+    expect(res.status).toBe(201);
+    const stored = await testPrisma.user.findUniqueOrThrow({ where: { id: (await res.json()).id } });
+    expect(stored.teamId).toBe(team.id);
+  });
+
+  it("a team admin naming ANOTHER team gets 400 and creates nothing", async () => {
+    const { team, suAdmin } = await makeTeamWithUsers();
+    const other = await makeTeam({ companyId: team.companyId });
+    mockUser = suAdmin;
+    const res = await POST(postReq({ ...creds("MEMBER"), teamId: other.id }));
+    expect(res.status).toBe(400);
+    expect(await testPrisma.user.count({ where: { teamId: other.id } })).toBe(0);
+  });
+
+  it("a team admin cannot create another team admin (403)", async () => {
+    const { suAdmin } = await makeTeamWithUsers();
+    mockUser = suAdmin;
+    const res = await POST(postReq(creds("COMPANY_ADMIN")));
     expect(res.status).toBe(403);
   });
 
-  it("PARTNER_VIEWER is forbidden from creating users", async () => {
-    const { a, ua } = await seedTwoCompanies();
-    const account = await testPrisma.account.create({ data: { companyId: a.id, name: "Acc", accountManagerId: ua.id } });
-    const partner = await testPrisma.user.create({ data: { companyId: a.id, email: `pv-${Date.now()}@a.com`, passwordHash: "x", name: "PV", role: "PARTNER_VIEWER", accountId: account.id } });
-    mockUser = { id: partner.id, companyId: a.id, role: "PARTNER_VIEWER", accountId: account.id };
-    const res = await POST(postReq({
-      name: "X", email: `blocked2-${Date.now()}@a.com`, password: "pw123456", role: "MEMBER",
-    }));
+  it("SUPER_ADMIN is not an accepted role in the body (400)", async () => {
+    const team = await makeTeam();
+    mockUser = su(await makeUser("SUPER_ADMIN"));
+    const res = await POST(postReq({ ...creds("MEMBER"), role: "SUPER_ADMIN", teamId: team.id }));
+    expect(res.status).toBe(400);
+  });
+
+  it("a MEMBER is forbidden from creating users", async () => {
+    const { suMember } = await makeTeamWithUsers();
+    mockUser = suMember;
+    const res = await POST(postReq(creds("MEMBER")));
     expect(res.status).toBe(403);
+  });
+
+  it("a PARTNER_VIEWER is forbidden from creating users", async () => {
+    const { team, admin } = await makeTeamWithUsers();
+    const name = uniq("Bldg ");
+    const account = await testPrisma.account.create({
+      data: {
+        companyId: team.companyId,
+        teamId: team.id,
+        name,
+        buildingKey: buildingKey(name),
+        accountManagerId: admin.id,
+      },
+    });
+    const partner = await makeUser("PARTNER_VIEWER", team, { accountId: account.id });
+    mockUser = su(partner);
+    const res = await POST(postReq(creds("MEMBER")));
+    expect(res.status).toBe(403);
+  });
+
+  it("a suspended company gets no new logins (400)", async () => {
+    const { team, suAdmin } = await makeTeamWithUsers();
+    await testPrisma.company.update({ where: { id: team.companyId }, data: { status: "SUSPENDED" } });
+    mockUser = suAdmin;
+    const res = await POST(postReq(creds("MEMBER")));
+    expect(res.status).toBe(400);
   });
 });
 
@@ -123,49 +146,53 @@ describe("GET /api/users", () => {
   });
   afterAll(() => testPrisma.$disconnect());
 
-  it("COMPANY_ADMIN lists only their own company's users", async () => {
-    const { a, ua } = await seedTwoCompanies();
-    mockUser = { id: ua.id, companyId: a.id, role: "COMPANY_ADMIN" };
+  it("a team admin lists only their own team", async () => {
+    const mine = await makeTeamWithUsers();
+    const theirs = await makeTeamWithUsers({ companyId: mine.team.companyId });
+    mockUser = mine.suAdmin;
     const res = await GET(getReq());
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.map((u: { email: string }) => u.email)).toEqual([ua.email]);
+    const emails = (await res.json()).map((u: { email: string }) => u.email).sort();
+    expect(emails).toEqual([mine.admin.email, mine.member.email].sort());
+    expect(emails).not.toContain(theirs.member.email);
   });
 
-  it("COMPANY_ADMIN passing another company's id gets 400 (cannot list across tenants)", async () => {
-    const { a, b, ua } = await seedTwoCompanies();
-    mockUser = { id: ua.id, companyId: a.id, role: "COMPANY_ADMIN" };
-    const res = await GET(getReq({ companyId: b.id }));
-    expect(res.status).toBe(400);
-  });
-
-  it("COMPANY_ADMIN passing their OWN companyId still succeeds", async () => {
-    const { a, ua } = await seedTwoCompanies();
-    mockUser = { id: ua.id, companyId: a.id, role: "COMPANY_ADMIN" };
-    const res = await GET(getReq({ companyId: a.id }));
-    expect(res.status).toBe(200);
-  });
-
-  it("SUPER_ADMIN lists a named company's users", async () => {
-    const { a, ua } = await seedTwoCompanies();
-    mockUser = { id: "super-1", companyId: null, role: "SUPER_ADMIN" };
-    const res = await GET(getReq({ companyId: a.id }));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.map((u: { email: string }) => u.email)).toEqual([ua.email]);
-  });
-
-  it("SUPER_ADMIN without companyId gets 400", async () => {
-    mockUser = { id: "super-2", companyId: null, role: "SUPER_ADMIN" };
-    const res = await GET(getReq());
-    expect(res.status).toBe(400);
-  });
-
-  it("MEMBER is forbidden from listing users", async () => {
-    const { a } = await seedTwoCompanies();
-    const member = await testPrisma.user.create({ data: { companyId: a.id, email: `mem-get-${Date.now()}@a.com`, passwordHash: "x", name: "Mem", role: "MEMBER" } });
-    mockUser = { id: member.id, companyId: a.id, role: "MEMBER" };
-    const res = await GET(getReq());
+  it("a team admin naming another team gets 403, not that team's users", async () => {
+    const mine = await makeTeamWithUsers();
+    const theirs = await makeTeamWithUsers({ companyId: mine.team.companyId });
+    mockUser = mine.suAdmin;
+    const res = await GET(getReq({ teamId: theirs.team.id }));
     expect(res.status).toBe(403);
+  });
+
+  it("a team admin naming their OWN team still succeeds", async () => {
+    const mine = await makeTeamWithUsers();
+    mockUser = mine.suAdmin;
+    const res = await GET(getReq({ teamId: mine.team.id }));
+    expect(res.status).toBe(200);
+  });
+
+  it("SUPER_ADMIN lists everyone, and may filter by team", async () => {
+    const mine = await makeTeamWithUsers();
+    const theirs = await makeTeamWithUsers({ companyId: mine.team.companyId });
+    mockUser = su(await makeUser("SUPER_ADMIN"));
+    const all = await (await GET(getReq())).json();
+    expect(all.map((u: { email: string }) => u.email)).toContain(theirs.admin.email);
+    const filtered = await (await GET(getReq({ teamId: mine.team.id }))).json();
+    expect(filtered.map((u: { email: string }) => u.email).sort()).toEqual(
+      [mine.admin.email, mine.member.email].sort(),
+    );
+  });
+
+  it("a MEMBER is forbidden from listing users", async () => {
+    const { suMember } = await makeTeamWithUsers();
+    mockUser = suMember;
+    expect((await GET(getReq())).status).toBe(403);
+  });
+
+  it("an unauthenticated request is 401", async () => {
+    mockUser = null;
+    expect((await GET(getReq())).status).toBe(401);
+    expect((await POST(postReq(creds("MEMBER")))).status).toBe(401);
   });
 });

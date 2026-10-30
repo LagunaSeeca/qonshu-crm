@@ -3,9 +3,9 @@ import Link from "next/link";
 import { Settings2 } from "lucide-react";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
-import { getTenantContext } from "@/lib/tenant/context";
+import { isAdmin } from "@/lib/auth/guards";
 import { listAccounts } from "@/lib/tenant/accounts";
-import { listUsers } from "@/lib/tenant/users";
+import { loadOwnerOptions, loadTeams } from "../_lib/pickers";
 import { AccountCreate } from "./AccountCreate";
 import { AccountTable, type AccountRow } from "./AccountTable";
 import { Input } from "@/components/ui/input";
@@ -14,15 +14,21 @@ import { PageHeader } from "@/components/PageHeader";
 export default async function AccountsPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const user = await getSessionUser();
   if (!user) redirect("/login");
-  const ctx = getTenantContext(user);
   const sp = await searchParams;
 
-  const [accounts, members] = await Promise.all([
+  const teams = await loadTeams(user);
+  const [accounts, owners] = await Promise.all([
     listAccounts(prisma, user, { q: sp.q }),
-    listUsers(prisma, ctx),
+    loadOwnerOptions(user, teams),
   ]);
 
-  const userMap = Object.fromEntries(members.map((u) => [u.id, u.name ?? u.email]));
+  // Managers can be people the viewer cannot assign to (deactivated, or another team's for the
+  // owner), so table names are looked up directly rather than taken from the picker list.
+  const managerIds = [...new Set(accounts.map((a) => a.accountManagerId).filter((x): x is string => !!x))];
+  const managers = managerIds.length
+    ? await prisma.user.findMany({ where: { id: { in: managerIds } }, select: { id: true, name: true, email: true } })
+    : [];
+  const userMap = Object.fromEntries(managers.map((u) => [u.id, u.name ?? u.email]));
 
   const rows: AccountRow[] = accounts.map((a) => ({
     id: a.id,
@@ -34,7 +40,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Accounts" subtitle="All accounts in your organization" />
+      <PageHeader title="Accounts" subtitle="Buildings you manage" />
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
@@ -57,7 +63,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
 
         {/* New Account button */}
         <div className="ml-auto flex items-center gap-3">
-          {user.role === "COMPANY_ADMIN" && (
+          {isAdmin(user) && (
             <Link
               href="/accounts/fields"
               className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-input bg-muted text-sm font-medium hover:bg-muted/70 transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring"
@@ -66,7 +72,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
               Custom fields
             </Link>
           )}
-          <AccountCreate members={members.map((m) => ({ id: m.id, name: m.name, email: m.email }))} isAdmin={user.role === "COMPANY_ADMIN"} />
+          <AccountCreate owners={owners} currentUserId={user.id} role={user.role} />
         </div>
       </div>
 

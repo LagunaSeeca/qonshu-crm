@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import type { SessionUser } from "@/lib/auth/guards";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import type { PartnerListResponse } from "@/lib/partner-api/schema";
@@ -23,10 +24,10 @@ import { GET } from "./route";
 // SUPER_ADMIN is the ONLY role allowed here: the partner namespace is shared across every
 // tenant, so this list names other companies' complexes and linking to one exposes that
 // partner's debt/payments/unit owners.
-const SUPER: SessionUser = { id: "su", companyId: null, role: "SUPER_ADMIN" };
-const ADMIN: SessionUser = { id: "u1", companyId: "co1", role: "COMPANY_ADMIN" };
-const MEMBER: SessionUser = { id: "u2", companyId: "co1", role: "MEMBER" };
-const PARTNER_VIEWER: SessionUser = { id: "u3", companyId: "co1", role: "PARTNER_VIEWER", accountId: "acc1" };
+const SUPER: SessionUser = { id: "su", companyId: null, teamId: null, role: "SUPER_ADMIN" };
+const ADMIN: SessionUser = { id: "u1", companyId: "co1", teamId: "t1", role: "COMPANY_ADMIN" };
+const MEMBER: SessionUser = { id: "u2", companyId: "co1", teamId: "t1", role: "MEMBER" };
+const PARTNER_VIEWER: SessionUser = { id: "u3", companyId: "co1", teamId: null, role: "PARTNER_VIEWER", accountId: "acc1" };
 
 function rawList(): PartnerListResponse {
   return {
@@ -39,12 +40,13 @@ function rawList(): PartnerListResponse {
 
 // Seeds an account (in its own company) already holding `partnerKey`.
 async function seedClaim(partnerKey: string, slug: string) {
-  const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
+  const team = await makeTeam({ name: slug });
+  const u = await makeUser("COMPANY_ADMIN", team);
   return testPrisma.account.create({
-    data: { companyId: c.id, name: "Claimer", accountManagerId: u.id, externalPartnerKey: partnerKey },
+    data: {
+      companyId: team.companyId, teamId: team.id, buildingKey: buildingKey("Claimer"),
+      name: "Claimer", accountManagerId: u.id, externalPartnerKey: partnerKey,
+    },
   });
 }
 

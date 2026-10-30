@@ -1,7 +1,7 @@
 import type { PrismaClient, Account } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
-import { getAccount } from "./accounts";
+import { getAccount, listAccounts } from "./accounts";
 import { getDashboardStats, type DashboardStats } from "./dashboard";
 import { listCompanySettlements } from "./settlements";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
@@ -135,7 +135,6 @@ export async function getReport(
   user: SessionUser,
   opts: { range: { from: Date; to: Date }; label: string; accountId?: string },
 ): Promise<Report> {
-  const companyId = user.companyId!;
   const scope: "ALL" | "PARTNER" = opts.accountId ? "PARTNER" : "ALL";
 
   // Access scoping is unchanged: PARTNER goes through the getAccount chokepoint (foreign id →
@@ -153,9 +152,8 @@ export async function getReport(
     // src/lib/platform/overview.ts. `id` breaks ties: equal updatedAt values would otherwise
     // hand the win to a different account run to run, moving rows between "counted" and
     // "duplicate partner" in the export for no reason.
-    accounts = await db.account.findMany({
-      where: { companyId }, orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
-    });
+    // Scoped (member = managed accounts, team admin = team) and ordered updatedAt desc, id asc.
+    accounts = await listAccounts(db, user);
   }
 
   // The Partner API takes plain YYYY-MM-DD bounds.

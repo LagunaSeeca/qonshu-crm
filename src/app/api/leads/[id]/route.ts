@@ -13,10 +13,17 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json(lead);
   } catch (e) { return errorResponse(e); }
 }
+// `companyName` is no longer nullable: it is the building name this lead claims, and a lead
+// without one has no claim. It may be CHANGED (which re-runs the claim guard in updateLead) but
+// not cleared.
+//
+// `ownerId` is still accepted here, but updateLead now rejects it for a MEMBER: handing a lead
+// to someone else is a team-admin action. Before, any member who could see a lead could PATCH
+// its owner — and under the team scope rules would then never see it again.
 const Patch = z.object({
   title: z.string().min(1).optional(), contactName: z.string().min(1).optional(),
   email: z.string().email().nullable().optional(), phone: z.string().nullable().optional(),
-  companyName: z.string().nullable().optional(), source: z.string().nullable().optional(),
+  companyName: z.string().trim().min(1).optional(), source: z.string().nullable().optional(),
   priority: z.enum(["LOW","MEDIUM","HIGH"]).optional(),
   ownerId: z.string().optional(), expectedCloseDate: z.string().datetime().nullable().optional(),
 });

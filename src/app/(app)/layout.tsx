@@ -17,8 +17,9 @@ function isPartnerAllowed(pathname: string): boolean {
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const sessionUser = await getSessionUser();
   if (!sessionUser) redirect("/login");
-  // Super Admin (no company) belongs in the platform area, not the tenant CRM.
-  if (!sessionUser.companyId) redirect("/platform");
+  // The owner (SUPER_ADMIN) now lives in this same app — there is no separate platform area. A
+  // login with no company has nothing to show here.
+  if (!sessionUser.companyId) redirect("/login");
 
   if (sessionUser.role === "PARTNER_VIEWER") {
     const pathname = (await headers()).get("x-pathname") ?? "";
@@ -31,6 +32,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <AppShell
       role={currentUser.role}
       companyName={currentUser.companyName}
+      teamName={currentUser.teamName}
       userName={currentUser.name}
       userEmail={currentUser.email}
     >

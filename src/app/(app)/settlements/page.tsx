@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Landmark, ArrowDownCircle, ArrowUpCircle } from "lucide-react";
 import { getSessionUser } from "@/lib/auth/session";
+import { isAdmin } from "@/lib/auth/guards";
 import { prisma } from "@/db/client";
 import { listCompanySettlements } from "@/lib/tenant/settlements";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,7 +32,7 @@ export default async function SettlementsPage() {
         title="Settlements"
         subtitle="Company-wide bank-balance and cash-transfer registry"
         action={
-          user.role === "COMPANY_ADMIN" && (
+          isAdmin(user) && (
             <AddSettlementEntry accounts={rows.map((r) => ({ id: r.accountId, name: r.accountName }))} />
           )
         }

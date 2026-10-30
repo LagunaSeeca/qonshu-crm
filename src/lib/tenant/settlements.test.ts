@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import { addSettlementEntry, getAccountSettlement, listCompanySettlements, deleteSettlementEntry } from "./settlements";
 import type { SessionUser } from "@/lib/auth/guards";
 
 async function setup(slug: string) {
-  const c = await testPrisma.company.create({ data: { name: "A", slug } });
-  const u = await testPrisma.user.create({ data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" } });
-  const acc = await testPrisma.account.create({ data: { companyId: c.id, name: "Partner", accountManagerId: u.id } });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
-  return { c, acc, user };
+  const team = await makeTeam({ name: slug });
+  const c = { id: team.companyId };
+  const u = await makeUser("COMPANY_ADMIN", team);
+  const acc = await testPrisma.account.create({ data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Partner"), name: "Partner", accountManagerId: u.id } });
+  const user: SessionUser = su(u);
+  return { c, acc, user, team };
 }
 
 describe("settlements", () => {

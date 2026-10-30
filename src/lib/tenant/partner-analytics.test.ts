@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import { getAccountAnalytics, listAccountPayments } from "./partner-analytics";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
@@ -19,21 +20,22 @@ const range = { from: new Date("2026-06-01T00:00:00Z"), to: new Date("2026-06-30
 // "Configured" now means only a partner NAME — the account goes live off the shared
 // PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
 async function seed(slug: string, opts?: { configured?: boolean }) {
-  const c = await testPrisma.company.create({ data: { name: "A", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "MEMBER" },
-  });
+  const team = await makeTeam({ name: slug });
+  const c = { id: team.companyId };
+  const u = await makeUser("MEMBER", team);
   const configured = opts?.configured ?? true;
   const acc = await testPrisma.account.create({
     data: {
       companyId: c.id,
+      teamId: team.id,
+      buildingKey: buildingKey("P"),
       name: "P",
       accountManagerId: u.id,
       ...(configured ? { externalPartnerKey: `${slug}-partner` } : {}),
     },
   });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "MEMBER" };
-  return { c, acc, user };
+  const user: SessionUser = su(u);
+  return { c, team, acc, user };
 }
 
 describe("partner analytics (live)", () => {
@@ -155,10 +157,12 @@ describe("partner analytics (live)", () => {
     });
 
     it("status 'unavailable' when the stored key fails to decrypt (tampered ciphertext), without calling the API", async () => {
-      const { c, user } = await seed("pa-tamper", { configured: false });
+      const { c, team, user } = await seed("pa-tamper", { configured: false });
       const acc = await testPrisma.account.create({
         data: {
           companyId: c.id,
+          teamId: team.id,
+          buildingKey: buildingKey("Tampered"),
           name: "Tampered",
           accountManagerId: user.id,
           externalPartnerKey: "tampered-partner",

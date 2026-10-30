@@ -63,24 +63,23 @@ export async function getCompanyAnalytics(
   range: { from: Date; to: Date },
   opts?: { accountId?: string },
 ) {
-  const companyId = user.companyId!;
-
   // Scope resolution — same chokepoint rules as before: PARTNER_VIEWER is pinned to their own
   // account (a sentinel that matches nothing when unset → fail closed); admin/member may pass
   // an optional single-account filter, validated through getAccount so a foreign id 404s
   // upstream instead of silently widening to company-wide.
-  let targetAccountId: string | null = null;
+  // Every branch resolves through a scope-aware reader (listAccounts / getAccount, both built on
+  // accountScopeWhere), so the fan-out below can only reach accounts the caller may see: a member
+  // their managed accounts, a team admin their team, a partner exactly their own account.
+  let accounts: Account[];
   if (user.role === "PARTNER_VIEWER") {
-    targetAccountId = user.accountId ?? "__no_access__";
+    accounts = await listAccounts(db, user); // pinned to user.accountId; empty when unset
   } else if (opts?.accountId) {
     const acc = await getAccount(db, user, opts.accountId);
     if (!acc) throw new NotFoundError("account not in scope");
-    targetAccountId = opts.accountId;
+    accounts = [acc];
+  } else {
+    accounts = await listAccounts(db, user);
   }
-
-  const accounts = targetAccountId
-    ? await db.account.findMany({ where: { id: targetAccountId, companyId } })
-    : await listAccounts(db, user);
 
   // The Partner API takes plain YYYY-MM-DD bounds.
   const dateFrom = range.from.toISOString().slice(0, 10);

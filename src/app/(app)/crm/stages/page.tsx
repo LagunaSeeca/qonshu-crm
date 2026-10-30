@@ -1,24 +1,33 @@
 import { redirect } from "next/navigation";
 import { getSessionUser } from "@/lib/auth/session";
+import { isAdmin } from "@/lib/auth/guards";
 import { prisma } from "@/db/client";
-import { getTenantContext } from "@/lib/tenant/context";
 import { listStages } from "@/lib/tenant/stages";
-import { getCompanySettings } from "@/lib/tenant/company";
+import { TeamSwitcher, TEMPLATE_VALUE } from "@/components/TeamSwitcher";
 import { StageSettings } from "./StageSettings";
+import { loadTeams, resolveViewScope } from "../../_lib/pickers";
 
-export default async function StageSettingsPage() {
+// Admins edit their OWN team's stages. The owner can pick any team, plus the "Default template"
+// that new teams are seeded from — editing the template never touches existing teams.
+export default async function StageSettingsPage({ searchParams }: { searchParams: Promise<{ teamId?: string }> }) {
   const user = await getSessionUser();
   if (!user) redirect("/login");
-  if (user.role !== "COMPANY_ADMIN") redirect("/crm");
+  if (!isAdmin(user)) redirect("/crm");
+  const sp = await searchParams;
 
-  const ctx = getTenantContext(user);
-  const [stages, { shareAllLeads }] = await Promise.all([
-    listStages(prisma, ctx),
-    getCompanySettings(prisma, ctx),
-  ]);
+  const isSuper = user.role === "SUPER_ADMIN";
+  const teams = await loadTeams(user);
+  const { scope, choice } = await resolveViewScope(user, teams, sp.teamId, true);
+  const stages = scope ? await listStages(prisma, scope) : [];
+
+  const isTemplate = choice.kind === "template";
+  // Present-but-empty `?teamId=` is how the stages API says "the org template".
+  const scopeQuery = !isSuper ? "" : isTemplate ? "?teamId=" : choice.kind === "team" ? `?teamId=${encodeURIComponent(choice.teamId)}` : "";
+  const switcherValue = isTemplate ? TEMPLATE_VALUE : choice.kind === "team" ? choice.teamId : "";
 
   return (
     <StageSettings
+      key={scopeQuery}
       initialStages={stages.map((s) => ({
         id: s.id,
         name: s.name,
@@ -26,7 +35,9 @@ export default async function StageSettingsPage() {
         probability: s.probability,
         order: s.order,
       }))}
-      shareAllLeads={shareAllLeads}
+      scopeQuery={scopeQuery}
+      isTemplate={isTemplate}
+      switcher={isSuper ? <TeamSwitcher teams={teams} value={switcherValue} includeTemplate /> : undefined}
     />
   );
 }

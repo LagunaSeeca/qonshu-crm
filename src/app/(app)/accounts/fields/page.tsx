@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getSessionUser } from "@/lib/auth/session";
+import { isAdmin } from "@/lib/auth/guards";
 import { prisma } from "@/db/client";
 import { listFieldDefs } from "@/lib/tenant/account-fields";
 import { FieldSettings } from "./FieldSettings";
@@ -7,7 +8,7 @@ import { FieldSettings } from "./FieldSettings";
 export default async function AccountFieldsPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
-  if (user.role !== "COMPANY_ADMIN") redirect("/accounts");
+  if (!isAdmin(user)) redirect("/accounts");
 
   const defs = await listFieldDefs(prisma, user);
 

@@ -32,11 +32,13 @@ type PartnerListState =
 
 const ERROR_MESSAGES: Record<string, string> = {
   partner_already_claimed: "That partner is already linked to another account.",
-  partner_allowlist_mismatch:
-    "That complex is granted to a different company in the allowlist. Change the grant first.",
+  partner_name_held:
+    "Another lead or account already claims that building. Reassign that record first.",
+  building_claimed:
+    "Another lead or account already claims that building. Reassign that record first.",
   unknown_partner: "That partner is no longer in the live list — refresh and try again.",
   partner_api_unavailable: "The partner API is unreachable, so the name can't be verified.",
-  forbidden: "Only a platform admin can change partner links.",
+  forbidden: "Only the owner can change partner links.",
   not_found: "That account no longer exists.",
 };
 
@@ -88,7 +90,14 @@ export function PartnerAssign({ accounts }: { accounts: AccountOption[] }) {
       });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
-        toast.error(ERROR_MESSAGES[body?.error] ?? "Failed to update the partner link");
+        // building_claimed / partner_name_held carry the server's own message, which names the
+        // record holding the building; show it verbatim. The assignment form stays as it is so the
+        // admin can pick a different partner.
+        toast.error(
+          (body?.error === "building_claimed" || body?.error === "partner_name_held") && body?.message
+            ? body.message
+            : (ERROR_MESSAGES[body?.error] ?? body?.message ?? "Failed to update the partner link"),
+        );
         return;
       }
       toast.success(nextKey ? `Linked to "${nextKey}"` : "Partner link cleared");
@@ -114,15 +123,15 @@ export function PartnerAssign({ accounts }: { accounts: AccountOption[] }) {
       <CardHeader className="pb-4">
         <CardTitle>Partner link</CardTitle>
         <CardDescription>
-          The external partner namespace is shared across every company, so linking an account to
-          a partner is a platform-admin action. Company admins see the link read-only.
+          The external partner namespace is shared across every team, so linking an account to
+          a partner is an owner-only action. Team admins and members see the link read-only.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="space-y-1.5">
           <Label htmlFor="pa-account">Account</Label>
           {accounts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No accounts on the platform yet.</p>
+            <p className="text-sm text-muted-foreground">No accounts yet.</p>
           ) : (
             <Select
               items={accountItems}

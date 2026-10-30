@@ -3,6 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { mkdtempSync } from "fs";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su as toSession } from "@/test/fixtures";
 import { createAccount } from "./accounts";
 import { addAccountActivity, listAccountActivities } from "./account-activities";
 import { addAccountTask, toggleAccountTask, listAccountTasks } from "./account-tasks";
@@ -13,9 +14,9 @@ import { ForbiddenError, type SessionUser } from "@/lib/auth/guards";
 beforeAll(() => { process.env.UPLOADS_DIR = mkdtempSync(join(tmpdir(), "qonshu-acc-")); });
 
 async function acct(slug: string) {
-  const c = await testPrisma.company.create({ data: { name: "A", slug } });
-  const u = await testPrisma.user.create({ data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "MEMBER" } });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "MEMBER" };
+  const team = await makeTeam({ name: slug });
+  const u = await makeUser("MEMBER", team);
+  const user: SessionUser = toSession(u);
   return { user, acc: await createAccount(testPrisma, user, { name: "P" }) };
 }
 
@@ -92,15 +93,25 @@ describe("the partner_link: outcome prefix is reserved from tenant writers", () 
     expect(row.outcome).toBe("no answer");
   });
 
-  it("lets a SUPER_ADMIN read the trail they write — they have no companyId to scope by", async () => {
+  // CHANGED ON PURPOSE (teams refactor): the partner-link audit trail no longer lives in
+  // AccountActivity — it moved to the durable PartnerLinkAudit table. So a SUPER_ADMIN reading an
+  // account's timeline sees the tenant's own rows only, and the audit row is read from its own
+  // table. The old assertion (timeline === ["partner_link:assign"]) described the retired storage.
+  it("lets a SUPER_ADMIN read a tenant timeline; the audit trail is in PartnerLinkAudit, not in it", async () => {
     const A = await acct("a-su-read");
+    await addAccountActivity(testPrisma, A.user, A.acc.id, { kind: "NOTE", body: "tenant note" });
+    const admin = await makeUser("SUPER_ADMIN");
     await recordPartnerLinkChange(testPrisma, {
-      companyId: A.user.companyId!, accountId: A.acc.id, authorId: "su",
+      companyId: A.acc.companyId, accountId: A.acc.id, accountName: A.acc.name, actorId: admin.id,
       action: "assign", partnerName: "Komplex B",
     });
-    const su: SessionUser = { id: "su", companyId: null, role: "SUPER_ADMIN" };
+    const su: SessionUser = toSession(admin);
     const rows = await listAccountActivities(testPrisma, su, A.acc.id);
-    expect(rows.map((r) => r.outcome)).toEqual(["partner_link:assign"]);
+    expect(rows.map((r) => r.body)).toEqual(["tenant note"]);
+    expect(rows.every((r) => !r.outcome?.startsWith("partner_link:"))).toBe(true);
+    const audit = await testPrisma.partnerLinkAudit.findMany({ where: { accountId: A.acc.id } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ action: "assign", partnerName: "Komplex B", actorId: admin.id });
     // ...and an account that doesn't exist is an empty list, not a throw.
     expect(await listAccountActivities(testPrisma, su, "no-such-account")).toEqual([]);
   });

@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { can, assertRole, ForbiddenError, type SessionUser } from "./guards";
 
-const su: SessionUser = { id: "1", companyId: null, role: "SUPER_ADMIN" };
-const admin: SessionUser = { id: "2", companyId: "c1", role: "COMPANY_ADMIN" };
-const member: SessionUser = { id: "3", companyId: "c1", role: "MEMBER" };
+const su: SessionUser = { id: "1", companyId: null, teamId: null, role: "SUPER_ADMIN" };
+const admin: SessionUser = { id: "2", companyId: "c1", teamId: "t1", role: "COMPANY_ADMIN" };
+const member: SessionUser = { id: "3", companyId: "c1", teamId: "t1", role: "MEMBER" };
 
 describe("guards", () => {
   it("super admin manages companies, not company data", () => {

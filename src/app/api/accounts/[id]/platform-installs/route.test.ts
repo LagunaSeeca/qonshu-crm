@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import type { SessionUser } from "@/lib/auth/guards";
 
 vi.mock("@/db/client", () => ({ prisma: testPrisma }));
@@ -21,12 +22,13 @@ function postReq(body: unknown) {
 }
 
 async function setup(slug: string, role: SessionUser["role"] = "COMPANY_ADMIN") {
-  const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role },
+  const team = await makeTeam({ name: slug });
+  const c = { id: team.companyId };
+  const u = await makeUser(role, team);
+  const acc = await testPrisma.account.create({
+    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Partner"), name: "Partner", accountManagerId: u.id },
   });
-  const acc = await testPrisma.account.create({ data: { companyId: c.id, name: "Partner", accountManagerId: u.id } });
-  const user: SessionUser = { id: u.id, companyId: c.id, role };
+  const user: SessionUser = su(u);
   return { c, u, acc, user };
 }
 

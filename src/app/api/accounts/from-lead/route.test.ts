@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
-import { seedDefaultStages, listStages } from "@/lib/tenant/stages";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
+import { seedTeamStages, listStages } from "@/lib/tenant/stages";
 import { createLead } from "@/lib/tenant/leads";
 import { encryptSecret } from "@/lib/crypto/secret";
 import type { SessionUser } from "@/lib/auth/guards";
@@ -34,29 +35,29 @@ describe("POST /api/accounts/from-lead", () => {
   // Seeds a company with a lead already sitting in Won (created straight into the stage, so no
   // auto-conversion has run yet) and returns roles bound to that tenant.
   async function seed(slug: string) {
-    const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-    await seedDefaultStages(testPrisma, c.id);
-    const stages = await listStages(testPrisma, { companyId: c.id });
+    const team = await makeTeam({ name: slug });
+    const c = { id: team.companyId };
+    await seedTeamStages(testPrisma, c.id, team.id);
+    const stages = await listStages(testPrisma, { companyId: c.id, teamId: team.id });
     const won = stages.find((s) => s.type === "WON")!;
-    const member = await testPrisma.user.create({
-      data: { companyId: c.id, email: `m-${slug}@a.com`, passwordHash: "x", name: "M", role: "MEMBER" },
-    });
-    const memberUser: SessionUser = { id: member.id, companyId: c.id, role: "MEMBER" };
+    const member = await makeUser("MEMBER", team);
+    const memberUser: SessionUser = su(member);
     const lead = await createLead(testPrisma, memberUser, {
       title: "Deal", contactName: "C", companyName: "WonCo", stageId: won.id,
     });
-    return { c, lead, memberUser };
+    return { c, team, lead, memberUser };
   }
 
   it("rejects a PARTNER_VIEWER with 403 and creates nothing", async () => {
-    const { c, lead } = await seed("fl-viewer");
+    const { c, team, lead } = await seed("fl-viewer");
     const acc = await testPrisma.account.create({
-      data: { companyId: c.id, name: "Their Account", accountManagerId: (await testPrisma.user.findFirstOrThrow({ where: { companyId: c.id } })).id },
+      data: {
+        companyId: c.id, teamId: team.id, buildingKey: buildingKey("Their Account"), name: "Their Account",
+        accountManagerId: (await testPrisma.user.findFirstOrThrow({ where: { companyId: c.id } })).id,
+      },
     });
-    const viewer = await testPrisma.user.create({
-      data: { companyId: c.id, email: "pv@a.com", passwordHash: "x", name: "PV", role: "PARTNER_VIEWER", accountId: acc.id },
-    });
-    mockUser = { id: viewer.id, companyId: c.id, role: "PARTNER_VIEWER", accountId: acc.id };
+    const viewer = await makeUser("PARTNER_VIEWER", team, { accountId: acc.id });
+    mockUser = su(viewer);
 
     const res = await POST(post(lead.id));
 
@@ -91,13 +92,32 @@ describe("POST /api/accounts/from-lead", () => {
   });
 
   it("lets a COMPANY_ADMIN convert", async () => {
-    const { c, lead } = await seed("fl-admin");
-    const admin = await testPrisma.user.create({
-      data: { companyId: c.id, email: "adm@a.com", passwordHash: "x", name: "A", role: "COMPANY_ADMIN" },
-    });
-    mockUser = { id: admin.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const { team, lead } = await seed("fl-admin");
+    mockUser = su(await makeUser("COMPANY_ADMIN", team));
     const res = await POST(post(lead.id));
     expect(res.status).toBe(201);
+    // The account lands in the LEAD's team (the building belongs to the team that won it).
+    expect((await res.json()).teamId).toBe(team.id);
+  });
+
+  // NEW (teams refactor): conversion goes through leadScopeWhere, so a colleague's lead is not
+  // reachable by a MEMBER on the same team, nor by the admin of a different team in the SAME
+  // company. Both look exactly like a lead that does not exist (404), and create nothing.
+  it("404s for a teammate MEMBER who does not own the lead", async () => {
+    const { team, lead } = await seed("fl-teammate");
+    mockUser = su(await makeUser("MEMBER", team));
+    const res = await POST(post(lead.id));
+    expect(res.status).toBe(404);
+    expect(await testPrisma.account.count({ where: { sourceLeadId: lead.id } })).toBe(0);
+  });
+
+  it("404s for the admin of a DIFFERENT team in the same company", async () => {
+    const { c, lead } = await seed("fl-otherteam");
+    const other = await makeTeam({ companyId: c.id, name: "other" });
+    mockUser = su(await makeUser("COMPANY_ADMIN", other));
+    const res = await POST(post(lead.id));
+    expect(res.status).toBe(404);
+    expect(await testPrisma.account.count({ where: { sourceLeadId: lead.id } })).toBe(0);
   });
 
   it("404s on a lead outside the caller's tenant", async () => {
@@ -146,13 +166,14 @@ describe("POST /api/accounts/from-lead", () => {
     });
 
     it("200 (idempotent reuse): a pre-existing row's dormant override key never reaches the client", async () => {
-      const { c, lead, memberUser } = await seed("fl-mask-existing");
+      const { c, team, lead, memberUser } = await seed("fl-mask-existing");
       const plaintext = "sk_live_fromlead987";
       const ciphertext = encryptSecret(plaintext);
       // The lead was already converted, and that account carries a dormant per-account key.
       await testPrisma.account.create({
         data: {
-          companyId: c.id, name: "Already Converted", accountManagerId: memberUser.id,
+          companyId: c.id, teamId: team.id, buildingKey: buildingKey("Already Converted"),
+          name: "Already Converted", accountManagerId: memberUser.id,
           sourceLeadId: lead.id, externalPartnerKey: "partner-fl",
           externalApiKeyEnc: ciphertext, externalApiKeyLast4: "9876",
         },

@@ -9,12 +9,14 @@ import {
   Building2,
   BarChart3,
   Briefcase,
-  Building,
+  UsersRound,
+  Link2,
   Landmark,
   FileBarChart,
   ListTodo,
   ReceiptText,
 } from "lucide-react";
+import { isAdmin } from "@/lib/auth/guards";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -37,19 +39,36 @@ const PARTNER_NAV_HREFS = new Set(["/analytics", "/settlements", "/service-fees"
 interface SidebarProps {
   role: Role;
   companyName?: string | null;
+  /** The viewer's team. Shown in the footer: with one company, the team is what tells people which book they are in. */
+  teamName?: string | null;
   /** Called when a nav link is activated — used to close the mobile drawer on navigation. */
   onNavigate?: () => void;
 }
 
-export function Sidebar({ role, companyName, onNavigate }: SidebarProps) {
+export function Sidebar({ role, companyName, teamName, onNavigate }: SidebarProps) {
   const pathname = usePathname();
   const nav = role === "PARTNER_VIEWER" ? NAV.filter((item) => PARTNER_NAV_HREFS.has(item.href)) : NAV;
+
+  // Team admins and the owner administer users; only the owner manages teams and partner links.
+  // Built from the real role helper so the nav can never disagree with the server guards.
+  const adminUser = { id: "", companyId: null, teamId: null, role };
+  const adminNav = [
+    ...(isAdmin(adminUser) ? [{ href: "/users", label: "Users", icon: Users }] : []),
+    ...(role === "SUPER_ADMIN"
+      ? [
+          { href: "/teams", label: "Teams", icon: UsersRound },
+          { href: "/partner-links", label: "Partner links", icon: Link2 },
+        ]
+      : []),
+  ];
 
   function isActive(href: string) {
     if (!pathname) return false;
     if (href === "/dashboard") return pathname === "/dashboard";
     return pathname.startsWith(href);
   }
+
+  const footerLabel = teamName ?? companyName;
 
   return (
     <nav
@@ -89,62 +108,35 @@ export function Sidebar({ role, companyName, onNavigate }: SidebarProps) {
           </Link>
         ))}
 
-        {role === "COMPANY_ADMIN" && (
+        {adminNav.map(({ href, label, icon: Icon }) => (
           <Link
-            href="/users"
+            key={href}
+            href={href}
             onClick={onNavigate}
             className={cn(
               "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150 cursor-pointer",
-              isActive("/users")
+              isActive(href)
                 ? "bg-accent/10 text-accent border-l-2 border-accent pl-[10px]"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground"
             )}
           >
-            <Users
+            <Icon
               size={16}
-              className={cn(
-                "shrink-0",
-                isActive("/users") ? "text-accent" : "text-muted-foreground"
-              )}
+              className={cn("shrink-0", isActive(href) ? "text-accent" : "text-muted-foreground")}
               aria-hidden="true"
             />
-            Users
+            {label}
           </Link>
-        )}
-
-        {role === "SUPER_ADMIN" && (
-          <Link
-            href="/platform/companies"
-            onClick={onNavigate}
-            className={cn(
-              "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150 cursor-pointer",
-              isActive("/platform/companies")
-                ? "bg-accent/10 text-accent border-l-2 border-accent pl-[10px]"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground"
-            )}
-          >
-            <Building
-              size={16}
-              className={cn(
-                "shrink-0",
-                isActive("/platform/companies")
-                  ? "text-accent"
-                  : "text-muted-foreground"
-              )}
-              aria-hidden="true"
-            />
-            Companies
-          </Link>
-        )}
+        ))}
       </div>
 
       {/* Footer — company name + role chip */}
       {(companyName || role) && (
         <div className="p-3 border-t border-border">
           <div className="flex items-center gap-2 px-3 py-2">
-            {companyName && (
+            {footerLabel && (
               <span className="text-xs font-medium text-muted-foreground truncate flex-1">
-                {companyName}
+                {footerLabel}
               </span>
             )}
             <Badge
@@ -154,7 +146,7 @@ export function Sidebar({ role, companyName, onNavigate }: SidebarProps) {
               {role === "SUPER_ADMIN"
                 ? "Super Admin"
                 : role === "COMPANY_ADMIN"
-                  ? "Admin"
+                  ? "Team Admin"
                   : role === "PARTNER_VIEWER"
                     ? "Partner"
                     : "Member"}
