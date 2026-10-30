@@ -390,13 +390,19 @@ export function listAccounts(db: PrismaClient, user: SessionUser, opts?: { statu
   // for a team admin, the whole company for a super admin given a company, and exactly one id for
   // a PARTNER_VIEWER. The local `{ companyId }`-for-everyone copy this file used to carry was the
   // last place in the app where a member still saw the whole org.
-  const where: Prisma.AccountWhereInput = { ...accountScopeWhere(user) };
-  if (opts?.status) where.status = opts.status;
-  if (opts?.accountManagerId) where.accountManagerId = opts.accountManagerId;
-  if (opts?.q) where.OR = [
+  //
+  // Caller-supplied filters are AND-ed onto the scope, never assigned over it (same rule as
+  // leads.ts scopedWhere): `where.accountManagerId = x` would overwrite the `accountManagerId:
+  // user.id` pinned for a MEMBER. As an AND a filter can only narrow the scope.
+  const filters: Prisma.AccountWhereInput[] = [];
+  if (opts?.status) filters.push({ status: opts.status });
+  if (opts?.accountManagerId) filters.push({ accountManagerId: opts.accountManagerId });
+  if (opts?.q) filters.push({ OR: [
     { name: { contains: opts.q, mode: "insensitive" } },
     { industry: { contains: opts.q, mode: "insensitive" } },
-  ];
+  ] });
+  const scope = accountScopeWhere(user);
+  const where: Prisma.AccountWhereInput = filters.length > 0 ? { ...scope, AND: filters } : { ...scope };
   // `id` breaks ties: equal updatedAt values would otherwise order nondeterministically, and
   // the partner dedup in company-analytics.ts takes the FIRST account per partner off this list.
   return db.account.findMany({ where, orderBy: [{ updatedAt: "desc" }, { id: "asc" }] });
@@ -468,6 +474,21 @@ export async function updateAccount(db: PrismaClient, user: SessionUser, id: str
 
     if (reassigned && reassigned.teamId !== found.teamId) {
       await remapFieldValuesToTeam(tx as PrismaClient, found, reassigned.teamId, user);
+    }
+    // Any manager change (same team or not) hides the account from the old manager: drop their
+    // open task assignments, mirroring leads.ts clearUnseeableAssignees.
+    if (reassigned) {
+      const admins = await tx.user.findMany({
+        where: { companyId: found.companyId, teamId: reassigned.teamId, role: "COMPANY_ADMIN", status: "ACTIVE" },
+        select: { id: true },
+      });
+      await tx.accountTask.updateMany({
+        where: {
+          accountId: found.id, done: false,
+          assigneeId: { not: null, notIn: [reassigned.ownerId, ...admins.map((a) => a.id)] },
+        },
+        data: { assigneeId: null },
+      });
     }
 
     return tx.account.update({ where: { id }, data: {

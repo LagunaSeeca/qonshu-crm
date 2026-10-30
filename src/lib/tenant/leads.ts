@@ -208,6 +208,10 @@ export async function updateLead(
       update.ownerId = assigned.ownerId;
       if (assigned.teamId !== found.teamId) {
         await transferTeam(tx, found, assigned.teamId, assigned.ownerId, user, update);
+      } else {
+        // SAME-TEAM reassignment changes who can see the lead just as a transfer does: the old
+        // owner no longer can, so their open assigned tasks must not linger in My Work.
+        await clearUnseeableAssignees(tx, found, assigned.teamId, assigned.ownerId);
       }
     }
 

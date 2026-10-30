@@ -28,12 +28,22 @@ type FieldDef = {
 
 type Props = {
   initialDefs: FieldDef[];
+  /**
+   * Query string appended to every account-fields API call. A team admin leaves it empty (the
+   * server uses their own team); the owner passes `?teamId=<id>` for a team, or `?teamId=`
+   * (present but empty) for the org template.
+   */
+  scopeQuery?: string;
+  /** Owner only: a team picker rendered beside the title. */
+  switcher?: React.ReactNode;
+  /** True when editing the template, which only seeds teams created later. */
+  isTemplate?: boolean;
 };
 
 const FIELD_TYPES: FieldType[] = ["TEXT", "NUMBER", "CURRENCY", "DATE"];
 const FIELD_TYPE_LABELS: Record<string, string> = { TEXT: "Text", NUMBER: "Number", CURRENCY: "Currency", DATE: "Date" };
 
-export function FieldSettings({ initialDefs }: Props) {
+export function FieldSettings({ initialDefs, scopeQuery = "", switcher, isTemplate = false }: Props) {
   const router = useRouter();
   const [defs, setDefs] = useState<FieldDef[]>(initialDefs);
 
@@ -51,7 +61,7 @@ export function FieldSettings({ initialDefs }: Props) {
   async function saveEdit(def: FieldDef) {
     const patch = editing[def.id];
     if (!patch) return;
-    const res = await fetch(`/api/account-fields/${def.id}`, {
+    const res = await fetch(`/api/account-fields/${def.id}${scopeQuery}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(patch),
@@ -71,7 +81,7 @@ export function FieldSettings({ initialDefs }: Props) {
 
   async function handleDelete(id: string) {
     if (!confirm("Delete this field? All values stored for it will be removed.")) return;
-    const res = await fetch(`/api/account-fields/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/account-fields/${id}${scopeQuery}`, { method: "DELETE" });
     if (res.ok) {
       setDefs((prev) => prev.filter((d) => d.id !== id));
       toast.success("Field deleted.");
@@ -89,7 +99,7 @@ export function FieldSettings({ initialDefs }: Props) {
     if (swapIdx < 0 || swapIdx >= next.length) return;
     [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
     setDefs(next);
-    const res = await fetch("/api/account-fields/reorder", {
+    const res = await fetch(`/api/account-fields/reorder${scopeQuery}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ orderedIds: next.map((d) => d.id) }),
@@ -110,7 +120,7 @@ export function FieldSettings({ initialDefs }: Props) {
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setAdding(true);
-    const res = await fetch("/api/account-fields", {
+    const res = await fetch(`/api/account-fields${scopeQuery}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ label: newLabel, type: newType }),
@@ -134,7 +144,18 @@ export function FieldSettings({ initialDefs }: Props) {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
-      <PageHeader title="Custom Fields" subtitle="Define company-wide fields shown on every account." />
+      <PageHeader
+        title="Custom Fields"
+        subtitle={isTemplate ? "Default fields for newly created teams." : "Define fields shown on every account of this team."}
+        action={switcher}
+      />
+
+      {isTemplate && (
+        <p className="rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          You are editing the <span className="font-medium text-foreground">default template</span>.
+          Changes apply only to teams created later; existing teams keep their own fields.
+        </p>
+      )}
 
       {/* Fields card */}
       <Card>

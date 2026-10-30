@@ -13,10 +13,12 @@ import { getAccount } from "./accounts";
 // WHO EDITS WHAT:
 //   COMPANY_ADMIN  its own team's live definitions
 //   MEMBER         reads them (the write routes are admin-gated); never another team's
-//   SUPER_ADMIN    the TEMPLATE, and only the template — it has no team of its own to edit
+//   SUPER_ADMIN    the TEMPLATE and any team's set, but only by NAMING it (resolveFieldDefScope):
+//                  it has no team of its own, so there is nothing to default to
 //
-// Scoped reads and writes BOTH go through defScopeWhere, so "which set am I touching" is decided
-// once rather than per function.
+// Scoped reads and writes BOTH start from a FieldDefScope, so "which set am I touching" is decided
+// once rather than per function. The API routes resolve it with resolveFieldDefScope; callers that
+// only want the caller's own set use defScopeWhere.
 
 export type FieldDefScope = { companyId: string; teamId: string | null };
 
@@ -41,6 +43,55 @@ export function defScopeWhere(user: SessionUser): FieldDefScope {
   throw new ForbiddenError(`role ${user.role} has no field definition scope`);
 }
 
+export type FieldDefScopeRequest = {
+  // undefined = not named; null = the org template; string = that team.
+  teamId?: string | null;
+  // Only read for the template, where there is no team to derive the company from.
+  companyId?: string;
+};
+
+// The async counterpart to defScopeWhere for requests that may NAME a scope. Mirrors
+// resolveStageScope (./stages.ts) so both settings pages behave identically.
+export async function resolveFieldDefScope(
+  db: Pick<PrismaClient, "team">,
+  user: SessionUser,
+  requested: FieldDefScopeRequest = {},
+): Promise<FieldDefScope> {
+  if (user.role === "PARTNER_VIEWER") throw new ForbiddenError("partners cannot read field definitions");
+
+  if (user.role === "SUPER_ADMIN") {
+    // REQUIRED, not defaulted: a SUPER_ADMIN has no team, and guessing one would edit the wrong
+    // team's definitions.
+    if (requested.teamId === undefined) {
+      throw new ForbiddenError("a super admin must name the team (or ?teamId= for the org template)");
+    }
+    if (requested.teamId === null) {
+      const companyId = requested.companyId ?? user.companyId;
+      if (!companyId) throw new ForbiddenError("a super admin must name the company for the field template");
+      return { companyId, teamId: null };
+    }
+    const team = await db.team.findUnique({
+      where: { id: requested.teamId },
+      select: { id: true, companyId: true },
+    });
+    if (!team) throw new NotFoundError("team not found");
+    return { companyId: team.companyId, teamId: team.id };
+  }
+
+  if (user.role === "COMPANY_ADMIN" || user.role === "MEMBER") {
+    if (!user.companyId) throw new ForbiddenError(`no company context for ${user.role}`);
+    if (!user.teamId) throw new ForbiddenError(`${user.role} is not on a team`);
+    // The template seeds every future team; one team's admin must not reshape it.
+    if (requested.teamId === null) throw new ForbiddenError("the org field template is super-admin only");
+    if (requested.teamId !== undefined && requested.teamId !== user.teamId) {
+      throw new ForbiddenError("not your team");
+    }
+    return { companyId: user.companyId, teamId: user.teamId };
+  }
+
+  throw new ForbiddenError(`role ${user.role} has no field definition scope`);
+}
+
 // `@@unique([teamId, label])` does NOT police the template, because Postgres treats NULLs as
 // DISTINCT in a unique index — two rows with teamId NULL and the same label both insert happily
 // (empirically confirmed against this schema). Prisma cannot express the partial unique index
@@ -62,12 +113,13 @@ async function assertLabelFree(
   if (clash) throw new ForbiddenError(`a template field named "${label}" already exists`);
 }
 
-export function listFieldDefs(db: PrismaClient, user: SessionUser): Promise<AccountFieldDef[]> {
-  return db.accountFieldDef.findMany({ where: defScopeWhere(user), orderBy: { order: "asc" } });
+// Each function below takes an optional pre-resolved `scope` (from resolveFieldDefScope). Omitted,
+// it falls back to the caller's own set via defScopeWhere.
+export function listFieldDefs(db: PrismaClient, user: SessionUser, scope: FieldDefScope = defScopeWhere(user)): Promise<AccountFieldDef[]> {
+  return db.accountFieldDef.findMany({ where: scope, orderBy: { order: "asc" } });
 }
 
-export async function createFieldDef(db: PrismaClient, user: SessionUser, data: { label: string; type: AccountFieldType }): Promise<AccountFieldDef> {
-  const scope = defScopeWhere(user);
+export async function createFieldDef(db: PrismaClient, user: SessionUser, data: { label: string; type: AccountFieldType }, scope: FieldDefScope = defScopeWhere(user)): Promise<AccountFieldDef> {
   await assertLabelFree(db, scope, data.label);
   // `order` is per set, so a new team's first field starts at 0 even though the org has others.
   const max = await db.accountFieldDef.aggregate({ where: scope, _max: { order: true } });
@@ -76,8 +128,7 @@ export async function createFieldDef(db: PrismaClient, user: SessionUser, data: 
   });
 }
 
-export async function updateFieldDef(db: PrismaClient, user: SessionUser, id: string, data: Partial<{ label: string; type: AccountFieldType }>): Promise<AccountFieldDef> {
-  const scope = defScopeWhere(user);
+export async function updateFieldDef(db: PrismaClient, user: SessionUser, id: string, data: Partial<{ label: string; type: AccountFieldType }>, scope: FieldDefScope = defScopeWhere(user)): Promise<AccountFieldDef> {
   // `...scope` and not `{ companyId }`: without the teamId a team admin could rename a sibling
   // team's field — and a super admin a live team's — by naming its id.
   const found = await db.accountFieldDef.findFirst({ where: { id, ...scope } });
@@ -88,15 +139,13 @@ export async function updateFieldDef(db: PrismaClient, user: SessionUser, id: st
   return db.accountFieldDef.update({ where: { id }, data });
 }
 
-export async function deleteFieldDef(db: PrismaClient, user: SessionUser, id: string): Promise<void> {
-  const scope = defScopeWhere(user);
+export async function deleteFieldDef(db: PrismaClient, user: SessionUser, id: string, scope: FieldDefScope = defScopeWhere(user)): Promise<void> {
   const found = await db.accountFieldDef.findFirst({ where: { id, ...scope } });
   if (!found) throw new NotFoundError("field def not in scope");
   await db.accountFieldDef.delete({ where: { id } });
 }
 
-export async function reorderFieldDefs(db: PrismaClient, user: SessionUser, orderedIds: string[]): Promise<void> {
-  const scope = defScopeWhere(user);
+export async function reorderFieldDefs(db: PrismaClient, user: SessionUser, orderedIds: string[], scope: FieldDefScope = defScopeWhere(user)): Promise<void> {
   // updateMany with the scope in the WHERE, so an id from another team's set matches nothing
   // instead of being silently reordered into this one.
   await db.$transaction(
