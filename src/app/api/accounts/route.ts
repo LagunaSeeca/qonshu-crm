@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
       status: (sp.get("status") as "ACTIVE"|"AT_RISK"|"CHURNED"|null) ?? undefined,
       accountManagerId: sp.get("accountManagerId") ?? undefined, q: sp.get("q") ?? undefined,
     });
-    return NextResponse.json(accounts.map(maskAccount));
+    return NextResponse.json(accounts.map((a) => maskAccount(a, user)));
   } catch (e) { return errorResponse(e); }
 }
 const Create = z.object({ name: z.string().min(1), website: z.string().optional(), industry: z.string().optional(),
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     });
     // Never leak passwordHash back to the client, even on the just-created partner login.
     return NextResponse.json({
-      account: maskAccount(account),
+      account: maskAccount(account, user),
       partnerUser: partnerUser ? { id: partnerUser.id, name: partnerUser.name, email: partnerUser.email, role: partnerUser.role, status: partnerUser.status } : null,
     }, { status: 201 });
   } catch (e) { return errorResponse(e); }

@@ -39,7 +39,15 @@ describe("getMyWork", () => {
     expect(work.meetings.map((m) => m.body)).toEqual(["met mine"]);
   });
 
-  it("assigneeId wins: assigned-to-me shows; delegated away on my own lead does not", async () => {
+  // CHANGED ON PURPOSE: this used to be "assigneeId wins" and asserted that a task assigned to me
+  // on a TEAMMATE's lead showed up in my work. It cannot: My Work renders the parent's title, and
+  // for a MEMBER a teammate's lead title is not visible — ownership is absolute (scope.ts), so a
+  // row I cannot open cannot be listed by its name either. Nor is that state reachable any more:
+  // assertAssignable (tasks.ts) only accepts the lead's owner or a COMPANY_ADMIN of its team as an
+  // assignee, so a MEMBER can only hold an assignment on a lead they own; and reassigning the lead
+  // drops the old owner's open assignments (leads.ts clearUnseeableAssignees). The rows below are
+  // written straight to the DB precisely because the service layer refuses to create them.
+  it("ownership wins: an assignment on a teammate's lead does not surface it; delegated away on my own lead does not either", async () => {
     const team = await makeTeam();
     const me = await makeUser("MEMBER", team);
     const mate = await makeUser("MEMBER", team);
@@ -51,11 +59,13 @@ describe("getMyWork", () => {
     await testPrisma.task.create({ data: { companyId: c, leadId: mateLead.id, title: "assigned to me elsewhere", assigneeId: me.id } });
     await testPrisma.task.create({ data: { companyId: c, leadId: mateLead.id, title: "unassigned on theirs" } });
 
-    const titles = (await getMyWork(testPrisma, su(me))).tasks.map((t) => t.title).sort();
-    expect(titles).toEqual(["assigned to me elsewhere", "unassigned on mine"]);
+    const work = await getMyWork(testPrisma, su(me));
+    expect(work.tasks.map((t) => t.title).sort()).toEqual(["unassigned on mine"]);
+    // The teammate's lead title is what the leak was: assert the name itself never appears.
+    expect(work.tasks.map((t) => t.parentTitle)).not.toContain(mateLead.title);
   });
 
-  it("account tasks/meetings are mine only when assigned to me, on an account I manage, or authored by me", async () => {
+  it("account tasks/meetings are mine only on an account I manage — an assignment or my own authorship is not enough", async () => {
     const team = await makeTeam();
     const me = await makeUser("MEMBER", team);
     const mate = await makeUser("MEMBER", team);
@@ -70,9 +80,13 @@ describe("getMyWork", () => {
     await testPrisma.accountActivity.create({ data: { companyId: c, accountId: theirs.id, kind: "MEETING", body: "I authored", authorId: me.id } });
 
     const work = await getMyWork(testPrisma, su(me));
-    expect(work.tasks.map((t) => t.title).sort()).toEqual(["QBR prep", "assigned to me"]);
+    expect(work.tasks.map((t) => t.title).sort()).toEqual(["QBR prep"]);
     expect(work.tasks.every((t) => t.parentType === "ACCOUNT")).toBe(true);
-    expect(work.meetings.map((m) => m.body).sort()).toEqual(["I authored", "kickoff"]);
+    // "I authored" is the Activity half of the same leak: authorship is permanent and can never be
+    // cleared the way a task assignment is, so matching on it would keep a teammate's BUILDING
+    // NAME in my work forever. The account I manage is the only thing that qualifies.
+    expect(work.meetings.map((m) => m.body).sort()).toEqual(["kickoff"]);
+    expect(work.meetings.map((m) => m.parentTitle)).not.toContain(theirs.name);
   });
 
   it("a team admin's My Work is their own, not the whole team's", async () => {

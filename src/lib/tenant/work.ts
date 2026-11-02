@@ -30,14 +30,30 @@ export type MyWork = { tasks: WorkTask[]; meetings: WorkMeeting[] };
  *  - Task / AccountTask: assigneeId = me, OR unassigned on a lead/account I own.
  *  - Meetings: on a lead/account I own, or authored by me (capped at 20).
  * Ownership applies to every role (a team admin's "my work" is their own, not the team's).
- * The parent must also sit inside the caller's team scope, so a task still assigned to me on a
- * record that has since moved to another team does not leak that record's title.
+ *
+ * THE PARENT FILTER IS THE FULL SCOPE, UNMODIFIED — leadScopeWhere/accountScopeWhere exactly as
+ * they come, `ownerId`/`accountManagerId` included. It used to strip those two keys so that the
+ * `assigneeId: me` / `authorId: me` arms could reach across a MEMBER's whole TEAM, and that strip
+ * was a title-level leak: a member who had once been handed a task on, or had logged a meeting
+ * against, a teammate's record kept reading its name LIVE from a row they 404 on. Reassignment
+ * clears open task assignments (leads.ts clearUnseeableAssignees, and the mirror of it in
+ * updateAccount), but AUTHORSHIP of an Activity is permanent history and nothing can clear it —
+ * so the strip left `authorId: me` matching any parent in the team forever.
+ *
+ * It costs no legitimate row. A MEMBER is only ever an assignable assignee on a record they
+ * themselves own (tasks.ts / account-tasks.ts assertAssignable: the owner/manager, or a
+ * COMPANY_ADMIN of the record's team — nobody else), and can only author an activity on a record
+ * in their scope (activities.ts / account-activities.ts both resolve the parent through
+ * getLead/getAccount first). So for a MEMBER, "assigned to me" and "authored by me" already imply
+ * "mine" at the moment of the write; the only rows the full filter removes are ones where that
+ * stopped being true — which is precisely the leak. For a COMPANY_ADMIN and a SUPER_ADMIN the
+ * scope carries no owner key at all, so admin-assigned work is untouched.
+ *
  * leadScopeWhere/accountScopeWhere also reject PARTNER_VIEWER and companyless callers.
  */
 export async function getMyWork(db: PrismaClient, user: SessionUser): Promise<MyWork> {
-  const { ownerId: _ownerId, ...leadBase } = leadScopeWhere(user);
-  const { accountManagerId: _managerId, ...acctBase } = accountScopeWhere(user);
-  void _ownerId; void _managerId;
+  const leadBase = leadScopeWhere(user);
+  const acctBase = accountScopeWhere(user);
   const companyId = leadBase.companyId;
   const me = user.id;
 

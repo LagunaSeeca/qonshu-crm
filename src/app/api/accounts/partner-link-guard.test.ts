@@ -92,7 +92,9 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     }));
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body.account.externalPartnerKey).toBeNull();
+    // The response never carries the field at all now (it was an enumeration oracle — see
+    // src/lib/tenant/account-dto.ts), so the stored row is the only thing worth asserting.
+    expect("externalPartnerKey" in body.account).toBe(false);
 
     const row = await testPrisma.account.findUnique({ where: { id: body.account.id } });
     expect(row?.externalPartnerKey).toBeNull();
@@ -149,8 +151,12 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     expect(real.status).toBe(201);
     expect(fake.status).toBe(201);
 
-    expect((await real.json()).account.externalPartnerKey).toBe("Komplex B");
-    expect((await fake.json()).account.externalPartnerKey).toBeNull();
+    // Asserted on the STORED ROW, not the response: the body no longer answers the question (it
+    // was the enumeration oracle), while the link behaviour itself is unchanged.
+    const rowOf = async (res: Response) =>
+      testPrisma.account.findUnique({ where: { id: (await res.json()).account.id } });
+    expect((await rowOf(real))?.externalPartnerKey).toBe("Komplex B");
+    expect((await rowOf(fake))?.externalPartnerKey).toBeNull();
   });
 
   it("POST: auto-link still refuses a name already claimed elsewhere", async () => {

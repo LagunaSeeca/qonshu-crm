@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vites
 import { testPrisma, resetDb } from "@/test/db";
 import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import { getAccountAnalytics, listAccountPayments } from "./partner-analytics";
-import { fetchPartnerStats } from "@/lib/partner-api/client";
+import { fetchPartnerStats, fetchPartners } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
 import { NotFoundError } from "@/lib/auth/guards";
@@ -10,8 +10,11 @@ import type { SessionUser } from "@/lib/auth/guards";
 
 // Single-account analytics is now LIVE-only: every KPI/breakdown comes straight from the
 // external Partner API for the request's range, nothing persisted or cached. Mock the client
-// module so these tests never hit the network.
-vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn() }));
+// module so these tests never hit the network. `fetchPartners` is the global partner-LIST call
+// behind the opportunistic auto-link that getAccountAnalytics performs on an unlinked account; it
+// defaults to an empty list (= no match, nothing linked) and is set per test where the link
+// matters.
+vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn(), fetchPartners: vi.fn() }));
 
 const KEY_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const SHARED_API_KEY = "test-shared-partner-api-key";
@@ -49,6 +52,8 @@ describe("partner analytics (live)", () => {
     process.env.PARTNER_API_KEY_SECRET = KEY_SECRET;
     process.env.PARTNER_API_KEY = SHARED_API_KEY;
     vi.mocked(fetchPartnerStats).mockReset();
+    vi.mocked(fetchPartners).mockReset();
+    vi.mocked(fetchPartners).mockResolvedValue({ partners: [] });
   });
   afterEach(() => {
     if (savedSecret === undefined) delete process.env.PARTNER_API_KEY_SECRET;
@@ -179,6 +184,51 @@ describe("partner analytics (live)", () => {
       const other = await seed("pa-x2");
       await expect(getAccountAnalytics(testPrisma, other.user, acc.id, range)).rejects.toThrow(NotFoundError);
       expect(fetchPartnerStats).not.toHaveBeenCalled();
+    });
+
+    // THE OPPORTUNISTIC LINK IS A WRITE, AND A SUPER_ADMIN-RESERVED ONE.
+    //
+    // It sets Account.externalPartnerKey — the single field that decides which external complex's
+    // debt, payments and unit-level owner names/phones this account can read, over a namespace
+    // shared by every account on the platform — and stamps a PartnerLinkAudit row. Assigning that
+    // link is SUPER_ADMIN-only on every other path (src/lib/platform/account-partners.ts). But
+    // /api/accounts/[id]/analytics carries no assertRole and /analytics is partner-allowed, so a
+    // PARTNER_VIEWER merely loading its own page performed the most privileged write in the app,
+    // attributed to itself, plus a full upstream GET /partners fan-out on every refresh.
+    it("a PARTNER_VIEWER's own analytics read writes no link, no audit row, and never asks upstream", async () => {
+      const { team, acc } = await seed("pa-partner-link", { configured: false });
+      // Upstream DOES hold a complex matching this account's building — the exact state in which
+      // the opportunistic link fires for anyone else.
+      vi.mocked(fetchPartners).mockResolvedValue({ partners: [{ name: "P", type: "RESIDENTIAL" }] });
+      const rep = await makeUser("PARTNER_VIEWER", team, { accountId: acc.id });
+
+      const a = await getAccountAnalytics(testPrisma, su(rep), acc.id, range);
+
+      const row = await testPrisma.account.findUniqueOrThrow({ where: { id: acc.id } });
+      expect(row.externalPartnerKey, "link written by a partner read").toBeNull();
+      expect(await testPrisma.partnerLinkAudit.count(), "audit rows").toBe(0);
+      expect(fetchPartners, "upstream partner-list fan-out").not.toHaveBeenCalled();
+      expect(a.status).toBe("not-configured");
+    });
+
+    it("the account's own manager still gets the opportunistic link, audited as a SYSTEM action", async () => {
+      const { acc, user } = await seed("pa-autolink-member", { configured: false });
+      vi.mocked(fetchPartners).mockResolvedValue({ partners: [{ name: "P", type: "RESIDENTIAL" }] });
+      vi.mocked(fetchPartnerStats).mockResolvedValue(makePartnerStats({ partner: "P" }));
+
+      const a = await getAccountAnalytics(testPrisma, user, acc.id, range);
+
+      expect(a.status).toBe("ok");
+      const row = await testPrisma.account.findUniqueOrThrow({ where: { id: acc.id } });
+      expect(row.externalPartnerKey).toBe("P");
+      const audit = await testPrisma.partnerLinkAudit.findMany();
+      expect(audit).toHaveLength(1);
+      // actorId null: NOBODY decided this link. It is the system resolving a building name against
+      // the upstream list as a side effect of a page load, so the trail must read as a system
+      // action rather than naming whoever happened to open the tab as the person who assigned a
+      // partner — a write that role is not allowed to make deliberately.
+      expect(audit[0]).toMatchObject({ action: "auto_link", partnerName: "P", actorId: null });
+      expect(audit[0].actorEmail).toBeNull();
     });
   });
 

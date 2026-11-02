@@ -186,8 +186,11 @@ describe("POST /api/accounts/from-lead", () => {
       const body = await res.json();
       expect("externalApiKeyEnc" in body).toBe(false);
       expect("externalApiKeyLast4" in body).toBe(false);
-      expect(body.externalPartnerKey).toBe("partner-fl"); // the partner NAME is not a secret
+      // The partner NAME goes too: the 201/200 body confirming a resolved upstream complex was
+      // an enumeration oracle over a platform-wide namespace. See src/lib/tenant/account-dto.ts.
+      expect("externalPartnerKey" in body).toBe(false);
       const raw = JSON.stringify(body);
+      expect(raw).not.toContain("partner-fl");
       expect(raw).not.toContain(plaintext);
       expect(raw).not.toContain(ciphertext);
     });

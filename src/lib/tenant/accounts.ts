@@ -308,9 +308,15 @@ export async function tryAutoLink(
       const linked = await tx.account.update({
         where: { id: account.id }, data: { externalPartnerKey: name },
       });
+      // actorId null — A SYSTEM ACTION, NOT A PERSON'S. Nobody asked for this link: it is the
+      // system re-running the upstream name resolution as a side effect of somebody opening a
+      // page. Stamping the reader's id would read, in the one audit that answers "who pointed this
+      // account at this complex", as that reader deliberately assigning a partner — a write their
+      // role may well be forbidden to make. (createAccount's auto_link keeps its actor: there the
+      // link rides along with a write that person really did request.)
       await recordPartnerLinkChange(tx as PrismaClient, {
         companyId: account.companyId, accountId: account.id, accountName: account.name,
-        actorId: user.id, action: "auto_link", partnerName: name,
+        actorId: null, action: "auto_link", partnerName: name,
       });
       return linked;
     });

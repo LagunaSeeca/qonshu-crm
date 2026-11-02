@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     const { account, created } = await convertLeadToAccount(prisma, user, leadId);
     // maskAccount is NOT optional on the created===false branch: that returns a pre-existing row
     // which is exactly the one that could still carry a dormant externalApiKeyEnc override.
-    return NextResponse.json(maskAccount(account), { status: created ? 201 : 200 });
+    return NextResponse.json(maskAccount(account, user), { status: created ? 201 : 200 });
   } catch (e) {
     return errorResponse(e);
   }

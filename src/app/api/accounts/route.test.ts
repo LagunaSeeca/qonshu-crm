@@ -71,8 +71,10 @@ describe("account routes — partner key columns never leak", () => {
     expect("externalApiKeyEnc" in body).toBe(false);
     expect("externalApiKeyLast4" in body).toBe(false);
     expect("externalApiKeyMasked" in body).toBe(false); // the per-account key entry/field is gone
-    expect(body.externalPartnerKey).toBe("partner-x"); // the partner NAME is still returned as-is
+    // The partner NAME is withheld from a tenant caller too — see the oracle test below.
+    expect("externalPartnerKey" in body).toBe(false);
     const raw = JSON.stringify(body);
+    expect(raw).not.toContain("partner-x");
     expect(raw).not.toContain(plaintext);
     expect(raw).not.toContain(ciphertext);
   });
@@ -88,10 +90,54 @@ describe("account routes — partner key columns never leak", () => {
     const res = await GET_ONE(req, { params: Promise.resolve({ id: acc.id }) });
     const body = await res.json();
 
-    expect(body.externalPartnerKey).toBe("partner-only-name");
+    expect("externalPartnerKey" in body).toBe(false);
     expect("externalApiKeyEnc" in body).toBe(false);
     expect("externalApiKeyLast4" in body).toBe(false);
     expect("externalApiKeyMasked" in body).toBe(false);
+  });
+
+  // THE PARTNER NAME IS AN ANSWER, NOT A SECRET.
+  //
+  // Auto-link resolves a new account's name against the LIVE upstream list, so echoing the
+  // resolved key back meant the response confirmed "a complex by this name exists upstream" over a
+  // namespace shared by every company on the platform — and a COMPANY_ADMIN can DELETE the probe
+  // account and ask again, leaving no residue. The link itself is unchanged; what is gone is the
+  // reply that scored the guess. The owner, who assigns these links, still sees it.
+  //
+  // (Nothing in the UI regresses: the account page renders the field from the server-side row, not
+  // from an API response.)
+  it("GET /api/accounts/[id]: the partner name is withheld from a tenant caller and returned to the owner", async () => {
+    const slug = `mask-oracle-${Date.now()}-${Math.random()}`;
+    const { c, u, team } = await seedCompanyAndAdmin(slug);
+    const acc = await testPrisma.account.create({
+      data: {
+        companyId: c.id, teamId: team.id, buildingKey: buildingKey("Oracle"), name: "Oracle",
+        accountManagerId: u.id, externalPartnerKey: "Komplex B",
+      },
+    });
+    const get = async () => {
+      const res = await GET_ONE(new NextRequest(`http://localhost/api/accounts/${acc.id}`), {
+        params: Promise.resolve({ id: acc.id }),
+      });
+      expect(res.status).toBe(200);
+      return res.json();
+    };
+
+    // The team admin who owns the account in the CRM sense: no answer.
+    const adminBody = await get();
+    expect("externalPartnerKey" in adminBody).toBe(false);
+    expect(JSON.stringify(adminBody)).not.toContain("Komplex B");
+
+    // A MEMBER managing it: no answer either.
+    const member = await makeUser("MEMBER", team);
+    await testPrisma.account.update({ where: { id: acc.id }, data: { accountManagerId: member.id } });
+    mockUser = su(member);
+    expect("externalPartnerKey" in (await get())).toBe(false);
+
+    // The SUPER_ADMIN, acting inside the company, still sees the link it is theirs to assign.
+    const owner = await makeUser("SUPER_ADMIN");
+    mockUser = su(await testPrisma.user.update({ where: { id: owner.id }, data: { companyId: c.id } }));
+    expect((await get()).externalPartnerKey).toBe("Komplex B");
   });
 
   it("GET /api/accounts (list): strips the columns from every row", async () => {

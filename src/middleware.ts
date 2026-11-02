@@ -27,9 +27,16 @@ export async function middleware(req: NextRequest) {
   return NextResponse.next({ request: { headers } });
 }
 
+// EVERY AUTHENTICATED PAGE MUST BE LISTED — including the ones a PARTNER_VIEWER is allowed to
+// reach. (app)/layout.tsx gates partners on the `x-pathname` header this middleware sets, and an
+// unmatched path means the header is absent, the layout reads "", and no prefix matches — so a
+// partner is bounced to /analytics. That is how /profile, the ONE write a partner is permitted
+// (their own password), was unreachable for the only role that needed it: the route was in the
+// layout's allow-list and missing from this matcher.
 export const config = {
   matcher: [
     "/dashboard/:path*",
+    "/profile/:path*",
     "/crm/:path*",
     "/accounts/:path*",
     "/analytics/:path*",

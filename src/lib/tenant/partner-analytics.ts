@@ -136,7 +136,16 @@ export async function getAccountAnalytics(
   // somebody cares, so retry it here under the same claim rules. No-ops in O(0) queries for an
   // already-linked account, and never throws: a refusal or a lost race returns `found` unchanged
   // and the page renders "not configured" as before.
-  const acc = await tryAutoLink(db, user, found);
+  //
+  // NOT FOR A PARTNER. This is a WRITE hiding inside a read: it sets externalPartnerKey, the one
+  // field that decides which external complex's debt, payments and unit-level owner names/phones
+  // an account may read, over a namespace shared by every account on the platform. Assigning it is
+  // SUPER_ADMIN-only on every other path (src/lib/platform/account-partners.ts). This route has no
+  // assertRole and /analytics is partner-allowed, so without this check the least-privileged role
+  // in the system performed the most privileged write in the system just by loading its own page —
+  // and fired a full upstream GET /partners fan-out on every refresh. A partner cannot act on an
+  // unlinked account anyway: there is nothing for them to fix and nothing for them to see.
+  const acc = user.role === "PARTNER_VIEWER" ? found : await tryAutoLink(db, user, found);
 
   let creds: PartnerCredentials | null;
   try {

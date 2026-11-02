@@ -605,12 +605,6 @@ describe("team isolation", () => {
       });
     });
 
-    // DEFECT D2 (reported, not fixed here): getMyWork strips `ownerId` from the lead scope so a
-    // task ASSIGNED to the caller shows up wherever it sits in the caller's TEAM. After an admin
-    // moves a lead to a teammate inside one team (updateLead only clears assignees on a cross-TEAM
-    // transfer), the previous owner's open task stays assigned to them and their "my work" lists
-    // it with the teammate's lead title, pointing at a lead they get a 404 on. Title-level leak
-    // only. `it.fails` = known-defect marker; remove `.fails` when fixed.
     it("an assignment that survives a lead's move to a teammate does not surface the teammate's lead title", async () => {
       // An admin reassigns m1's lead to m2 inside the team. The OPEN task still assigned to m1
       // stays assigned to m1 (clearUnseeableAssignees only runs on a cross-TEAM transfer). m1 now
@@ -623,6 +617,51 @@ describe("team isolation", () => {
       const work = await getMyWork(testPrisma, w.S.m1);
       expect(work.tasks.map((t) => t.id)).not.toContain(stale.id);
       expect(work.tasks.map((t) => t.parentTitle)).not.toContain(w.leads.m1[0].title);
+    });
+
+    // THE OTHER HALF OF THE SAME LEAK, and the one the stale marker above used to hide. A task
+    // assignment is cleared when the record is reassigned (updateLead/updateAccount both drop open
+    // assignments the new owner's circle cannot see), but AUTHORSHIP of an Activity is permanent
+    // history and can never be cleared. getMyWork's meeting queries matched on `authorId: me`
+    // under a parent filter with `ownerId`/`accountManagerId` STRIPPED OUT, so a member kept
+    // reading the LIVE title of every lead, and the live name of every account, in their team on
+    // which they had ever logged a meeting — including after it moved to a teammate and was
+    // renamed. Both Activity and AccountActivity are asserted; both arms had the same hole.
+    it("a meeting I logged does not surface a teammate's live lead title or account name after reassignment", async () => {
+      const w = await world();
+      const leadId = w.leads.m1[0].id;
+      const accountId = w.accounts.m1.id;
+      // world() already logged `lead meeting m1` / `acct meeting m1`, both authored by m1, on
+      // exactly these two records — i.e. m1 is the author and was the owner at the time.
+
+      // The team admin hands both to m2, who then renames them.
+      await updateLead(testPrisma, w.S.adminA, leadId, { ownerId: w.U.m2.id });
+      await updateAccount(testPrisma, w.S.adminA, accountId, { accountManagerId: w.U.m2.id });
+      await updateLead(testPrisma, w.S.m2, leadId, { title: "SECRET RENAMED LEAD" });
+      await updateAccount(testPrisma, w.S.m2, accountId, { name: "SECRET RENAMED BUILDING" });
+
+      // m1 404s on both records now — so nothing about them may appear in m1's "my work".
+      expect(await getLead(testPrisma, w.S.m1, leadId)).toBeNull();
+      expect(await getAccount(testPrisma, w.S.m1, accountId)).toBeNull();
+
+      const work = await getMyWork(testPrisma, w.S.m1);
+      const rows = [...work.tasks, ...work.meetings];
+      expect(rows.map((r) => r.parentId), "m1 parent ids").not.toContain(leadId);
+      expect(rows.map((r) => r.parentId), "m1 parent ids").not.toContain(accountId);
+      expect(rows.map((r) => r.parentTitle), "m1 parent titles").not.toContain("SECRET RENAMED LEAD");
+      expect(rows.map((r) => r.parentTitle), "m1 parent titles").not.toContain("SECRET RENAMED BUILDING");
+
+      // ...and the rows are not simply gone: m2, who owns both records now, sees the same two
+      // meetings under their new names. The scope decides, not the authorship.
+      const m2work = await getMyWork(testPrisma, w.S.m2);
+      expect(m2work.meetings.filter((m) => m.parentId === leadId).map((m) => m.body))
+        .toEqual(["lead meeting m1"]);
+      expect(m2work.meetings.find((m) => m.parentId === leadId)?.parentTitle)
+        .toBe("SECRET RENAMED LEAD");
+      expect(m2work.meetings.filter((m) => m.parentId === accountId).map((m) => m.body))
+        .toEqual(["acct meeting m1"]);
+      expect(m2work.meetings.find((m) => m.parentId === accountId)?.parentTitle)
+        .toBe("SECRET RENAMED BUILDING");
     });
 
     it("a task assigned to a member on another TEAM's lead never surfaces", async () => {

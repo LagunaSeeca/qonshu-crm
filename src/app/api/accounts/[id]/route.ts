@@ -13,7 +13,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const user = await getSessionUser(); if (!user) throw new UnauthorizedError();
     const account = await getAccount(prisma, user, (await params).id);
     if (!account) return NextResponse.json({ error: "not_found" }, { status: 404 });
-    return NextResponse.json(maskAccount(account));
+    return NextResponse.json(maskAccount(account, user));
   } catch (e) { return errorResponse(e); }
 }
 const Patch = z.object({
@@ -35,7 +35,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const d = Patch.parse(await req.json());
     const id = (await params).id;
     const account: Account = await updateAccount(prisma, user, id, d);
-    return NextResponse.json(maskAccount(account));
+    return NextResponse.json(maskAccount(account, user));
   } catch (e) { return errorResponse(e); }
 }
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
