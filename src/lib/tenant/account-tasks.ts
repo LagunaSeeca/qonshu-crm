@@ -1,14 +1,32 @@
-import type { PrismaClient, AccountTask } from "@prisma/client";
-import type { SessionUser } from "@/lib/auth/guards";
-import { NotFoundError } from "@/lib/auth/guards";
+import type { Account, PrismaClient, AccountTask } from "@prisma/client";
+import { ForbiddenError, NotFoundError, type SessionUser } from "@/lib/auth/guards";
 import { getAccount } from "./accounts";
+
+// Who may be handed a task on this account: the people who can actually OPEN it. Mirrors
+// tasks.ts assertAssignable. The old check was "any user in the company", which under the teams
+// model is the whole org: a member could assign work to another team's users, who cannot see the
+// account (a MEMBER sees only accounts they manage), so the task became a dead link in their list.
+// Visible set = the account's manager, plus the COMPANY_ADMINs of the account's own team. A
+// PARTNER_VIEWER or SUPER_ADMIN is never assignable.
+async function assertAssignable(db: PrismaClient, account: Account, assigneeId: string): Promise<void> {
+  if (assigneeId === account.accountManagerId) return;
+  const candidate = await db.user.findUnique({
+    where: { id: assigneeId },
+    select: { role: true, status: true, companyId: true, teamId: true },
+  });
+  if (!candidate || candidate.status !== "ACTIVE" || candidate.companyId !== account.companyId) {
+    throw new NotFoundError("assignee not in tenant");
+  }
+  if (!(candidate.role === "COMPANY_ADMIN" && candidate.teamId === account.teamId)) {
+    throw new ForbiddenError("assignee cannot see this account");
+  }
+}
 
 export async function addAccountTask(db: PrismaClient, user: SessionUser, accountId: string, args: { title: string; dueDate?: Date | null; assigneeId?: string | null }): Promise<AccountTask> {
   const account = await getAccount(db, user, accountId);
   if (!account) throw new NotFoundError("account not in scope");
   if (args.assigneeId != null) {
-    const a = await db.user.findFirst({ where: { id: args.assigneeId, companyId: account.companyId } });
-    if (!a) throw new NotFoundError("assignee not in tenant");
+    await assertAssignable(db, account, args.assigneeId);
   }
   return db.accountTask.create({ data: { companyId: account.companyId, accountId, title: args.title, dueDate: args.dueDate ?? null, assigneeId: args.assigneeId ?? null } });
 }

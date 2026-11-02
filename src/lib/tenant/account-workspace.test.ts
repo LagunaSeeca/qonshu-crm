@@ -3,13 +3,13 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { mkdtempSync } from "fs";
 import { testPrisma, resetDb } from "@/test/db";
-import { makeTeam, makeUser, su as toSession } from "@/test/fixtures";
+import { makeTeam, makeTeamWithUsers, makeUser, su as toSession } from "@/test/fixtures";
 import { createAccount } from "./accounts";
 import { addAccountActivity, listAccountActivities } from "./account-activities";
 import { addAccountTask, toggleAccountTask, listAccountTasks } from "./account-tasks";
 import { addAccountAttachment, listAccountAttachments, getAccountAttachmentForDownload, deleteAccountAttachment } from "./account-attachments";
 import { recordPartnerLinkChange } from "./partner-link-audit";
-import { ForbiddenError, type SessionUser } from "@/lib/auth/guards";
+import { ForbiddenError, NotFoundError, type SessionUser } from "@/lib/auth/guards";
 
 beforeAll(() => { process.env.UPLOADS_DIR = mkdtempSync(join(tmpdir(), "qonshu-acc-")); });
 
@@ -114,5 +114,42 @@ describe("the partner_link: outcome prefix is reserved from tenant writers", () 
     expect(audit[0]).toMatchObject({ action: "assign", partnerName: "Komplex B", actorId: admin.id });
     // ...and an account that doesn't exist is an empty list, not a throw.
     expect(await listAccountActivities(testPrisma, su, "no-such-account")).toEqual([]);
+  });
+});
+
+describe("addAccountTask assignee must be able to see the account", () => {
+  beforeEach(resetDb);
+  afterAll(() => testPrisma.$disconnect());
+
+  async function world() {
+    const t1 = await makeTeamWithUsers();
+    const t2 = await makeTeamWithUsers({ companyId: t1.companyId });
+    const mate = await makeUser("MEMBER", t1.team);
+    const partner = await makeUser("PARTNER_VIEWER", t1.team);
+    const acc = await createAccount(testPrisma, t1.suMember, { name: "Bldg" });
+    return { t1, t2, mate, partner, acc };
+  }
+
+  it("allows the account's manager and that team's admin", async () => {
+    const w = await world();
+    const a = await addAccountTask(testPrisma, w.t1.suMember, w.acc.id, { title: "x", assigneeId: w.t1.member.id });
+    expect(a.assigneeId).toBe(w.t1.member.id);
+    const b = await addAccountTask(testPrisma, w.t1.suMember, w.acc.id, { title: "y", assigneeId: w.t1.admin.id });
+    expect(b.assigneeId).toBe(w.t1.admin.id);
+  });
+
+  it("refuses another team's member and admin, a same-team non-manager, and a partner", async () => {
+    const w = await world();
+    for (const id of [w.t2.member.id, w.t2.admin.id, w.mate.id, w.partner.id]) {
+      await expect(addAccountTask(testPrisma, w.t1.suMember, w.acc.id, { title: "x", assigneeId: id }))
+        .rejects.toThrow(ForbiddenError);
+    }
+    expect(await testPrisma.accountTask.count()).toBe(0);
+  });
+
+  it("an unknown id is NotFound", async () => {
+    const w = await world();
+    await expect(addAccountTask(testPrisma, w.t1.suMember, w.acc.id, { title: "x", assigneeId: "nope" }))
+      .rejects.toThrow(NotFoundError);
   });
 });

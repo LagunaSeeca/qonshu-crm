@@ -187,6 +187,41 @@ describe("accounts: reassignment and cross-team transfer", () => {
   beforeEach(prepare);
   afterAll(async () => { restore(); await testPrisma.$disconnect(); });
 
+  it("a same-team manager change clears stale open assignees, keeps done tasks and valid assignees", async () => {
+    const t = await makeTeamWithUsers();
+    const oldMgr = t.member;
+    const newMgr = await makeUser("MEMBER", t.team);
+    const acc = await createAccount(testPrisma, t.suAdmin, { name: uniq("S "), accountManagerId: oldMgr.id });
+    const mk = (title: string, assigneeId: string | null, done = false) =>
+      testPrisma.accountTask.create({ data: { companyId: acc.companyId, accountId: acc.id, title, assigneeId, done } });
+    const stale = await mk("stale", oldMgr.id);
+    const doneOld = await mk("done", oldMgr.id, true);
+    const forNew = await mk("new", newMgr.id);
+    const forAdmin = await mk("admin", t.admin.id);
+    const unassigned = await mk("none", null);
+
+    await updateAccount(testPrisma, t.suAdmin, acc.id, { accountManagerId: newMgr.id });
+
+    const get = async (id: string) => (await testPrisma.accountTask.findUniqueOrThrow({ where: { id } })).assigneeId;
+    expect(await get(stale.id)).toBeNull();
+    expect(await get(doneOld.id)).toBe(oldMgr.id);
+    expect(await get(forNew.id)).toBe(newMgr.id);
+    expect(await get(forAdmin.id)).toBe(t.admin.id);
+    expect(await get(unassigned.id)).toBeNull();
+  });
+
+  it("listAccounts filters (status, manager, q) can only narrow a member's scope", async () => {
+    const t = await makeTeamWithUsers();
+    const mate = await makeUser("MEMBER", t.team);
+    const mine = await createAccount(testPrisma, t.suMember, { name: "Shared Tower" });
+    const theirs = await createAccount(testPrisma, su(mate), { name: "Shared Plaza" });
+    const ids = async (o: Parameters<typeof listAccounts>[2]) => (await listAccounts(testPrisma, t.suMember, o)).map((a) => a.id);
+    expect(await ids({ q: "Shared" })).toEqual([mine.id]);
+    expect(await ids({ accountManagerId: mate.id })).toEqual([]);
+    expect(await ids({ accountManagerId: mate.id, q: "Plaza", status: theirs.status })).toEqual([]);
+    expect(await ids({ accountManagerId: t.member.id, q: "Tower", status: mine.status })).toEqual([mine.id]);
+  });
+
   it("a MEMBER cannot hand their account to anyone else", async () => {
     const t = await makeTeamWithUsers();
     const peer = await makeUser("MEMBER", t.team);
