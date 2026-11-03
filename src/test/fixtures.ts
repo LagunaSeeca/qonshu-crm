@@ -28,7 +28,8 @@ export function uniq(prefix = "x"): string {
 // `"İ".toLowerCase()` in JS yields "i" + U+0307, whereas Postgres `lower()` yields a bare "i".
 // Without the strip the app would compute a key the database's own backfill could never produce.
 export function buildingKey(name: string): string {
-  return name.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase().replace(/̇/g, "");
+  return name.normalize("NFKC")
+    .replace(/[​-‍⁠﻿]/g, "").trim().replace(/\s+/g, " ").toLowerCase().replace(/̇/g, "");
 }
 
 // A LIVE partner link, as a spread into an account's create data.

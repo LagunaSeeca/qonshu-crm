@@ -30,6 +30,7 @@ import { isAdmin, type SessionUser } from "@/lib/auth/guards";
 export function normalizeBuildingName(name: string): string {
   return name
     .normalize("NFKC")
+    .replace(/[​-‍⁠﻿]/g, "")
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase()
