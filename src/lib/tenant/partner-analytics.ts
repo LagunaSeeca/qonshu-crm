@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
-import { getAccount, tryAutoLink } from "./accounts";
+import { getAccount } from "./accounts";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import { InvalidApiKeyError, UnknownPartnerError } from "@/lib/partner-api/errors";
@@ -127,25 +127,19 @@ export async function getAccountAnalytics(
   accountId: string,
   range: { from: Date; to: Date },
 ): Promise<AccountAnalytics> {
-  const found = await getAccount(db, user, accountId); // tenancy chokepoint: foreign account -> null
-  if (!found) throw new NotFoundError("account not in scope");
+  const acc = await getAccount(db, user, accountId); // tenancy chokepoint: foreign account -> null
+  if (!acc) throw new NotFoundError("account not in scope");
 
-  // LAST-CHANCE AUTO-LINK. The link is normally resolved at account creation, over HTTP — so a
-  // Django outage in the minute the building was registered leaves the account unlinked, and
-  // nothing else ever re-runs that resolution. Opening the Analytics tab is exactly the moment
-  // somebody cares, so retry it here under the same claim rules. No-ops in O(0) queries for an
-  // already-linked account, and never throws: a refusal or a lost race returns `found` unchanged
-  // and the page renders "not configured" as before.
+  // THIS IS A PURE READ. It used to end with a WRITE hiding inside it — tryAutoLink, which
+  // re-resolved the account's name against the live upstream list and set externalPartnerKey, the
+  // one field that decides which complex's debt, payments and unit-level owner names/phones an
+  // account may read. It existed only to recover a link lost to a Django outage at creation time,
+  // which the approval gate makes impossible (the create path no longer calls the upstream at
+  // all), so it is gone along with the upstream fan-out it fired on every refresh of this tab.
   //
-  // NOT FOR A PARTNER. This is a WRITE hiding inside a read: it sets externalPartnerKey, the one
-  // field that decides which external complex's debt, payments and unit-level owner names/phones
-  // an account may read, over a namespace shared by every account on the platform. Assigning it is
-  // SUPER_ADMIN-only on every other path (src/lib/platform/account-partners.ts). This route has no
-  // assertRole and /analytics is partner-allowed, so without this check the least-privileged role
-  // in the system performed the most privileged write in the system just by loading its own page —
-  // and fired a full upstream GET /partners fan-out on every refresh. A partner cannot act on an
-  // unlinked account anyway: there is nothing for them to fix and nothing for them to see.
-  const acc = user.role === "PARTNER_VIEWER" ? found : await tryAutoLink(db, user, found);
+  // A PENDING link reaches resolvePartnerCredentials and comes back null, exactly like no link at
+  // all, so this returns "not-configured" until it is confirmed on /partner-links — by the
+  // account team's own admin, or by the owner.
 
   let creds: PartnerCredentials | null;
   try {

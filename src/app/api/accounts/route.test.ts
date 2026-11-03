@@ -127,6 +127,9 @@ describe("account routes — partner key columns never leak", () => {
     const adminBody = await get();
     expect("externalPartnerKey" in adminBody).toBe(false);
     expect(JSON.stringify(adminBody)).not.toContain("Komplex B");
+    // The confirmation stamp is masked with the key, as one fact: it is the half of the link's
+    // state that says "this is live", and it belongs to whoever may see the link at all.
+    expect("partnerLinkConfirmedAt" in adminBody).toBe(false);
 
     // A MEMBER managing it: no answer either.
     const member = await makeUser("MEMBER", team);

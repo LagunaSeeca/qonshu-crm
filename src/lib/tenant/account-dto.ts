@@ -22,16 +22,24 @@ import type { SessionUser } from "@/lib/auth/guards";
 // again with no residue. Stripping it from the wire costs the UI nothing (no client reads the
 // field off a response) and leaves the enumeration with nothing to read.
 //
-// A SUPER_ADMIN keeps it: the owner is who assigns these links (/partner-links), and the upstream
-// list is theirs to see anyway.
+// A SUPER_ADMIN keeps it: the owner assigns links directly (/partner-links) and the upstream list
+// is theirs to see anyway. A TEAM ADMIN, who confirms their own team's pending links, does not need
+// it here either — the confirmation queue hands them the one proposed name they are deciding on,
+// which is the minimum that decision requires.
 //
 // `undefined` (not `delete`) is deliberate: JSON.stringify / NextResponse.json omit undefined
 // properties, so the keys disappear from the body entirely rather than serializing as null.
+// `partnerLinkConfirmedAt` is masked ALONGSIDE the key, as one fact rather than two. On its own it
+// is only a timestamp, but the pair is the link's state, and the half that says "this link is live"
+// belongs to whoever may see the link at all. Omitting it also means a future client that reads it
+// off a response and finds `undefined` fails CLOSED — treating the link as unconfirmed.
 export function maskAccount(account: Account, user: SessionUser) {
+  const owner = user.role === "SUPER_ADMIN";
   return {
     ...account,
     externalApiKeyEnc: undefined,
     externalApiKeyLast4: undefined,
-    externalPartnerKey: user.role === "SUPER_ADMIN" ? account.externalPartnerKey : undefined,
+    externalPartnerKey: owner ? account.externalPartnerKey : undefined,
+    partnerLinkConfirmedAt: owner ? account.partnerLinkConfirmedAt : undefined,
   };
 }

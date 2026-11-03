@@ -18,10 +18,19 @@ describe("Sidebar", () => {
     expect(screen.queryByText("Companies")).toBeNull();
   });
 
-  it("COMPANY_ADMIN sees Users but not Teams or Partner links", () => {
+  // CHANGED (security review finding F1): a team admin confirms the pending partner links their
+  // own team staked, so the page — and this nav entry — is theirs too. Teams stays owner-only, and
+  // so does the direct-assign card on that page, which the page itself decides.
+  it("COMPANY_ADMIN sees Users and Partner links, but not Teams", () => {
     render(<Sidebar role="COMPANY_ADMIN" />);
     expect(screen.getByText("Users")).toBeInTheDocument();
+    expect(screen.getByText("Partner links")).toBeInTheDocument();
     expect(screen.queryByText("Teams")).toBeNull();
+  });
+
+  it("MEMBER sees neither Users nor Partner links — approving is an admin act", () => {
+    render(<Sidebar role="MEMBER" />);
+    expect(screen.queryByText("Users")).toBeNull();
     expect(screen.queryByText("Partner links")).toBeNull();
   });
 

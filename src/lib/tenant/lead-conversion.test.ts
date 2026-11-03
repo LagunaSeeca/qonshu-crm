@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
-import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
+import { makeTeam, makeUser, su, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import { seedTeamStages, listStages } from "./stages";
 import { createLead, moveLeadStage } from "./leads";
 import { convertLeadToAccount } from "./lead-conversion";
@@ -148,7 +148,7 @@ describe("auto-convert on WON", () => {
   });
 });
 
-describe("partner auto-link resolves against the live upstream list", () => {
+describe("the PENDING partner link a conversion stakes", () => {
   let savedApiKey: string | undefined;
 
   beforeEach(async () => {
@@ -156,6 +156,8 @@ describe("partner auto-link resolves against the live upstream list", () => {
     savedApiKey = process.env.PARTNER_API_KEY;
     process.env.PARTNER_API_KEY = "sk_test_shared";
     vi.mocked(fetchPartners).mockReset();
+    // Deliberately a FULL list: every test below must pass with the upstream reachable and
+    // answering, because the conversion path no longer asks it anything. A call would be a bug.
     vi.mocked(fetchPartners).mockResolvedValue(partners("Sabah.City", "Komplex B"));
   });
   afterAll(async () => {
@@ -172,38 +174,52 @@ describe("partner auto-link resolves against the live upstream list", () => {
     return testPrisma.account.findFirstOrThrow({ where: { sourceLeadId: lead.id } });
   }
 
-  it("links when exactly one upstream complex matches — trimmed, case-insensitive, storing the exact upstream name", async () => {
+  // WON NO LONGER GRANTS ANYTHING (security review finding F1). Winning a lead used to resolve
+  // its name against the live upstream list and link on a hit, which meant closing a deal on a
+  // guessed building name handed the salesperson that complex's debt, payments and unit-level
+  // owner names/phones. The conversion now stakes the normalized name as a PENDING link and the
+  // owner decides. Note the trimming/case-folding is still exercised — the IDENTITY is the same,
+  // only the entitlement changed.
+  it("stakes the normalized building name, unconfirmed, whatever the upstream says", async () => {
     const acc = await convertLeadNamed("al-hit", "  sabah.CITY  ");
-    expect(acc.externalPartnerKey).toBe("Sabah.City");
-  });
-
-  it("does NOT link a name that is not in the upstream list", async () => {
-    const acc = await convertLeadNamed("al-none", "Total Nonsense Ltd");
-    expect(acc.externalPartnerKey).toBeNull();
-  });
-
-  it("refuses to guess when TWO upstream names normalize to the same building — account created unlinked", async () => {
-    vi.mocked(fetchPartners).mockResolvedValue(partners("Sabah City", "SABAH  CITY"));
-    const acc = await convertLeadNamed("al-ambiguous", "sabah city");
-    expect(acc.externalPartnerKey).toBeNull();
-  });
-
-  it("a dead upstream never fails the sale — account is created unlinked", async () => {
-    vi.mocked(fetchPartners).mockRejectedValue(new Error("boom"));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const acc = await convertLeadNamed("al-down", "Komplex B");
-    expect(acc.externalPartnerKey).toBeNull();
-    warn.mockRestore();
-  });
-
-  it("with PARTNER_API_KEY unset it does not call upstream at all", async () => {
-    delete process.env.PARTNER_API_KEY;
-    const acc = await convertLeadNamed("al-nokey", "Komplex B");
-    expect(acc.externalPartnerKey).toBeNull();
+    expect(acc.externalPartnerKey).toBe("sabah.city");
+    expect(acc.partnerLinkConfirmedAt).toBeNull();
     expect(fetchPartners).not.toHaveBeenCalled();
   });
 
-  it("writes a durable PartnerLinkAudit row naming the complex when it auto-links", async () => {
+  // A name upstream has never heard of is treated identically. That is the point: the two cases
+  // must be indistinguishable to the person creating the record, or the create path is an oracle.
+  it("stakes a name that is not in the upstream list just the same", async () => {
+    const acc = await convertLeadNamed("al-none", "Total Nonsense Ltd");
+    expect(acc.externalPartnerKey).toBe("total nonsense ltd");
+    expect(acc.partnerLinkConfirmedAt).toBeNull();
+  });
+
+  // Two upstream spellings of one building is now the OWNER's problem, refused at confirm time
+  // (see src/lib/tenant/partner-link-approval.test.ts), not a reason to lose the claim.
+  it("stakes the claim even when two upstream names would normalize to the same building", async () => {
+    vi.mocked(fetchPartners).mockResolvedValue(partners("Sabah City", "SABAH  CITY"));
+    const acc = await convertLeadNamed("al-ambiguous", "sabah city");
+    expect(acc.externalPartnerKey).toBe("sabah city");
+    expect(acc.partnerLinkConfirmedAt).toBeNull();
+  });
+
+  // tryAutoLink existed only to recover a link lost to an outage at this exact moment. With no
+  // upstream call on this path there is nothing to lose and nothing to recover.
+  it("a dead upstream is invisible to the sale", async () => {
+    vi.mocked(fetchPartners).mockRejectedValue(new Error("boom"));
+    const acc = await convertLeadNamed("al-down", "Komplex B");
+    expect(acc.externalPartnerKey).toBe("komplex b");
+  });
+
+  it("with PARTNER_API_KEY unset it behaves exactly the same", async () => {
+    delete process.env.PARTNER_API_KEY;
+    const acc = await convertLeadNamed("al-nokey", "Komplex B");
+    expect(acc.externalPartnerKey).toBe("komplex b");
+    expect(fetchPartners).not.toHaveBeenCalled();
+  });
+
+  it("writes a durable PartnerLinkAudit row naming the proposed complex", async () => {
     const { user, open, won } = await setup("al-audit");
     const lead = await createLead(testPrisma, user, { title: "Deal", contactName: "C", companyName: "Komplex B", stageId: open.id });
     await moveLeadStage(testPrisma, user, lead.id, won.id);
@@ -211,8 +227,10 @@ describe("partner auto-link resolves against the live upstream list", () => {
 
     const audit = await testPrisma.partnerLinkAudit.findMany({ where: { accountId: acc.id } });
     expect(audit).toHaveLength(1);
+    // "pending", not "auto_link": the row records a PROPOSAL by the salesperson, and the owner's
+    // later "confirm" row is what records the grant.
     expect(audit[0]).toMatchObject({
-      action: "auto_link", partnerName: "Komplex B", accountName: "Komplex B",
+      action: "pending", partnerName: "komplex b", accountName: "Komplex B",
       actorId: user.id, companyId: user.companyId,
     });
     // The trail no longer lives in AccountActivity.
@@ -224,7 +242,7 @@ describe("partner auto-link resolves against the live upstream list", () => {
     await testPrisma.account.create({
       data: {
         companyId: user.companyId!, teamId: team.id, buildingKey: buildingKey("Old Komplex"),
-        name: "Old Komplex", accountManagerId: user.id, externalPartnerKey: "Komplex B",
+        name: "Old Komplex", accountManagerId: user.id, ...confirmedPartnerLink("Komplex B"),
       },
     });
     // The link IS the claim (findPartnerKeyHolder): the building is refused at lead creation.
@@ -236,13 +254,16 @@ describe("partner auto-link resolves against the live upstream list", () => {
 
   it("never claims a complex an account in ANOTHER company holds — the partner namespace is global", async () => {
     // One shared X-API-Key means ?partner=Komplex B is the same upstream complex for every
-    // company, so @@unique([externalPartnerKey]) is global. The claim guard is per-company, so
-    // this company's lead is fine; only the LINK is refused and the account is created unlinked.
+    // company, so the partner claim is global while the building claim is per company. This
+    // company's lead is therefore fine; only the LINK is refused and the account is created with
+    // no link at all. The rival holds the upstream's DISPLAY spelling, which the exact-string
+    // unique index cannot match against our normalized "komplex b" — the normalized pre-check in
+    // pendingPartnerKey is what refuses it.
     const other = await setup("al-taken-other");
     await testPrisma.account.create({
       data: {
         companyId: other.c.id, teamId: other.team.id, buildingKey: buildingKey("Their Komplex"),
-        name: "Their Komplex", accountManagerId: other.user.id, externalPartnerKey: "Komplex B",
+        name: "Their Komplex", accountManagerId: other.user.id, ...confirmedPartnerLink("Komplex B"),
       },
     });
 
@@ -256,16 +277,18 @@ describe("partner auto-link resolves against the live upstream list", () => {
     expect(await testPrisma.account.count({ where: { externalPartnerKey: "Komplex B" } })).toBe(1);
   });
 
-  it("createAccountWithLogin links through the same upstream resolution — and has no explicit-key escape hatch", async () => {
+  it("createAccountWithLogin stakes the same pending link — and has no explicit-key escape hatch", async () => {
     const { user } = await setup("al-direct");
 
-    // Not upstream -> unlinked.
+    // Upstream membership is irrelevant on this path now: both of these stake their own name.
     const miss = await createAccountWithLogin(testPrisma, user, { name: "Not A Real Complex" });
-    expect(miss.account.externalPartnerKey).toBeNull();
+    expect(miss.account.externalPartnerKey).toBe("not a real complex");
+    expect(miss.account.partnerLinkConfirmedAt).toBeNull();
 
-    // Upstream -> linked. This is the ONLY way a company-facing call can produce a link; the
-    // `externalPartnerKey` parameter is absent from the type (see src/lib/tenant/accounts.ts).
+    // The `externalPartnerKey` parameter is absent from the type (see src/lib/tenant/accounts.ts),
+    // so no company-facing call can name a complex directly at all.
     const hit = await createAccountWithLogin(testPrisma, user, { name: "Sabah.City" });
-    expect(hit.account.externalPartnerKey).toBe("Sabah.City");
+    expect(hit.account.externalPartnerKey).toBe("sabah.city");
+    expect(hit.account.partnerLinkConfirmedAt).toBeNull();
   });
 });

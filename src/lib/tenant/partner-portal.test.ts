@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
-import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
+import { makeTeam, makeUser, su, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import { getAccount, listAccounts } from "./accounts";
 import { getCompanyAnalytics } from "./company-analytics";
 import { listCompanySettlements, addSettlementEntry } from "./settlements";
@@ -39,10 +39,10 @@ async function seed(slug: string) {
   const ownPartnerKey = `${slug}-own`;
   const otherPartnerKey = `${slug}-other`;
   const acc1 = await testPrisma.account.create({
-    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Own Account"), name: "Own Account", accountManagerId: admin.id, externalPartnerKey: ownPartnerKey },
+    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Own Account"), name: "Own Account", accountManagerId: admin.id, ...confirmedPartnerLink(ownPartnerKey) },
   });
   const acc2 = await testPrisma.account.create({
-    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Other Account"), name: "Other Account", accountManagerId: admin.id, externalPartnerKey: otherPartnerKey },
+    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Other Account"), name: "Other Account", accountManagerId: admin.id, ...confirmedPartnerLink(otherPartnerKey) },
   });
   statsByPartner.set(ownPartnerKey, makePartnerStats({ partner: ownPartnerKey, total_payments_amount: 150, total_debt: 40 }));
   statsByPartner.set(otherPartnerKey, makePartnerStats({ partner: otherPartnerKey, total_payments_amount: 5000, total_debt: 999 }));

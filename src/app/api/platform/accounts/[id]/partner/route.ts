@@ -12,10 +12,15 @@ import {
 } from "@/lib/platform/account-partners";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
 
-// The ONLY human-driven way to set an account's external partner link. SUPER_ADMIN-only, and
-// deliberately platform-scoped rather than tenant-scoped: a SUPER_ADMIN has companyId: null and
-// so cannot use /api/accounts/[id] at all, while a COMPANY_ADMIN must never be able to point
-// their account at another tenant's partner (the namespace is global — see
+// DIRECT assignment of an account's external partner link, off the live complex list.
+// SUPER_ADMIN-only, and deliberately so: the list this is driven by (GET /api/partners) names
+// complexes belonging to every team. The other way a link goes live is a team admin CONFIRMING a
+// link their own team staked — POST /api/accounts/[id]/partner-link, which verifies one named
+// complex server-side and so needs no list at all.
+//
+// It is deliberately platform-scoped rather than tenant-scoped: a SUPER_ADMIN has companyId: null
+// and so cannot use /api/accounts/[id] at all, while a COMPANY_ADMIN must never be able to point
+// their account at an arbitrary partner (the namespace is global — see
 // src/lib/platform/account-partners.ts). setAccountPartner asserts the role again internally, so
 // calling straight into the lib still fails closed.
 export const dynamic = "force-dynamic";

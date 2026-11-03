@@ -20,9 +20,10 @@ export type PartnerCredentials = {
   partner: string;
 };
 
-// Returns null when the account isn't linked yet (no partner name) or no key can be resolved
-// (no per-account override AND no PARTNER_API_KEY env var) — callers must treat that as
-// "not configured" and never call the API.
+// Returns null when the account isn't linked yet (no partner name), when its link is still
+// PENDING the owner's confirmation, or when no key can be resolved (no per-account override AND
+// no PARTNER_API_KEY env var) — callers must treat that as "not configured" and never call the
+// API.
 //
 // decryptSecret can throw (tampered ciphertext / missing PARTNER_API_KEY_SECRET) when a
 // per-account override is set; that throw is intentionally NOT caught here — same as the
@@ -31,6 +32,22 @@ export type PartnerCredentials = {
 export function resolvePartnerCredentials(account: Account): PartnerCredentials | null {
   const partner = account.externalPartnerKey;
   if (!partner) return null;
+
+  // THE ENTITLEMENT GATE (security review finding F1). A link is RECORDED the moment a salesperson
+  // names a building — that is how the one-building-one-team claim is staked — but naming a
+  // building is not permission to read that complex. Until the link is confirmed on
+  // /partner-links — by the account team's own admin, or by the owner, and never by the person who
+  // proposed it — partnerLinkConfirmedAt is null and this resolver answers exactly as it does for
+  // an unlinked account.
+  //
+  // IT IS ENFORCED HERE AND ONLY HERE ON PURPOSE. This function is the single chokepoint every
+  // partner read already goes through — the account Analytics tab and payments page
+  // (../tenant/partner-analytics.ts), the Objects tab with its unit-level owner names and phone
+  // numbers (src/app/api/accounts/[id]/objects/route.ts), the company-wide analytics fan-out
+  // (../tenant/company-analytics.ts, which the dashboard also reads through) and the reporting
+  // export (../tenant/reports.ts). Gating the chokepoint means a future consumer is gated by
+  // construction instead of by remembering.
+  if (!account.partnerLinkConfirmedAt) return null;
 
   const apiKey = account.externalApiKeyEnc
     ? decryptSecret(account.externalApiKeyEnc)

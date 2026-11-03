@@ -8,9 +8,14 @@ import type { PartnerListResponse } from "@/lib/partner-api/schema";
 // The partner namespace is GLOBAL (one shared PARTNER_API_KEY; `?partner=<name>` is the only
 // discriminator), so a tenant that could name a partner could read another tenant's debt,
 // payments and unit-level owner names/phones. These tests pin the boundary: the company-facing
-// account routes must IGNORE `externalPartnerKey` in the request body no matter who sends it,
-// while the SYSTEM auto-link keeps working untouched. (Auto-link now resolves against the LIVE
-// upstream list — the per-company PartnerAllowlist is gone — so there is nothing to "grant".)
+// account routes must IGNORE `externalPartnerKey` in the request body no matter who sends it.
+//
+// WHAT CHANGED (security review finding F1): there is no auto-link any more. Creating an account
+// stakes a PENDING link derived from the account's OWN NAME — never from the body — and that
+// pending link grants nothing until an admin confirms it — and never the person who proposed it.
+// So the question these tests pin
+// is sharper than before: whatever key a caller sends, the key that lands in the row is the
+// normalized form of the name they were entitled to type, and it is never live.
 vi.mock("@/db/client", () => ({ prisma: testPrisma }));
 
 let mockUser: SessionUser | null = null;
@@ -97,7 +102,10 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     expect("externalPartnerKey" in body.account).toBe(false);
 
     const row = await testPrisma.account.findUnique({ where: { id: body.account.id } });
-    expect(row?.externalPartnerKey).toBeNull();
+    // The pending stake comes from the NAME, so the row holds the normalized own name and NOT
+    // the complex the caller tried to name.
+    expect(row?.externalPartnerKey).toBe("totally unrelated name");
+    expect(row?.partnerLinkConfirmedAt).toBeNull();
   });
 
   it("POST: a MEMBER's externalPartnerKey is not persisted either", async () => {
@@ -109,7 +117,8 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     }));
     expect(res.status).toBe(201);
     const row = await testPrisma.account.findUnique({ where: { id: (await res.json()).account.id } });
-    expect(row?.externalPartnerKey).toBeNull();
+    expect(row?.externalPartnerKey).toBe("another unrelated name");
+    expect(row?.partnerLinkConfirmedAt).toBeNull();
   });
 
   it("POST: a body key cannot steal a partner already claimed by ANOTHER company", async () => {
@@ -121,29 +130,32 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     }));
     expect(res.status).toBe(201);
     const row = await testPrisma.account.findUnique({ where: { id: (await res.json()).account.id } });
-    expect(row?.externalPartnerKey).toBeNull();
+    // Staked off its own name, nowhere near the complex it asked for.
+    expect(row?.externalPartnerKey).toBe("thief co");
     // and the rightful holder is untouched
     const holderRow = await testPrisma.account.findUnique({ where: { id: holder.id } });
     expect(holderRow?.externalPartnerKey).toBe("Komplex B");
   });
 
-  it("POST: the SYSTEM auto-link still fires when the account's name matches a live upstream complex", async () => {
+  it("POST: naming a building stakes a PENDING link and never calls the upstream", async () => {
     await seed(`autolink-${ts}`);
 
     const res = await POST(jsonReq("http://localhost/api/accounts", "POST", { name: "Komplex B" }));
     expect(res.status).toBe(201);
     const row = await testPrisma.account.findUnique({ where: { id: (await res.json()).account.id } });
-    expect(row?.externalPartnerKey).toBe("Komplex B");
+    expect(row?.externalPartnerKey).toBe("komplex b");
+    expect(row?.partnerLinkConfirmedAt).toBeNull();
+    // The create path used to resolve this name against the live list, which made an ordinary
+    // write both an upstream fan-out and a yes/no oracle for "does complex X exist".
+    expect(fetchPartners).not.toHaveBeenCalled();
   });
 
-  // CHANGED ON PURPOSE (teams refactor): this was "naming an account after an UNGRANTED complex
-  // links nothing and reveals nothing", guarding an enumeration oracle between TENANTS. The
-  // allowlist (and Company as the customer boundary) is gone: there is one org and the boundary is
-  // the team, enforced by the building claim guard. Auto-link now keys purely off the live upstream
-  // list, so a name that matches a real complex DOES link and a made-up one does not. The
-  // security-relevant half of the old test is kept: a body externalPartnerKey still has no effect
-  // (see the tests above) and the stored key is the upstream's exact spelling, never the caller's.
-  it("POST: naming an account after a live complex links it (exact upstream spelling); a made-up name links nothing", async () => {
+  // CHANGED TWICE, and the second change is the point. The teams refactor made this "a name that
+  // matches a real complex DOES link, a made-up one does not" — which is precisely the oracle and
+  // the entitlement hole finding F1 identified. Now the upstream is not consulted at all, so the
+  // two cases are INDISTINGUISHABLE: both stake a pending claim on their own normalized name, and
+  // neither grants anything. Whether the complex is real is answered at confirm time, by the owner.
+  it("POST: a real complex and a made-up one are indistinguishable at creation", async () => {
     await seed(`autolink-live-${ts}`);
 
     const real = await POST(jsonReq("http://localhost/api/accounts", "POST", { name: "  komplex b " }));
@@ -151,19 +163,23 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     expect(real.status).toBe(201);
     expect(fake.status).toBe(201);
 
-    // Asserted on the STORED ROW, not the response: the body no longer answers the question (it
-    // was the enumeration oracle), while the link behaviour itself is unchanged.
     const rowOf = async (res: Response) =>
       testPrisma.account.findUnique({ where: { id: (await res.json()).account.id } });
-    expect((await rowOf(real))?.externalPartnerKey).toBe("Komplex B");
-    expect((await rowOf(fake))?.externalPartnerKey).toBeNull();
+    const realRow = await rowOf(real);
+    const fakeRow = await rowOf(fake);
+    // Same shape of outcome for both: own normalized name, unconfirmed.
+    expect(realRow?.externalPartnerKey).toBe("komplex b");
+    expect(fakeRow?.externalPartnerKey).toBe("no such complex at all");
+    expect(realRow?.partnerLinkConfirmedAt).toBeNull();
+    expect(fakeRow?.partnerLinkConfirmedAt).toBeNull();
+    expect(fetchPartners).not.toHaveBeenCalled();
   });
 
-  it("POST: auto-link still refuses a name already claimed elsewhere", async () => {
+  it("POST: the pending stake still refuses a name already claimed elsewhere", async () => {
     await seedForeignHolder("auto-taken", "Komplex B", "Komplex B");
 
-    // A real upstream complex, but already claimed by that other company's account: auto-link
-    // does not override the one-account-per-complex rule, and creation still succeeds, unlinked.
+    // Already claimed by that other company's account: staking does not override the
+    // one-account-per-complex rule, and creation still succeeds with no link at all.
     await seed(`auto-taken-me-${ts}`);
     const res = await POST(jsonReq("http://localhost/api/accounts", "POST", { name: "Komplex B" }));
     expect(res.status).toBe(201);
@@ -186,10 +202,16 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     expect(row?.externalPartnerKey).toBeNull();
   });
 
-  it("PATCH: a MEMBER cannot re-point an already-linked account at another partner", async () => {
+  it("PATCH: a MEMBER cannot re-point an already-CONFIRMED account at another partner", async () => {
     const { c, u, team } = await seed(`patch-repoint-${ts}`, "MEMBER");
+    // CONFIRMED, which is what "already linked" means: live data flows through this key. A rename
+    // must never re-point it — that is the long-standing rule, and the only writer of a live link
+    // is the SUPER_ADMIN's setAccountPartner.
     const acc = await testPrisma.account.create({
-      data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Linked"), name: "Linked", accountManagerId: u.id, externalPartnerKey: "Komplex B" },
+      data: {
+        companyId: c.id, teamId: team.id, buildingKey: buildingKey("Linked"), name: "Linked",
+        accountManagerId: u.id, externalPartnerKey: "Komplex B", partnerLinkConfirmedAt: new Date(),
+      },
     });
 
     const res = await PATCH(
@@ -201,13 +223,43 @@ describe("account routes ignore externalPartnerKey in the request body", () => {
     expect(res.status).toBe(200);
     const row = await testPrisma.account.findUnique({ where: { id: acc.id } });
     expect(row?.name).toBe("Renamed"); // the rest of the patch still applies
-    expect(row?.externalPartnerKey).toBe("Komplex B"); // the link does not
+    expect(row?.externalPartnerKey).toBe("Komplex B"); // the live link does not
+    expect(row?.partnerLinkConfirmedAt).not.toBeNull();
+  });
+
+  // A PENDING link DOES follow a rename — the pending key is derived from the name, so a typo
+  // would otherwise strand an unconfirmable proposal. What must not follow is the body: the new
+  // key is the new NAME, never the complex the caller asked for, and it is still unconfirmed.
+  it("PATCH: renaming re-stakes a PENDING link from the NAME, never from the body", async () => {
+    const { c, u, team } = await seed(`patch-pending-${ts}`, "MEMBER");
+    const acc = await testPrisma.account.create({
+      data: {
+        companyId: c.id, teamId: team.id, buildingKey: buildingKey("Guesss"), name: "Guesss",
+        accountManagerId: u.id, externalPartnerKey: "guesss",
+      },
+    });
+
+    const res = await PATCH(
+      jsonReq(`http://localhost/api/accounts/${acc.id}`, "PATCH", {
+        name: "Komplex B", externalPartnerKey: "Sabah.City",
+      }),
+      { params: Promise.resolve({ id: acc.id }) },
+    );
+    expect(res.status).toBe(200);
+    const row = await testPrisma.account.findUnique({ where: { id: acc.id } });
+    expect(row?.externalPartnerKey).toBe("komplex b");
+    expect(row?.partnerLinkConfirmedAt).toBeNull();
+    // The renamer becomes the proposer, so they cannot confirm it themselves.
+    expect(row?.partnerLinkProposedById).toBe(u.id);
   });
 
   it("PATCH: a COMPANY_ADMIN cannot CLEAR the link either", async () => {
     const { c, u, team } = await seed(`patch-clear-${ts}`);
     const acc = await testPrisma.account.create({
-      data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Linked"), name: "Linked", accountManagerId: u.id, externalPartnerKey: "Komplex B" },
+      data: {
+        companyId: c.id, teamId: team.id, buildingKey: buildingKey("Linked"), name: "Linked",
+        accountManagerId: u.id, externalPartnerKey: "Komplex B", partnerLinkConfirmedAt: new Date(),
+      },
     });
 
     const res = await PATCH(

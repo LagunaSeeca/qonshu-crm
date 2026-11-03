@@ -5,7 +5,7 @@ import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats } from "@/test/partner-stats-fixture";
 import { dbWithPhantomPartnerKey } from "@/test/duplicate-partner-db";
-import { makeTeam, makeUser, su, uniq, buildingKey } from "@/test/fixtures";
+import { makeTeam, makeUser, su, uniq, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 
 // Company analytics is now a LIVE fan-out: never reads persisted payment/debt tables, just
 // calls the external Partner API once per configured account and aggregates in memory. So the
@@ -19,14 +19,16 @@ const SHARED_API_KEY = "test-shared-partner-api-key";
 // "Configured" now means only a partner NAME — the account goes live off the shared
 // PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
 // Accounts need a teamId + buildingKey; both follow the manager so the row is consistent with the
-// team wiring. `partnerKey` omitted = a not-linked account.
+// team wiring. `partnerKey` omitted = a not-linked account; supplied = a CONFIRMED link, which
+// is what these fan-outs are about (a PENDING link is skipped as not_configured — see
+// ./partner-link-approval.test.ts).
 async function makeAccount(managerId: string, name: string, partnerKey?: string) {
   const m = await testPrisma.user.findUniqueOrThrow({ where: { id: managerId } });
   return testPrisma.account.create({
     data: {
       companyId: m.companyId!, teamId: m.teamId!, buildingKey: buildingKey(`${name}-${uniq()}`),
       name, accountManagerId: managerId,
-      ...(partnerKey ? { externalPartnerKey: partnerKey } : {}),
+      ...(partnerKey ? confirmedPartnerLink(partnerKey) : {}),
     },
   });
 }

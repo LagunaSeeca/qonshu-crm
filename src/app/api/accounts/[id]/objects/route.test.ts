@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
-import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
+import { makeTeam, makeUser, su, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import type { SessionUser } from "@/lib/auth/guards";
 import type { PartnerObjectsResponse } from "@/lib/partner-api/schema";
@@ -64,7 +64,7 @@ async function seedConfiguredAccount(slug: string) {
   const c = { id: team.companyId };
   const u = await makeUser("COMPANY_ADMIN", team);
   const acc = await testPrisma.account.create({
-    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Partner"), name: "Partner", accountManagerId: u.id, externalPartnerKey: "acme" },
+    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Partner"), name: "Partner", accountManagerId: u.id, ...confirmedPartnerLink("acme") },
   });
   const user: SessionUser = su(u);
   return { c, u, acc, user };

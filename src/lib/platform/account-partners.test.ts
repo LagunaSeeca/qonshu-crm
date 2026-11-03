@@ -22,7 +22,12 @@ async function seedAccount(slug: string, accountName: string, partnerKey: string
   const acc = await testPrisma.account.create({
     data: {
       companyId: c.id, teamId: team.id, buildingKey: buildingKey(accountName),
-      name: accountName, accountManagerId: u.id, externalPartnerKey: partnerKey,
+      name: accountName, accountManagerId: u.id,
+      // A seeded key here means a CONFIRMED link. These tests are about the owner's
+      // assignment surface; the PENDING state has its own suite
+      // (src/lib/tenant/partner-link-approval.test.ts), and
+      // listAllAccountsForPartnerAssignment deliberately reports a pending key as no key.
+      ...(partnerKey ? { externalPartnerKey: partnerKey, partnerLinkConfirmedAt: new Date() } : {}),
     },
   });
   return { c: company, team, u, acc };
@@ -64,7 +69,11 @@ describe("listTakenPartnerKeys", () => {
     await seedAccount(`t3-${ts}`, "Three", null);
 
     const taken = await listTakenPartnerKeys(testPrisma);
-    expect(taken).toEqual(new Set(["Komplex B", "Sabah.City"]));
+    // NORMALIZED, not the stored spelling. The two link states do not store the same string — a
+    // pending link holds the normalized building name while a confirmed one holds the upstream's
+    // display spelling — so a raw-string set would call "Komplex B" unclaimed while an account
+    // already had "komplex b" pending. Callers normalize the candidate before testing membership.
+    expect(taken).toEqual(new Set(["komplex b", "sabah.city"]));
   });
 
   it("is empty when nothing is linked", async () => {

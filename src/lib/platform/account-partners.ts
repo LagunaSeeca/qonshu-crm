@@ -1,17 +1,31 @@
-// SUPER_ADMIN-only assignment of an account's external partner link.
+// SUPER_ADMIN-only DIRECT assignment of an account's external partner link.
+//
+// This is not the only way a link is created, and it is not the common one. A salesperson naming a
+// building stakes a PENDING link, which a TEAM ADMIN then confirms for their own team — that path
+// is team-scoped and lives in src/lib/tenant/partner-link-approval.ts. This module is the other
+// act: the owner picking a complex off the live list and attaching it to an account nobody staked
+// one for, plus clearing a link that is already live.
+//
+// EVERY ENTRY POINT HERE IS assertRole(SUPER_ADMIN) AND EVERY QUERY IS UNSCOPED. Do not add a
+// team-scoped function to this file: the queries below are written on the assumption that the
+// caller is above every company, and a function copied into that style with a lesser caller would
+// read straight across teams. Team-scoped partner-link work belongs in the tenant module named
+// above.
 //
 // Why this lives in src/lib/platform/* and not src/lib/tenant/*: the external partner namespace
 // is GLOBAL. There is ONE shared PARTNER_API_KEY and `?partner=<name>` is the only thing that
 // distinguishes complexes, so a partner name means the same thing to every account on the
 // platform. If a COMPANY_ADMIN could name any partner, they could point their own account at
 // another team's complex and read its debt, payments and unit-level owner names/phones. So the
-// tenant-facing account routes do not accept `externalPartnerKey` at all, and the only
-// human-driven way to set it is here, behind assertRole(SUPER_ADMIN).
+// tenant-facing account routes do not accept `externalPartnerKey` at all, and the only way to
+// name a complex FREELY is here, behind assertRole(SUPER_ADMIN). The team-admin confirm path
+// cannot name a complex at all: it can only approve the name already on the account, which was
+// derived from the account's own building name and is re-verified upstream at that moment.
 //
-// Consequence of "global": these reads/writes are deliberately UNSCOPED by companyId — the same
-// sanctioned cross-tenant exception as src/lib/platform/overview.ts. Every entry point asserts
-// SUPER_ADMIN first, so a COMPANY_ADMIN calling straight into this module still gets a
-// ForbiddenError rather than a row they should not see.
+// Consequence of "global": these reads/writes are deliberately UNSCOPED by companyId — a
+// sanctioned cross-tenant exception. Every entry point asserts SUPER_ADMIN first, so a
+// COMPANY_ADMIN calling straight into this module still gets a ForbiddenError rather than a row
+// they should not see.
 import type { PrismaClient, Account } from "@prisma/client";
 import { assertRole, NotFoundError, type SessionUser } from "@/lib/auth/guards";
 import { isPartnerKeyTaken, isPartnerKeyConflict } from "@/lib/tenant/accounts";
@@ -46,13 +60,20 @@ export class PartnerNameHeldError extends Error {
 // The live list couldn't be fetched (PARTNER_API_KEY unset, upstream down, bad key, shape
 // drift), so the name can't be validated. Fail CLOSED — never persist an unverified name.
 export class PartnerListUnavailableError extends Error {}
-
+// A pending link has no live link to show, so the picker distinguishes the three states rather
+// than printing a key that authorizes nothing.
 export type PlatformAccountRow = {
   id: string;
   name: string;
   companyId: string;
   companyName: string;
+  // The CONFIRMED key, or null. A pending key is deliberately NOT reported here: the Assign/Clear
+  // control acts on live links, and showing a pending proposal in the "currently linked to" slot
+  // is how an owner comes to believe data is flowing when it is not.
   externalPartnerKey: string | null;
+  // There is a link recorded, awaiting confirmation. Governed by the team-scoped queue in
+  // ../tenant/partner-link-approval.ts, not by Assign/Clear here.
+  partnerLinkPending: boolean;
 };
 
 // Every account on the platform, with its owning company, for the assignment picker. Cross
@@ -64,14 +85,15 @@ export async function listAllAccountsForPartnerAssignment(
   assertRole(actor, ["SUPER_ADMIN"]);
   const rows = await db.account.findMany({
     select: {
-      id: true, name: true, companyId: true, externalPartnerKey: true,
+      id: true, name: true, companyId: true, externalPartnerKey: true, partnerLinkConfirmedAt: true,
       company: { select: { name: true } },
     },
     orderBy: [{ company: { name: "asc" } }, { name: "asc" }],
   });
   return rows.map((r) => ({
-    id: r.id, name: r.name, companyId: r.companyId,
-    companyName: r.company.name, externalPartnerKey: r.externalPartnerKey,
+    id: r.id, name: r.name, companyId: r.companyId, companyName: r.company.name,
+    externalPartnerKey: r.partnerLinkConfirmedAt ? r.externalPartnerKey : null,
+    partnerLinkPending: r.externalPartnerKey !== null && r.partnerLinkConfirmedAt === null,
   }));
 }
 
@@ -151,7 +173,10 @@ export async function setAccountPartner(
     // ../tenant/partner-link-audit.ts exists to prevent.
     return db.$transaction(async (tx) => {
       const cleared = await tx.account.update({
-        where: { id: accountId }, data: { externalPartnerKey: null },
+        // The confirmation stamp goes with the key. Leaving it set would make the NEXT pending
+        // link on this account read as already approved — a link staked by a salesperson that
+        // authorizes the complex's data from the moment it is written.
+        where: { id: accountId }, data: { externalPartnerKey: null, partnerLinkConfirmedAt: null },
       });
       // Only worth an audit row when something was actually unlinked. The name goes into the row:
       // after the clear the column is null, so the row is the only record of what it held.
@@ -204,7 +229,12 @@ export async function setAccountPartner(
   try {
     return await db.$transaction(async (tx) => {
       const updated = await tx.account.update({
-        where: { id: accountId }, data: { externalPartnerKey: name },
+        // CONFIRMED IMMEDIATELY. This path IS the owner saying yes: it is behind
+        // assertRole(SUPER_ADMIN), the name was just verified against the live list, and the
+        // actor is the same person who would otherwise confirm it a second later. Leaving it
+        // pending would make the owner approve their own explicit assignment, and would make this
+        // path write a link that silently reads as "not configured".
+        where: { id: accountId }, data: { externalPartnerKey: name, partnerLinkConfirmedAt: new Date() },
       });
       await recordPartnerLinkChange(tx as PrismaClient, {
         companyId: account.companyId, accountId: account.id, accountName: account.name,

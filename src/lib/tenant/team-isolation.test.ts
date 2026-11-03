@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vites
 import { NextRequest } from "next/server";
 import type { Account, Lead, Stage, StageType, User } from "@prisma/client";
 import { testPrisma, resetDb } from "@/test/db";
-import { makeCompany, makeTeam, makeUser, su, uniq, buildingKey } from "@/test/fixtures";
+import { makeCompany, makeTeam, makeUser, su, uniq, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
 import { ForbiddenError, NotFoundError, type SessionUser } from "@/lib/auth/guards";
 import { errorResponse } from "@/lib/http";
@@ -677,7 +677,7 @@ describe("team isolation", () => {
       const w = await world();
       process.env.PARTNER_API_KEY = "shared-test-key";
       for (const k of OWNERS) {
-        await testPrisma.account.update({ where: { id: w.accounts[k].id }, data: { externalPartnerKey: `partner-${k}` } });
+        await testPrisma.account.update({ where: { id: w.accounts[k].id }, data: confirmedPartnerLink(`partner-${k}`) });
       }
       vi.mocked(fetchPartnerStats).mockImplementation(async (p) =>
         makePartnerStats({

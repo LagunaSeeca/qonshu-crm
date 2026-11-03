@@ -3,7 +3,7 @@ import { testPrisma, resetDb } from "@/test/db";
 import { getDashboardStats } from "./dashboard";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { makePartnerStats } from "@/test/partner-stats-fixture";
-import { makeTeam, makeUser, su, uniq, buildingKey } from "@/test/fixtures";
+import { makeTeam, makeUser, su, uniq, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import type { Team, User } from "@prisma/client";
 
 // The dashboard's "partners" section is now a LIVE fan-out (via getCompanyAnalytics) instead of
@@ -21,7 +21,9 @@ async function makeAccount(team: Team, manager: User, name: string, partnerKey?:
   return testPrisma.account.create({
     data: {
       companyId: team.companyId, teamId: team.id, buildingKey: buildingKey(`${name}-${uniq()}`),
-      name, accountManagerId: manager.id, ...(partnerKey ? { externalPartnerKey: partnerKey } : {}),
+      // A supplied key means a CONFIRMED link: the dashboard reads the partner fan-out, and a
+      // pending link contributes nothing to it by design.
+      name, accountManagerId: manager.id, ...(partnerKey ? confirmedPartnerLink(partnerKey) : {}),
     },
   });
 }

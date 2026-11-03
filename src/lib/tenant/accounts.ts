@@ -4,10 +4,8 @@ import { ForbiddenError, isAdmin, NotFoundError, type SessionUser } from "@/lib/
 import { removeLeadDir } from "@/lib/files/storage";
 import { hashPassword } from "@/lib/auth/password";
 import { accountScopeWhere, resolveAssignableOwner, type AssignableOwner } from "./scope";
-import { assertBuildingUnclaimed, BuildingClaimedError, normalizeBuildingName } from "./building-claim";
+import { assertBuildingUnclaimed, normalizeBuildingName } from "./building-claim";
 import { recordPartnerLinkChange } from "./partner-link-audit";
-import { fetchPartners } from "@/lib/partner-api/client";
-import { resolveGlobalCredentials } from "@/lib/partner-api/credentials";
 
 export class InvalidPartnerLoginError extends Error {}
 // At most ONE ACTIVE PARTNER_VIEWER per account. A second live login for one building means two
@@ -27,70 +25,43 @@ export class PartnerLoginExistsError extends Error {}
 // produces a good error/skip, and the constraint as the thing that actually holds.
 // `exceptAccountId` lets a caller ask "taken by SOMEONE ELSE?" — the platform re-assign path
 // needs that so re-saving an account's own current partner isn't reported as a clash.
+//
+// COMPARED NORMALIZED, in JS. A PENDING link holds the normalized building name while a CONFIRMED
+// one holds the upstream's exact spelling, so an exact string test would call "Komplex B" free
+// while another account already had "komplex b" pending — two records for one complex, which is
+// precisely what the global namespace cannot have. Postgres cannot express normalizeBuildingName
+// identically (its lower() does not produce the combining dot the strip removes), and the scanned
+// set is small: only accounts that hold a key at all.
 export async function isPartnerKeyTaken(
   db: PrismaClient, key: string, exceptAccountId?: string,
 ): Promise<boolean> {
-  const holder = await db.account.findFirst({
-    where: { externalPartnerKey: key, ...(exceptAccountId ? { id: { not: exceptAccountId } } : {}) },
-    select: { id: true },
+  const target = normalizeBuildingName(key);
+  const holders = await db.account.findMany({
+    where: {
+      externalPartnerKey: { not: null },
+      ...(exceptAccountId ? { id: { not: exceptAccountId } } : {}),
+    },
+    select: { externalPartnerKey: true },
   });
-  return holder !== null;
+  return holders.some((h) => normalizeBuildingName(h.externalPartnerKey as string) === target);
 }
 
-// Every partner name claimed by an account ANYWHERE on the platform, in ONE query — the batched
-// counterpart to isPartnerKeyTaken, for callers that must test a whole live partner list at once
-// (GET /api/partners hides claimed partners so a name can't be double-claimed from the picker).
+// Every partner name claimed by an account ANYWHERE on the platform, NORMALIZED, in ONE query —
+// the batched counterpart to isPartnerKeyTaken, for callers that must test a whole live partner
+// list at once (GET /api/partners hides claimed partners so a name can't be double-claimed from
+// the picker).
+//
+// NORMALIZED, not raw, because a PENDING link holds the normalized building name while a CONFIRMED
+// one holds the upstream's exact spelling (confirmPartnerLink is where the exact spelling is
+// resolved). Comparing raw strings would show "Komplex B" in the picker as unclaimed while an
+// account already had "komplex b" pending — and assigning it would then collide at confirm time.
+// Callers must normalize the candidate the same way before testing membership.
 export async function listTakenPartnerKeys(db: PrismaClient): Promise<Set<string>> {
   const rows = await db.account.findMany({
     where: { externalPartnerKey: { not: null } },
     select: { externalPartnerKey: true },
   });
-  return new Set(rows.map((r) => r.externalPartnerKey as string));
-}
-
-// AUTO-LINK RESOLUTION, against the LIVE upstream partner list.
-//
-// WHY THE LIVE LIST AND NOT A LOCAL GRANT TABLE: the PartnerAllowlist that used to authorize this
-// existed because Company was the customer boundary — one tenant naming another tenant's complex
-// was a cross-customer data leak, and the 201 body confirming a hit was an enumeration oracle over
-// every complex on the platform. There is now ONE org (Qonshu) and the boundary is the TEAM, so
-// the authorization question changed shape: the thing that must not happen is one team taking a
-// building another team is already working. That is exactly what the building claim guard decides
-// (./building-claim.ts), it decides it under an advisory lock rather than check-then-act, and it
-// covers the lead side too — which a grant table never did. The grant table is therefore dead
-// weight, and the upstream list is the only source that can tell us the complex exists at all.
-//
-// EXACTLY ONE MATCH, or nothing. Zero means no such complex upstream. TWO OR MORE means two
-// upstream names normalize to the same building ("Sabah City" / "SABAH  CITY"), and picking either
-// one would silently point this account at a complex whose identity we cannot establish — so we
-// refuse to guess and leave the account unlinked for a SUPER_ADMIN to resolve by hand.
-//
-// NEVER THROWS, and never called from inside a transaction: it is an outbound HTTP request, and a
-// transaction held open across one holds the advisory lock (and a connection) for the duration of
-// somebody else's outage.
-export async function resolveUpstreamPartnerName(buildingKey: string): Promise<string | null> {
-  if (!buildingKey) return null;
-  const creds = resolveGlobalCredentials();
-  // PARTNER_API_KEY unset — nothing to ask. Not an error: a dev/test install with no partner API
-  // configured must still be able to create accounts, just unlinked.
-  if (!creds) return null;
-
-  let partners: { name: string }[];
-  try {
-    ({ partners } = await fetchPartners({ baseUrl: creds.baseUrl, apiKey: creds.apiKey }));
-  } catch (e) {
-    // Upstream down, bad key, timeout, shape drift. The account is created UNLINKED and the miss
-    // is logged — a Django outage must not fail the sale. tryAutoLink() below is the recovery:
-    // without it, an outage at this exact moment would leave the account unlinked permanently,
-    // because nothing else ever re-ran this resolution.
-    console.warn("[accounts] auto-link skipped: live partner list unavailable", {
-      buildingKey, reason: e instanceof Error ? e.message : String(e),
-    });
-    return null;
-  }
-
-  const hits = partners.filter((p) => normalizeBuildingName(p.name) === buildingKey);
-  return hits.length === 1 ? hits[0].name : null;
+  return new Set(rows.map((r) => normalizeBuildingName(r.externalPartnerKey as string)));
 }
 
 // True when a write failed the @@unique([externalPartnerKey]) backstop specifically, rather than
@@ -164,14 +135,14 @@ async function resolveOwnership(
 // ONE attempt, INSIDE the caller's transaction: claim the building, insert, and — only if a key was
 // actually written — record the audit row.
 //
-// Deliberately does NOT recover from a lost auto-link race: it lets the P2002 out so the recovery
-// can happen at a level that owns the TRANSACTION. On Postgres a failed statement aborts the whole
+// Deliberately does NOT recover from a lost claim race: it lets the P2002 out so the recovery can
+// happen at a level that owns the TRANSACTION. On Postgres a failed statement aborts the whole
 // transaction and Prisma issues no savepoints, so a retry issued here would not be a retry at all
 // — it would fail with "current transaction is aborted" (a DriverAdapterError with no `.code`,
 // which falls through errorResponse to a 500) and take the account down with it.
 async function insertAccount(
   tx: PrismaClient, user: SessionUser, data: NewAccountData,
-  owner: AssignableOwner, companyId: string, autoKey: string | null,
+  owner: AssignableOwner, companyId: string, pendingKey: string | null,
 ): Promise<Account> {
   const buildingKey = normalizeBuildingName(data.name);
 
@@ -193,20 +164,45 @@ async function insertAccount(
     primaryContactName: data.primaryContactName,
     primaryContactEmail: data.primaryContactEmail, primaryContactPhone: data.primaryContactPhone,
     sourceLeadId: data.sourceLeadId ?? null,
-    externalPartnerKey: autoKey,
+    externalPartnerKey: pendingKey,
+    // NEVER confirmed here, whatever else this function does. The whole point of the pending
+    // state is that the person creating the account cannot be the person who approves its link —
+    // see prisma/schema.prisma and ../partner-api/credentials.ts. Written explicitly rather than
+    // left to the column default so that intent is visible at the insert.
+    partnerLinkConfirmedAt: null,
+    // WHO PROPOSED IT. Recorded only when a link was actually staked, and it is what the
+    // two-person rule reads: this person cannot later confirm this link (unless they are the
+    // SUPER_ADMIN, who is exempt). A COMPANY_ADMIN creating an account is therefore proposing,
+    // not granting — the same as any member.
+    partnerLinkProposedById: pendingKey === null ? null : user.id,
   } });
 
-  if (autoKey === null) return account;
+  if (pendingKey === null) return account;
   // Attribution for the most security-sensitive write in the system — see ./partner-link-audit.ts.
-  // Same `tx` as the insert, so the audit row can never outlive the link it describes.
+  // Same `tx` as the insert, so the audit row can never outlive the link it describes. The actor
+  // is the salesperson: they really did propose this link, they just cannot grant it.
   await recordPartnerLinkChange(tx, {
     companyId, accountId: account.id, accountName: account.name,
-    actorId: user.id, action: "auto_link", partnerName: autoKey,
+    actorId: user.id, action: "pending", partnerName: pendingKey,
   });
   return account;
 }
 
-// Creates the account and, when exactly one live upstream complex matches its building, links it.
+// Creates the account and stakes a PENDING partner link on the building it names.
+//
+// NO UPSTREAM CALL HAPPENS HERE, and that is deliberate on two counts.
+//
+// 1. SECURITY. This path used to resolve the account's name against the LIVE upstream partner list
+//    and link on a hit, which made creating an account a yes/no oracle for "does complex X exist
+//    upstream" — observable through timing and through the upstream fan-out even after the resolved
+//    key was stripped from the 201 body. With the approval gate there is nothing to ask here:
+//    whether the complex exists is answered at CONFIRM time, by an admin who is entitled to decide
+//    it, and even there the answer never leaves the server as more than yes/no for one name.
+// 2. COST. It fired a full GET /partners at the upstream on every ordinary account write.
+//
+// So the pending key is derived from the NAME ALONE — the normalized building name, which is the
+// same identity the claim guard uses. confirmPartnerLink (src/lib/platform/account-partners.ts) is
+// what later re-checks it against the live list and swaps in the upstream's exact spelling.
 //
 // MUST be called with a client that is NOT already inside a transaction: this opens its own (the
 // claim guard's advisory lock is only a lock while a transaction is open) and the lost-race
@@ -215,27 +211,58 @@ export async function createAccount(
   db: PrismaClient, user: SessionUser, data: NewAccountData, opts?: CreateAccountOptions,
 ): Promise<Account> {
   const { owner, companyId } = await resolveOwnership(db, user, data, opts);
-
-  // STRICTLY BEFORE the transaction: this is an outbound HTTP call. Resolving it inside would hold
-  // the advisory lock on this building — and a pooled connection — for as long as the upstream
-  // takes to answer or time out.
-  const autoKey = await resolveUpstreamPartnerName(normalizeBuildingName(data.name));
+  const pendingKey = await pendingPartnerKey(db, data.name);
 
   const attempt = (key: string | null) =>
     db.$transaction((tx) => insertAccount(tx as PrismaClient, user, data, owner, companyId, key));
 
   try {
-    return await attempt(autoKey);
+    return await attempt(pendingKey);
   } catch (e) {
-    // Lost the race to a concurrent claim on the same complex — the upstream match is
-    // check-then-act, @@unique([externalPartnerKey]) is what actually decides. Auto-link is a
-    // convenience, never a dependency, so a lost race degrades to "created but unlinked", the same
-    // outcome as every other auto-link miss. Any OTHER unique violation still propagates
-    // (lead-conversion.ts needs the sourceLeadId one), and so does BuildingClaimedError — a taken
-    // BUILDING is a refusal, not a degradation.
+    // Lost the race for the GLOBAL partner namespace: another account already holds this key, and
+    // @@unique([externalPartnerKey]) is what actually decides it (the in-company claim guard above
+    // only sees one company). A pending link is a convenience, never a dependency, so a lost race
+    // degrades to "created with no link" — the SUPER_ADMIN can still assign one by hand. Any OTHER
+    // unique violation still propagates (lead-conversion.ts needs the sourceLeadId one), and so
+    // does BuildingClaimedError — a taken BUILDING is a refusal, not a degradation.
     if (!isPartnerKeyConflict(e)) throw e;
     return attempt(null);
   }
+}
+
+// The key a newly named building stakes its PENDING claim with: the normalized building name, the
+// same identity `buildingKey` and the claim guard use. Null means "stake nothing".
+//
+// Null for a name that normalizes to nothing (whitespace only). An empty-string key would be a
+// meaningless global claim, and Postgres would let exactly one account hold it platform-wide.
+//
+// ALSO NULL WHEN THE KEY IS ALREADY HELD, NORMALIZED, ANYWHERE ON THE PLATFORM — and that check
+// cannot be left to the unique index. @@unique([externalPartnerKey]) compares EXACT STRINGS, and
+// the two states of a link do not store the same string: a pending link holds "komplex b" while a
+// confirmed one holds the upstream's exact "Komplex B". So a member naming a building another
+// company's account already reads would sail past the index and stake a second claim on one
+// complex. The index catches two PENDING claims (identical normalized strings, which is the
+// ordinary collision); this catches pending-against-confirmed.
+//
+// Compared in JS for the reason stated throughout this module: Postgres `lower()` cannot produce
+// normalizeBuildingName's output (the U+0307 strip), so no index or generated column can express
+// this comparison. That makes it check-then-act, and the residual window — somebody confirming
+// another account onto this very complex in the milliseconds after this read — FAILS CLOSED: the
+// pending link it leaves behind can never be confirmed (confirmPartnerLink runs the same
+// normalized check) and shows up in the confirmation queue to be rejected.
+//
+// STRICTLY BEFORE the transaction: holding the advisory lock across this read would serialise
+// every account create in the company behind it for no benefit.
+//
+// `exceptAccountId` is REQUIRED on the rename path and must not be forgotten: a rename whose new
+// name normalizes to the key the account ALREADY holds ("Komplex B" -> "komplex  b") would
+// otherwise find itself in the taken set and drop its own proposal.
+async function pendingPartnerKey(
+  db: PrismaClient, name: string, exceptAccountId?: string,
+): Promise<string | null> {
+  const key = normalizeBuildingName(name);
+  if (!key) return null;
+  return (await isPartnerKeyTaken(db, key, exceptAccountId)) ? null : key;
 }
 
 // Same as createAccount, but can also provision the partner's PARTNER_VIEWER login in the same
@@ -249,7 +276,7 @@ export async function createAccountWithLogin(db: PrismaClient, user: SessionUser
     throw new InvalidPartnerLoginError("password must be at least 8 characters");
   }
   const { owner, companyId } = await resolveOwnership(db, user, accountData);
-  const autoKey = await resolveUpstreamPartnerName(normalizeBuildingName(accountData.name));
+  const pendingKey = await pendingPartnerKey(db, accountData.name);
 
   const attempt = (key: string | null) => db.$transaction(async (tx) => {
     const account = await insertAccount(tx as PrismaClient, user, accountData, owner, companyId, key);
@@ -269,69 +296,29 @@ export async function createAccountWithLogin(db: PrismaClient, user: SessionUser
   });
 
   try {
-    return await attempt(autoKey);
+    return await attempt(pendingKey);
   } catch (e) {
-    // Lost the auto-link race. Recovery is a fresh TRANSACTION, not a retried statement: the first
-    // attempt's P2002 has already aborted this one, so nothing more can run inside it (see
-    // insertAccount). The whole unit — account + partner login — is re-run with the link forced
-    // off. The failed attempt rolled back in full, so the re-run cannot duplicate the partner user.
+    // Lost the race for the global partner key. Recovery is a fresh TRANSACTION, not a retried
+    // statement: the first attempt's P2002 has already aborted this one, so nothing more can run
+    // inside it (see insertAccount). The whole unit — account + partner login — is re-run with the
+    // link forced off. The failed attempt rolled back in full, so the re-run cannot duplicate the
+    // partner user.
     if (!isPartnerKeyConflict(e)) throw e;
     return attempt(null);
   }
 }
 
-// A LAST-CHANCE auto-link for an account that was created unlinked, run when its Analytics tab is
-// opened (src/lib/tenant/partner-analytics.ts).
+// tryAutoLink IS GONE (security review finding F1).
 //
-// WHY IT EXISTS: createAccount resolves the upstream match over HTTP. If Django is down for the
-// thirty seconds in which the winning team registers the building, the account is created unlinked
-// and — without this — stays unlinked forever, because nothing ever re-ran the resolution. A
-// transient outage must not cost a permanent link.
+// It was a last-chance re-resolution of the upstream partner name, run as a side effect of opening
+// the Analytics tab, and its ONLY purpose was recovering a link that a Django outage had cost at
+// account-creation time. The create path no longer calls the upstream at all — the pending key
+// comes from the account's own name — so there is no outage to recover from and nothing left to
+// retry.
 //
-// Same claim rules as creation, and BEST EFFORT: this is a side effect of a READ, so a refusal or
-// a race leaves the account exactly as it was and the tab still renders.
-export async function tryAutoLink(
-  db: PrismaClient, user: SessionUser, account: Account,
-): Promise<Account> {
-  if (account.externalPartnerKey) return account;
-
-  const name = await resolveUpstreamPartnerName(account.buildingKey);
-  if (!name) return account;
-
-  try {
-    return await db.$transaction(async (tx) => {
-      await assertBuildingUnclaimed(tx as PrismaClient, {
-        companyId: account.companyId, key: account.buildingKey, user, name: account.name,
-        // Self and the won lead this account came from are not competitors for its own building.
-        exceptAccountId: account.id, exceptLeadId: account.sourceLeadId ?? undefined,
-      });
-      const linked = await tx.account.update({
-        where: { id: account.id }, data: { externalPartnerKey: name },
-      });
-      // actorId null — A SYSTEM ACTION, NOT A PERSON'S. Nobody asked for this link: it is the
-      // system re-running the upstream name resolution as a side effect of somebody opening a
-      // page. Stamping the reader's id would read, in the one audit that answers "who pointed this
-      // account at this complex", as that reader deliberately assigning a partner — a write their
-      // role may well be forbidden to make. (createAccount's auto_link keeps its actor: there the
-      // link rides along with a write that person really did request.)
-      await recordPartnerLinkChange(tx as PrismaClient, {
-        companyId: account.companyId, accountId: account.id, accountName: account.name,
-        actorId: null, action: "auto_link", partnerName: name,
-      });
-      return linked;
-    });
-  } catch (e) {
-    // A taken building, a lost race on the global partner key, or anything else: the account keeps
-    // its current (unlinked) state and the caller renders "not configured". Never rethrow — the
-    // user asked to look at a page, not to link anything.
-    if (!(e instanceof BuildingClaimedError) && !isPartnerKeyConflict(e)) {
-      console.warn("[accounts] opportunistic auto-link failed", {
-        accountId: account.id, reason: e instanceof Error ? e.message : String(e),
-      });
-    }
-    return account;
-  }
-}
+// Removing it also retires the last tenant-reachable WRITE to externalPartnerKey: the field now
+// changes only through createAccount (pending, grants nothing) and the SUPER_ADMIN paths in
+// src/lib/platform/account-partners.ts.
 
 // At most one ACTIVE PARTNER_VIEWER per account. INACTIVE ones are left alone on purpose: a
 // revoked login is history, and deactivating it is how a building's representative is replaced.
@@ -467,7 +454,27 @@ export async function updateAccount(db: PrismaClient, user: SessionUser, id: str
   const renamed = data.name !== undefined && data.name !== found.name;
   const buildingKey = renamed ? normalizeBuildingName(data.name!) : found.buildingKey;
 
-  return db.$transaction(async (tx) => {
+  // A RENAME RE-STAKES A PENDING LINK, and only a pending one.
+  //
+  // The pending key is derived from the account's name, so after a rename the old key no longer
+  // names the building the account now claims — a typo staked "sabah citi" and the corrected
+  // account would otherwise sit behind a proposal that can never be confirmed, with nothing in the
+  // app able to re-stake it. Re-pointing it is safe precisely because a pending link grants
+  // nothing: this is editing a proposal, not moving an entitlement.
+  //
+  // A CONFIRMED LINK IS NEVER TOUCHED HERE. That is the long-standing rule the whole module is
+  // built around — externalPartnerKey is what decides which complex's data flows in, so renaming
+  // an account must not re-point live data, and setAccountPartner (SUPER_ADMIN-only) stays the
+  // sole writer of a live link. A rename on a confirmed account changes its name and its
+  // buildingKey, and leaves the link exactly as the owner approved it.
+  //
+  // `restaking` is false when nothing about the link should change — not renamed, or renamed on a
+  // CONFIRMED link, which is never re-pointed here.
+  const restaking = renamed && !found.partnerLinkConfirmedAt;
+  // `let`, because the lost-race recovery below re-runs with the proposal forced off.
+  let restakeKey = restaking ? await pendingPartnerKey(db, data.name!, found.id) : null;
+
+  const attempt = () => db.$transaction(async (tx) => {
     // A RENAME IS A RE-CLAIM: "Sabah City" typed into an existing account grabs the same building
     // a create would have been refused for. Self is excepted (re-saving its own name is not a
     // clash) and so is the won lead it came from, which legitimately holds the same key.
@@ -497,12 +504,45 @@ export async function updateAccount(db: PrismaClient, user: SessionUser, id: str
       });
     }
 
-    return tx.account.update({ where: { id }, data: {
+    const updated = await tx.account.update({ where: { id }, data: {
       ...data,
       ...(renamed ? { buildingKey } : {}),
+      ...(restaking
+        ? {
+            externalPartnerKey: restakeKey,
+            partnerLinkConfirmedAt: null,
+            // The renamer becomes the proposer, and so cannot confirm it themselves. Null when the
+            // key is null, so a dropped proposal leaves no stale proposer behind.
+            partnerLinkProposedById: restakeKey === null ? null : user.id,
+          }
+        : {}),
       ...(reassigned ? { accountManagerId: reassigned.ownerId, teamId: reassigned.teamId } : {}),
     } });
+
+    // Audit the re-stake, and only a REAL one. Driven off `restakeKey`, which is the value actually
+    // written above — not off the pre-check — so the recovery path below, which forces the key to
+    // null, cannot leave behind a row claiming a proposal that was never staked. A rename landing
+    // on the same key is likewise not a transition worth a row.
+    if (restakeKey !== null && restakeKey !== found.externalPartnerKey) {
+      await recordPartnerLinkChange(tx as PrismaClient, {
+        companyId: found.companyId, accountId: found.id, accountName: updated.name,
+        actorId: user.id, action: "pending", partnerName: restakeKey,
+      });
+    }
+    return updated;
   });
+
+  try {
+    return await attempt();
+  } catch (e) {
+    // Lost the race for the global partner key between the pre-check and the write. Degrade to
+    // "renamed, proposal dropped" rather than failing the rename: the rename is what the user
+    // asked for, and the proposal is a convenience a SUPER_ADMIN can supply by hand. A fresh
+    // transaction, not a retried statement — the P2002 has already aborted the first one.
+    if (!isPartnerKeyConflict(e) || !restaking || restakeKey === null) throw e;
+    restakeKey = null;
+    return attempt();
+  }
 }
 
 // CROSS-TEAM TRANSFER: carry the account's custom field VALUES over to the target team's own

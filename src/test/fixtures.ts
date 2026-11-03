@@ -31,6 +31,19 @@ export function buildingKey(name: string): string {
   return name.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase().replace(/̇/g, "");
 }
 
+// A LIVE partner link, as a spread into an account's create data.
+//
+// Account.externalPartnerKey on its own no longer means the account can read anything: it is half
+// of a two-state machine, and a row with a key but no partnerLinkConfirmedAt is a PENDING link that
+// grants nothing (security review finding F1 — see src/lib/partner-api/credentials.ts). A test that
+// wants a working partner account must therefore say which state it means, and most mean this one.
+//
+// Pending is the other state, written as a bare `externalPartnerKey` with no stamp; it is spelled
+// out longhand at the few sites that test the gate itself, because there the state IS the subject.
+export function confirmedPartnerLink(partnerName: string) {
+  return { externalPartnerKey: partnerName, partnerLinkConfirmedAt: new Date() };
+}
+
 export async function makeCompany(opts: { name?: string; slug?: string } = {}) {
   const slug = opts.slug ?? uniq("co-");
   return testPrisma.company.create({

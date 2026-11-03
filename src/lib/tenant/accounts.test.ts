@@ -4,7 +4,7 @@ import { testPrisma, resetDb } from "@/test/db";
 import { makeTeam, makeTeamWithUsers, makeUser, su, uniq, buildingKey } from "@/test/fixtures";
 import {
   createAccount, createAccountWithLogin, listAccounts, getAccount, updateAccount,
-  createPartnerLogin, listPartnerLogins, tryAutoLink,
+  createPartnerLogin, listPartnerLogins,
   isPartnerKeyConflict, PartnerLoginExistsError,
 } from "./accounts";
 import { createFieldDef, setAccountFieldValue, getAccountFields } from "./account-fields";
@@ -13,9 +13,10 @@ import { ForbiddenError } from "@/lib/auth/guards";
 import { verifyPassword } from "@/lib/auth/password";
 import type { PartnerListResponse } from "@/lib/partner-api/schema";
 
-// Auto-link resolves against the LIVE upstream partner list, so every test here controls that
-// list explicitly. The default is EMPTY — most tests are not about linking and an account that
-// links by accident would claim a global partner name and change what later assertions see.
+// The CREATE path no longer calls the upstream at all — a newly named building stakes a PENDING
+// link derived from its own name (see the pending-link describe below). `fetchPartners` is still
+// mocked here, and still defaults to an EMPTY list, so that any test which accidentally reaches
+// for the upstream fails loudly instead of hitting the network.
 vi.mock("@/lib/partner-api/client", () => ({ fetchPartners: vi.fn() }));
 import { fetchPartners } from "@/lib/partner-api/client";
 
@@ -405,59 +406,64 @@ describe("accounts: partner logins", () => {
   });
 });
 
-describe("accounts: auto-link against the live upstream list", () => {
+describe("accounts: the PENDING partner link staked at creation", () => {
   beforeEach(prepare);
   afterAll(async () => { restore(); await testPrisma.$disconnect(); });
 
-  it("links on exactly ONE upstream name that normalizes to the building, storing the upstream spelling", async () => {
+  // THE CREATE PATH NO LONGER TALKS TO THE UPSTREAM AT ALL (security review finding F1). It used
+  // to resolve the account's name against the live partner list and link on a hit, which made
+  // creating an account both a yes/no oracle for "does complex X exist upstream" and an upstream
+  // fan-out on an ordinary write. The pending key now comes from the NAME ALONE; verification
+  // moved to confirm time, where the actor is the owner who may already see the whole list.
+  it("stakes the normalized building name, with no upstream call whatsoever", async () => {
     vi.mocked(fetchPartners).mockResolvedValue(partners("Sabah.City", "Komplex B"));
     const t = await makeTeamWithUsers();
     const acc = await createAccount(testPrisma, t.suMember, { name: "  komplex   B " });
-    expect(acc.externalPartnerKey).toBe("Komplex B");
-  });
-
-  it("stays unlinked when NO upstream name matches", async () => {
-    vi.mocked(fetchPartners).mockResolvedValue(partners("Komplex B"));
-    const t = await makeTeamWithUsers();
-    const acc = await createAccount(testPrisma, t.suMember, { name: "Total Nonsense Ltd" });
-    expect(acc.externalPartnerKey).toBeNull();
-    expect(await testPrisma.partnerLinkAudit.count()).toBe(0);
-  });
-
-  // Two upstream spellings of one building: picking either would point the account at a complex
-  // whose identity we cannot establish, so it refuses to guess.
-  it("stays unlinked when TWO upstream names normalize to the same building", async () => {
-    vi.mocked(fetchPartners).mockResolvedValue(partners("Komplex B", "komplex  b"));
-    const t = await makeTeamWithUsers();
-    const acc = await createAccount(testPrisma, t.suMember, { name: "Komplex B" });
-    expect(acc.externalPartnerKey).toBeNull();
-  });
-
-  it("creates the account UNLINKED when the upstream list is unavailable — a Django outage is not a failed sale", async () => {
-    vi.mocked(fetchPartners).mockRejectedValue(new Error("ECONNREFUSED"));
-    const t = await makeTeamWithUsers();
-    const acc = await createAccount(testPrisma, t.suMember, { name: "Komplex B" });
-    expect(acc.externalPartnerKey).toBeNull();
-    expect(acc.id).toBeTruthy();
-  });
-
-  it("does not call the upstream at all when PARTNER_API_KEY is unset", async () => {
-    delete process.env.PARTNER_API_KEY;
-    const t = await makeTeamWithUsers();
-    const acc = await createAccount(testPrisma, t.suMember, { name: "Komplex B" });
-    expect(acc.externalPartnerKey).toBeNull();
+    expect(acc.externalPartnerKey).toBe("komplex b");
+    expect(acc.partnerLinkConfirmedAt).toBeNull();
     expect(fetchPartners).not.toHaveBeenCalled();
   });
 
-  it("writes a DURABLE audit row that outlives the account, the lead, the actor and the company", async () => {
+  // A name that matches nothing upstream still stakes a claim — and still grants nothing. The
+  // claim is about CONTENTION between teams, which is a local question; whether the complex is
+  // real is the owner's question, answered at confirm time.
+  it("stakes a claim even for a name no upstream complex matches, and grants nothing either way", async () => {
     vi.mocked(fetchPartners).mockResolvedValue(partners("Komplex B"));
+    const t = await makeTeamWithUsers();
+    const acc = await createAccount(testPrisma, t.suMember, { name: "Total Nonsense Ltd" });
+    expect(acc.externalPartnerKey).toBe("total nonsense ltd");
+    expect(acc.partnerLinkConfirmedAt).toBeNull();
+  });
+
+  // Used to be "creates the account UNLINKED when the upstream list is unavailable". There is no
+  // upstream call left on this path, so a Django outage is not merely survivable — it is invisible.
+  // That is also why tryAutoLink is gone: it existed only to recover from this.
+  it("is completely unaffected by a Django outage", async () => {
+    vi.mocked(fetchPartners).mockRejectedValue(new Error("ECONNREFUSED"));
+    const t = await makeTeamWithUsers();
+    const acc = await createAccount(testPrisma, t.suMember, { name: "Komplex B" });
+    expect(acc.externalPartnerKey).toBe("komplex b");
+    expect(fetchPartners).not.toHaveBeenCalled();
+  });
+
+  it("stakes nothing for a name that normalizes to nothing", async () => {
+    const t = await makeTeamWithUsers();
+    const acc = await createAccount(testPrisma, t.suMember, { name: "   " });
+    // An empty-string key would be a meaningless claim that exactly one account could hold
+    // platform-wide, by virtue of the unique index.
+    expect(acc.externalPartnerKey).toBeNull();
+  });
+
+  it("writes a DURABLE audit row that outlives the account, the lead, the actor and the company", async () => {
     const t = await makeTeamWithUsers();
     const acc = await createAccount(testPrisma, t.suMember, { name: "Komplex B" });
 
     const audit = await testPrisma.partnerLinkAudit.findMany();
     expect(audit).toHaveLength(1);
+    // Action "pending", not "auto_link": the row records a PROPOSAL. The actor is the salesperson
+    // — they really did ask for this link, they just cannot grant it.
     expect(audit[0]).toMatchObject({
-      action: "auto_link", partnerName: "Komplex B", accountId: acc.id,
+      action: "pending", partnerName: "komplex b", accountId: acc.id,
       accountName: "Komplex B", companyId: t.companyId, actorId: t.member.id,
     });
     // The denormalized actor email is what still names a person once the user row is gone.
@@ -470,61 +476,44 @@ describe("accounts: auto-link against the live upstream list", () => {
     expect(after).toHaveLength(1);
     expect(after[0].accountId).toBeNull();
     expect(after[0].accountName).toBe("Komplex B");
-    expect(after[0].partnerName).toBe("Komplex B");
+    expect(after[0].partnerName).toBe("komplex b");
   });
 
   it("nothing is written to AccountActivity any more — the trail is cascade-proof by construction", async () => {
-    vi.mocked(fetchPartners).mockResolvedValue(partners("Komplex B"));
     const t = await makeTeamWithUsers();
     await createAccount(testPrisma, t.suMember, { name: "Komplex B" });
     expect(await testPrisma.accountActivity.count()).toBe(0);
   });
 
-  // The recovery requirement 4 exists for: a brief outage at the moment of winning must not cost
-  // the link permanently.
-  it("tryAutoLink links an account that was created during an outage", async () => {
-    vi.mocked(fetchPartners).mockRejectedValue(new Error("ECONNREFUSED"));
-    const t = await makeTeamWithUsers();
-    const acc = await createAccount(testPrisma, t.suMember, { name: "Komplex B" });
-    expect(acc.externalPartnerKey).toBeNull();
-
-    vi.mocked(fetchPartners).mockResolvedValue(partners("Komplex B"));
-    const linked = await tryAutoLink(testPrisma, t.suMember, acc);
-    expect(linked.externalPartnerKey).toBe("Komplex B");
-    expect(await testPrisma.partnerLinkAudit.count({ where: { action: "auto_link" } })).toBe(1);
-  });
-
-  it("tryAutoLink is a no-op for an already-linked account and never re-audits it", async () => {
-    vi.mocked(fetchPartners).mockResolvedValue(partners("Komplex B"));
-    const t = await makeTeamWithUsers();
-    const acc = await createAccount(testPrisma, t.suMember, { name: "Komplex B" });
-    const again = await tryAutoLink(testPrisma, t.suMember, acc);
-    expect(again.externalPartnerKey).toBe("Komplex B");
-    expect(await testPrisma.partnerLinkAudit.count()).toBe(1);
-  });
-
-  it("tryAutoLink leaves the account alone when the name is claimed elsewhere, and never throws", async () => {
-    const t = await makeTeamWithUsers();
-    // Created with no upstream list -> unlinked.
-    const acc = await createAccount(testPrisma, t.suMember, { name: "Komplex B" });
-    // Someone else wins the global partner name in the meantime.
-    const other = await makeTeamWithUsers({ companyId: t.companyId });
+  // THE EXACT-STRING INDEX CANNOT SEE THIS ONE. The rival holds the upstream's display spelling
+  // ("Komplex B", as a confirmed link does); our pending key would be "komplex b". Two different
+  // strings, so @@unique([externalPartnerKey]) permits both — which would be two accounts claiming
+  // one complex. The normalized pre-check in pendingPartnerKey is what refuses it.
+  it("stakes nothing when another company's account already holds the complex under a different spelling", async () => {
+    const rivalTeam = await makeTeam();
+    const rivalMember = await makeUser("MEMBER", rivalTeam);
     await testPrisma.account.create({ data: {
-      companyId: other.companyId, teamId: other.team.id, name: "Rival",
-      buildingKey: buildingKey("Rival"), accountManagerId: other.member.id,
-      externalPartnerKey: "Komplex B",
+      companyId: rivalTeam.companyId, teamId: rivalTeam.id, name: "Rival",
+      buildingKey: buildingKey("Rival"), accountManagerId: rivalMember.id,
+      externalPartnerKey: "Komplex B", partnerLinkConfirmedAt: new Date(),
     } });
 
-    vi.mocked(fetchPartners).mockResolvedValue(partners("Komplex B"));
-    const unchanged = await tryAutoLink(testPrisma, t.suMember, acc);
-    expect(unchanged.externalPartnerKey).toBeNull();
-    expect(await testPrisma.account.count({ where: { externalPartnerKey: "Komplex B" } })).toBe(1);
+    const t = await makeTeamWithUsers();
+    const acc = await createAccount(testPrisma, t.suMember, { name: "komplex  b" });
+    expect(acc.id).toBeTruthy(); // the sale still goes through
+    expect(acc.externalPartnerKey).toBeNull();
+    // and no audit row for a link that was never staked
+    expect(await testPrisma.partnerLinkAudit.count()).toBe(0);
   });
 });
 
-// The DB backstop. Every claim path (auto-link, the SUPER_ADMIN assign) reads then writes, so on
+// The DB backstop. Every claim path (the pending stake, the SUPER_ADMIN assign/confirm) reads then
+// writes, so on
 // its own it is racy: two concurrent creates for one complex can both pass their check and both
-// insert. `@@unique([externalPartnerKey])` is what actually makes that impossible.
+// insert. `@@unique([externalPartnerKey])` is what actually makes that impossible — for the
+// ordinary collision, where both are pending and so hold the IDENTICAL normalized string. The
+// pending-against-confirmed case stores two different spellings and is caught in JS instead; see
+// the last test of the describe above.
 describe("Account.externalPartnerKey is unique platform-wide", () => {
   beforeEach(prepare);
   afterAll(async () => { restore(); await testPrisma.$disconnect(); });
@@ -549,14 +538,19 @@ describe("Account.externalPartnerKey is unique platform-wide", () => {
 
   it("still allows any number of UNLINKED accounts — Postgres ignores NULLs in a unique index", async () => {
     const t = await makeTeamWithUsers();
-    await createAccount(testPrisma, t.suMember, { name: "One" });
-    await createAccount(testPrisma, t.suMember, { name: "Two" });
-    await createAccount(testPrisma, t.suMember, { name: "Three" });
+    // Named with whitespace-only strings so nothing is staked: createAccount DOES stake a pending
+    // key off a real name now, so three ordinary creates would be three distinct claims and would
+    // not exercise the index's NULL tolerance at all.
+    for (const name of ["   ", "  ", "    "]) {
+      await testPrisma.account.create({ data: {
+        companyId: t.companyId, teamId: t.team.id, name, buildingKey: uniq("bk-"),
+        accountManagerId: t.member.id, externalPartnerKey: null,
+      } });
+    }
     expect(await testPrisma.account.count({ where: { externalPartnerKey: null } })).toBe(3);
   });
 
   it("absorbs a claim that lands INSIDE the check-then-act window: created, unlinked, no audit row", async () => {
-    vi.mocked(fetchPartners).mockResolvedValue(partners("Komplex B"));
     const t = await makeTeamWithUsers();
     // The rival sits in ANOTHER company, which is the only shape this race has in practice: the
     // partner namespace is global while the building claim is per company, so a cross-company
@@ -567,9 +561,12 @@ describe("Account.externalPartnerKey is unique platform-wide", () => {
     const rivalMember = await makeUser("MEMBER", rivalTeam);
 
     // Deterministic stand-in for the interleaving no application-level check can prevent: the
-    // rival claim commits AFTER the upstream match reported the complex free and BEFORE our own
-    // insert runs. Only @@unique([externalPartnerKey]) can catch this. The hook goes on
-    // $transaction so it wraps the tx handle createAccount builds internally.
+    // rival claim commits AFTER pendingPartnerKey reported the key free and BEFORE our own insert
+    // runs. Only @@unique([externalPartnerKey]) can catch this. The hook goes on $transaction so it
+    // wraps the tx handle createAccount builds internally.
+    //
+    // The rival takes the NORMALIZED key, which is what a pending claim holds — i.e. the identical
+    // string we are about to insert, which is the collision the exact-string index exists to catch.
     let rivalClaimed = false;
     const withRival = (tx: typeof testPrisma) => new Proxy(tx, {
       get(txTarget, txProp, txReceiver) {
@@ -584,7 +581,7 @@ describe("Account.externalPartnerKey is unique platform-wide", () => {
                 await testPrisma.account.create({ data: {
                   companyId: rivalTeam.companyId, teamId: rivalTeam.id, name: "Komplex B",
                   buildingKey: buildingKey("Komplex B"), accountManagerId: rivalMember.id,
-                  externalPartnerKey: "Komplex B",
+                  externalPartnerKey: buildingKey("Komplex B"),
                 } });
               }
               return txTarget.account.create(args);
@@ -608,7 +605,7 @@ describe("Account.externalPartnerKey is unique platform-wide", () => {
     expect(acc.name).toBe("Komplex B");
     expect(acc.externalPartnerKey).toBeNull();
     // The rival keeps the sole claim, and no audit row exists for a link that never happened.
-    expect(await testPrisma.account.count({ where: { externalPartnerKey: "Komplex B" } })).toBe(1);
+    expect(await testPrisma.account.count({ where: { externalPartnerKey: buildingKey("Komplex B") } })).toBe(1);
     expect(await testPrisma.partnerLinkAudit.count()).toBe(0);
   });
 

@@ -3,9 +3,10 @@
 // Account.externalPartnerKey decides which external complex's debt, payments and unit-level
 // owner names/phones an account can read, over a GLOBAL namespace shared by every account on the
 // platform. Until now it changed with no record at all: nobody could answer "who linked this
-// account to this complex, and when". Every path that sets or clears it — the SUPER_ADMIN
-// assign/clear on /platform/accounts, the automatic link at account creation, and the
-// opportunistic re-link on the Analytics tab — writes one row through here.
+// account to this complex, and when". Every path that proposes, approves, refuses, sets or clears
+// it — the pending link recorded at account creation or rename, the confirm/reject on
+// /partner-links (a team admin for their own team, or the owner anywhere), and the SUPER_ADMIN
+// assign/clear on the same page — writes one row through here.
 //
 // IT WRITES TO PartnerLinkAudit, NOT AccountActivity. AccountActivity is cascade-deleted with its
 // account, so deleting the account destroyed the record of who had pointed it at which complex —
@@ -19,7 +20,27 @@
 // in sync afterwards — the audit records what the admin saw, not what things are called today.
 import type { PrismaClient } from "@prisma/client";
 
-export type PartnerLinkAction = "auto_link" | "assign" | "clear";
+// Every transition of the link state machine (Account.externalPartnerKey +
+// Account.partnerLinkConfirmedAt, with Account.partnerLinkProposedById recording who asked):
+//
+//   "pending" — somebody named (or renamed) a building, so a link was recorded that grants
+//               NOTHING yet. Actor is that person, and the same id is stored on
+//               Account.partnerLinkProposedById so they cannot confirm it themselves. This is a
+//               PROPOSAL, not an entitlement — an admin proposing is still only proposing.
+//   "confirm" — an admin approved it on /partner-links, after the name was re-checked against the
+//               live upstream list. Actor is that admin — the team's own admin, or the owner — and
+//               they are the ACCOUNTABLE PARTY for the data going out. THIS is the row that says
+//               when the account became able to read the complex. Never the proposer: the
+//               two-person rule forbids confirming your own proposal (SUPER_ADMIN exempt).
+//   "reject"  — an admin refused it; the key is cleared and the building freed.
+//   "assign"  — the SUPER_ADMIN set the link directly (also an approval, so it confirms too).
+//   "clear"   — a confirmed link was removed.
+//
+// "auto_link" is NOT in this union any more: nothing may write it. It is the historical value
+// carried by rows from before the approval gate existed, when naming a building granted the data
+// outright — see the migration note in prisma/schema.prisma. Rows keep it; readers must tolerate
+// it; writers cannot produce it.
+export type PartnerLinkAction = "pending" | "confirm" | "reject" | "assign" | "clear";
 
 // The `outcome` marker that used to identify an audit row while the trail lived in
 // AccountActivity. STILL RESERVED from tenant writers: historical rows carry it, and

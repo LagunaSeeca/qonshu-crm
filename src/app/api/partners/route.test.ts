@@ -144,9 +144,28 @@ describe("GET /api/partners — SUPER_ADMIN-only list of UNCLAIMED partners", ()
     expect(body.partners).toEqual([]);
   });
 
-  it("keeps partners whose name merely resembles a claim (exact match only)", async () => {
+  // INVERTED ON PURPOSE (security review finding F1). This used to assert that a claim matched
+  // EXACTLY, so a claim on "komplex b" left the upstream's "Komplex B" offered as assignable.
+  // The two link states no longer store the same string — a PENDING link holds the normalized
+  // building name, a confirmed one the upstream's display spelling — so an exact-match filter
+  // would offer a complex that is already claimed, and the assign would then be refused as held.
+  // The filter compares normalizeBuildingName on both sides, which is the same identity the
+  // building claim itself uses.
+  it("excludes a partner whose name normalizes onto a claim held in another spelling", async () => {
     mockUser = SUPER;
-    await seedClaim("komplex b", `case-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await seedClaim("komplex  b", `case-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    vi.mocked(fetchPartners).mockResolvedValue(rawList());
+
+    const res = await GET();
+    const body = await res.json();
+    expect(body.partners.map((p: { name: string }) => p.name)).toEqual(["Sabah.City"]);
+  });
+
+  // The flip side: normalization collapses case and whitespace, and nothing else. A genuinely
+  // different name is still offered.
+  it("keeps a partner whose name merely RESEMBLES a claim without normalizing onto it", async () => {
+    mockUser = SUPER;
+    await seedClaim("Komplex BB", `near-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     vi.mocked(fetchPartners).mockResolvedValue(rawList());
 
     const res = await GET();

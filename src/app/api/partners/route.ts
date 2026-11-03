@@ -4,6 +4,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { assertRole } from "@/lib/auth/guards";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
 import { listTakenPartnerKeys } from "@/lib/tenant/accounts";
+import { normalizeBuildingName } from "@/lib/tenant/building-claim";
 import { fetchPartners } from "@/lib/partner-api/client";
 import { resolveGlobalCredentials } from "@/lib/partner-api/credentials";
 import {
@@ -65,10 +66,15 @@ export async function GET() {
     }
 
     // Only query the DB once the upstream call succeeded — a failed fetch short-circuits above.
+    //
+    // listTakenPartnerKeys returns NORMALIZED keys, so the candidate is normalized too. A PENDING
+    // link holds the normalized building name while a confirmed one holds the upstream's exact
+    // spelling: comparing raw strings would offer "Komplex B" as assignable while an account
+    // already had "komplex b" pending, and the assign would then be refused as held.
     const taken = await listTakenPartnerKeys(prisma);
     const payload: PartnersPayload = {
       status: "ok",
-      partners: list.partners.filter((p) => !taken.has(p.name)),
+      partners: list.partners.filter((p) => !taken.has(normalizeBuildingName(p.name))),
     };
     return NextResponse.json(payload, { status: 200 });
   } catch (e) {

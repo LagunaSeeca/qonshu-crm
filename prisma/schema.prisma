@@ -281,7 +281,51 @@ model Account {
   // external analytics API (matched by company name per the partner API contract). The real
   // PartnerAnalyticsSource fetches by THIS key, not the display name, so renaming the account
   // never mis-routes another partner's data onto it. Null => not yet linked => syncs nothing.
+  //
+  // NON-NULL MEANS "A LINK EXISTS", NOT "A LINK IS LIVE". Read it together with
+  // partnerLinkConfirmedAt below: the pair is a two-state machine and only the confirmed state
+  // authorizes anything.
   externalPartnerKey  String?
+  // WHEN THE LINK WAS CONFIRMED. Null while externalPartnerKey is non-null = PENDING.
+  //
+  // WHY THIS COLUMN EXISTS (security review finding F1): dropping PartnerAllowlist swapped an
+  // ENTITLEMENT check ("may Qonshu read this complex's data at all?") for a CONTENTION check
+  // ("has anyone here claimed it?"). Nothing answered the first question any more, so a plain
+  // MEMBER could name a guessed building, have the account auto-link off the live upstream list,
+  // and read that complex's debt, payments and — via the Objects tab — every unit's owner name
+  // and phone number, including buildings Qonshu has no contract with.
+  //
+  // So naming a building still records the claim (that is what stops two members pending one
+  // building), but the link grants NOTHING until it is confirmed on /partner-links — by the
+  // account team's own admin, or by the owner, and NEVER by the person who proposed it
+  // (partnerLinkProposedById below).
+  //
+  // resolvePartnerCredentials (src/lib/partner-api/credentials.ts) is the single chokepoint that
+  // enforces it: a pending link resolves to null and every consumer renders "not configured".
+  //
+  // Set by: confirm (a team admin for their own team, or a super admin anywhere) and the
+  // SUPER_ADMIN direct assign. Cleared with the key by: reject and clear.
+  partnerLinkConfirmedAt DateTime?
+  // WHO PROPOSED THE PENDING LINK — the user whose account-create or rename staked it.
+  //
+  // This exists to enforce a TWO-PERSON RULE: nobody may confirm a link they themselves proposed.
+  // A COMPANY_ADMIN is also a salesperson, so without this an admin could name any building and
+  // immediately approve their own access to that complex's debt, payments and unit owners —
+  // leaving the gate with one person on both sides of it. A SUPER_ADMIN is exempt: they are the
+  // last resort, and without that exemption a link they proposed would be unapprovable by anyone.
+  //
+  // READ AS AUTHORIZATION INPUT, so it is stored here rather than derived from PartnerLinkAudit.
+  // The audit is a log — rows can be filtered on read and an account can be re-proposed — and
+  // "who may act now" must come from current state, not from a query over history.
+  //
+  // A BARE String WITH NO RELATION, deliberately, matching PartnerLinkAudit.actorId: this must not
+  // acquire a cascade or a RESTRICT that makes deleting a user depend on partner-link state. A
+  // dangling id is harmless — it matches no live actor, so it blocks nobody.
+  //
+  // Null means "no proposer on record": an unlinked account, a link the SUPER_ADMIN assigned
+  // directly, or a confirmed link that predates this column (see the migration's backfill note).
+  // Cleared on reject; KEPT on confirm, so the record of who asked survives the approval.
+  partnerLinkProposedById String?
   // Ciphertext of the secret X-API-Key used to authenticate to the partner's Django backend
   // (encryption performed by the integration layer, not by this model). Nullable until linked.
   externalApiKeyEnc   String?

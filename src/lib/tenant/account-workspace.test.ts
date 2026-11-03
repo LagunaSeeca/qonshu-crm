@@ -109,7 +109,12 @@ describe("the partner_link: outcome prefix is reserved from tenant writers", () 
     const rows = await listAccountActivities(testPrisma, su, A.acc.id);
     expect(rows.map((r) => r.body)).toEqual(["tenant note"]);
     expect(rows.every((r) => !r.outcome?.startsWith("partner_link:"))).toBe(true);
-    const audit = await testPrisma.partnerLinkAudit.findMany({ where: { accountId: A.acc.id } });
+    // Scoped to the "assign" action: creating the account through createAccount also stakes a
+    // PENDING link off its own name, which legitimately writes a "pending" row of its own. What
+    // this test is about is WHERE the trail lives, not how many rows the fixture produced.
+    const audit = await testPrisma.partnerLinkAudit.findMany({
+      where: { accountId: A.acc.id, action: "assign" },
+    });
     expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({ action: "assign", partnerName: "Komplex B", actorId: admin.id });
     // ...and an account that doesn't exist is an empty list, not a throw.

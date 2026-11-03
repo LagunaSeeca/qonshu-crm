@@ -55,7 +55,11 @@ type Account = {
   primaryContactName: string | null;
   primaryContactEmail: string | null;
   primaryContactPhone: string | null;
+  // The CONFIRMED partner link, shown read-only (the namespace is global, so only the owner
+  // may change it).
   externalPartnerKey: string | null;
+  // A link is recorded but not yet confirmed by the owner, so it grants nothing.
+  partnerLinkPending: boolean;
 };
 
 type Props = {
@@ -339,14 +343,22 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
               <div className="space-y-1.5">
                 <Label>Analytics partner link</Label>
                 <div className="rounded-lg border border-input bg-muted/40 px-2.5 py-2 text-sm">
-                  {account.externalPartnerKey ? (
+                  {/* A PENDING link is reported as pending, never as a link. The key exists in the
+                      row the moment the building is named, but it authorizes nothing until the
+                      an admin confirms it — printing it as "linked" here is what would make someone
+                      believe the Analytics tab is merely broken. */}
+                  {account.partnerLinkPending ? (
+                    <span className="text-muted-foreground">
+                      Awaiting owner confirmation — no partner data yet
+                    </span>
+                  ) : account.externalPartnerKey ? (
                     <span className="font-medium">{account.externalPartnerKey}</span>
                   ) : (
                     <span className="text-muted-foreground">Not linked yet</span>
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Managed by the owner — this link decides which partner&apos;s app users,
+                  Confirmed by the owner — this link decides which partner&apos;s app users,
                   payments &amp; debt sync into this account.
                 </p>
               </div>

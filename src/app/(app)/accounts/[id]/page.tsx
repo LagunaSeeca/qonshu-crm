@@ -49,7 +49,9 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
         primaryContactName: account.primaryContactName ?? null,
         primaryContactEmail: account.primaryContactEmail ?? null,
         primaryContactPhone: account.primaryContactPhone ?? null,
-        externalPartnerKey: account.externalPartnerKey ?? null,
+        externalPartnerKey: account.partnerLinkConfirmedAt ? account.externalPartnerKey : null,
+        partnerLinkPending:
+          account.externalPartnerKey !== null && account.partnerLinkConfirmedAt === null,
       }}
       members={people.map((m) => ({ id: m.id, name: m.name ?? m.email }))}
       owners={owners}

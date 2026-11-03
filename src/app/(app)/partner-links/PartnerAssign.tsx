@@ -18,7 +18,11 @@ export type AccountOption = {
   id: string;
   name: string;
   companyName: string;
+  // The CONFIRMED link only. A pending proposal is reported separately so it is never shown in the
+  // "currently linked to" slot — a pending key authorizes nothing, and printing it there is how an
+  // owner comes to believe data is already flowing.
   externalPartnerKey: string | null;
+  partnerLinkPending: boolean;
 };
 
 type Partner = { name: string; type: string };
@@ -158,6 +162,10 @@ export function PartnerAssign({ accounts }: { accounts: AccountOption[] }) {
             <span className="text-muted-foreground">Currently linked to: </span>
             {selected.externalPartnerKey ? (
               <span className="font-medium">{selected.externalPartnerKey}</span>
+            ) : selected.partnerLinkPending ? (
+              <span className="text-muted-foreground italic">
+                nothing yet — a link is awaiting your confirmation above
+              </span>
             ) : (
               <span className="text-muted-foreground italic">not linked yet</span>
             )}

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
-import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
+import { makeTeam, makeUser, su, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import { getAccountAnalytics, listAccountPayments } from "./partner-analytics";
 import { fetchPartnerStats, fetchPartners } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
@@ -34,7 +34,7 @@ async function seed(slug: string, opts?: { configured?: boolean }) {
       buildingKey: buildingKey("P"),
       name: "P",
       accountManagerId: u.id,
-      ...(configured ? { externalPartnerKey: `${slug}-partner` } : {}),
+      ...(configured ? confirmedPartnerLink(`${slug}-partner`) : {}),
     },
   });
   const user: SessionUser = su(u);
@@ -170,7 +170,10 @@ describe("partner analytics (live)", () => {
           buildingKey: buildingKey("Tampered"),
           name: "Tampered",
           accountManagerId: user.id,
-          externalPartnerKey: "tampered-partner",
+          // CONFIRMED: this test is about a decrypt failure, and the approval gate is checked
+          // BEFORE the decrypt, so a pending link would short-circuit to "not-configured" and
+          // this would stop testing decryption at all.
+          ...confirmedPartnerLink("tampered-partner"),
           externalApiKeyEnc: "not-a-valid-ciphertext",
         },
       });
@@ -186,15 +189,19 @@ describe("partner analytics (live)", () => {
       expect(fetchPartnerStats).not.toHaveBeenCalled();
     });
 
-    // THE OPPORTUNISTIC LINK IS A WRITE, AND A SUPER_ADMIN-RESERVED ONE.
+    // THIS READ IS NOW A PURE READ, FOR EVERY ROLE.
     //
-    // It sets Account.externalPartnerKey — the single field that decides which external complex's
-    // debt, payments and unit-level owner names/phones this account can read, over a namespace
-    // shared by every account on the platform — and stamps a PartnerLinkAudit row. Assigning that
-    // link is SUPER_ADMIN-only on every other path (src/lib/platform/account-partners.ts). But
-    // /api/accounts/[id]/analytics carries no assertRole and /analytics is partner-allowed, so a
-    // PARTNER_VIEWER merely loading its own page performed the most privileged write in the app,
-    // attributed to itself, plus a full upstream GET /partners fan-out on every refresh.
+    // It used to end in tryAutoLink, a WRITE hiding inside a read: it set
+    // Account.externalPartnerKey — the single field that decides which external complex's debt,
+    // payments and unit-level owner names/phones an account can read, over a namespace shared by
+    // every account on the platform — and stamped a PartnerLinkAudit row, plus a full upstream
+    // GET /partners fan-out on every refresh. /api/accounts/[id]/analytics carries no assertRole
+    // and /analytics is partner-allowed, so the least-privileged role in the system performed the
+    // most privileged write in it just by loading its own page.
+    //
+    // A role check was the first fix; removing the mechanism is the real one (security review
+    // finding F1). The two tests below pin that: neither a PARTNER_VIEWER nor the account's own
+    // manager causes any write or any upstream call.
     it("a PARTNER_VIEWER's own analytics read writes no link, no audit row, and never asks upstream", async () => {
       const { team, acc } = await seed("pa-partner-link", { configured: false });
       // Upstream DOES hold a complex matching this account's building — the exact state in which
@@ -211,24 +218,24 @@ describe("partner analytics (live)", () => {
       expect(a.status).toBe("not-configured");
     });
 
-    it("the account's own manager still gets the opportunistic link, audited as a SYSTEM action", async () => {
+    // INVERTED (security review finding F1). This used to assert that the account's own manager
+    // DID get the opportunistic link, audited as a system action — i.e. that opening a tab granted
+    // a complex purely because its name matched something upstream. That is the hole. The manager
+    // is now treated exactly like the partner above: nothing is written, nothing is asked, and an
+    // unlinked account stays unlinked until an admin acts on /partner-links.
+    it("the account's own manager gets no link either — the read writes nothing at all", async () => {
       const { acc, user } = await seed("pa-autolink-member", { configured: false });
       vi.mocked(fetchPartners).mockResolvedValue({ partners: [{ name: "P", type: "RESIDENTIAL" }] });
       vi.mocked(fetchPartnerStats).mockResolvedValue(makePartnerStats({ partner: "P" }));
 
       const a = await getAccountAnalytics(testPrisma, user, acc.id, range);
 
-      expect(a.status).toBe("ok");
+      expect(a.status).toBe("not-configured");
       const row = await testPrisma.account.findUniqueOrThrow({ where: { id: acc.id } });
-      expect(row.externalPartnerKey).toBe("P");
-      const audit = await testPrisma.partnerLinkAudit.findMany();
-      expect(audit).toHaveLength(1);
-      // actorId null: NOBODY decided this link. It is the system resolving a building name against
-      // the upstream list as a side effect of a page load, so the trail must read as a system
-      // action rather than naming whoever happened to open the tab as the person who assigned a
-      // partner — a write that role is not allowed to make deliberately.
-      expect(audit[0]).toMatchObject({ action: "auto_link", partnerName: "P", actorId: null });
-      expect(audit[0].actorEmail).toBeNull();
+      expect(row.externalPartnerKey, "link written by a read").toBeNull();
+      expect(await testPrisma.partnerLinkAudit.count(), "audit rows").toBe(0);
+      expect(fetchPartners, "upstream partner-list fan-out").not.toHaveBeenCalled();
+      expect(fetchPartnerStats, "upstream stats call").not.toHaveBeenCalled();
     });
   });
 

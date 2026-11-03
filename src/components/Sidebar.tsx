@@ -49,17 +49,20 @@ export function Sidebar({ role, companyName, teamName, onNavigate }: SidebarProp
   const pathname = usePathname();
   const nav = role === "PARTNER_VIEWER" ? NAV.filter((item) => PARTNER_NAV_HREFS.has(item.href)) : NAV;
 
-  // Team admins and the owner administer users; only the owner manages teams and partner links.
+  // Team admins and the owner administer users AND decide partner links — a team admin confirms
+  // the pending links their own team staked (src/lib/tenant/partner-link-approval.ts), which is
+  // why Partner links is no longer owner-only here. Only the owner manages teams, and only the
+  // owner sees the direct-assign card on that page (the page itself decides that, not the nav).
   // Built from the real role helper so the nav can never disagree with the server guards.
   const adminUser = { id: "", companyId: null, teamId: null, role };
   const adminNav = [
-    ...(isAdmin(adminUser) ? [{ href: "/users", label: "Users", icon: Users }] : []),
-    ...(role === "SUPER_ADMIN"
+    ...(isAdmin(adminUser)
       ? [
-          { href: "/teams", label: "Teams", icon: UsersRound },
+          { href: "/users", label: "Users", icon: Users },
           { href: "/partner-links", label: "Partner links", icon: Link2 },
         ]
       : []),
+    ...(role === "SUPER_ADMIN" ? [{ href: "/teams", label: "Teams", icon: UsersRound }] : []),
   ];
 
   function isActive(href: string) {
