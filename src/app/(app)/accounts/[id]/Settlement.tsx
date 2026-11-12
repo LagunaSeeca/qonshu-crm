@@ -25,6 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatMoney } from "@/lib/money";
 
 type EntryType = "COLLECTED" | "TRANSFER";
 type EntryMethod = "CASH" | "BANK_TRANSFER" | "MANUAL";
@@ -55,9 +56,6 @@ type Props = {
   isAdmin?: boolean;
   initialData?: SettlementData;
 };
-
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 const TYPE_LABELS: Record<string, string> = { COLLECTED: "Collected", TRANSFER: "Transfer" };
 const METHOD_LABELS: Record<string, string> = { CASH: "Cash", BANK_TRANSFER: "Bank account", MANUAL: "Manual" };
@@ -178,19 +176,19 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
             <ArrowDownCircle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(data?.collected ?? 0)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(data?.collected ?? 0)}</div>
             <div className="mt-3 space-y-1 text-xs text-muted-foreground">
               <div className="flex items-center justify-between">
                 <span>Cash</span>
-                <span className="tabular-nums">{money(data?.collectedByMethod?.CASH ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.collectedByMethod?.CASH ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Bank account</span>
-                <span className="tabular-nums">{money(data?.collectedByMethod?.BANK_TRANSFER ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.collectedByMethod?.BANK_TRANSFER ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Manual</span>
-                <span className="tabular-nums">{money(data?.collectedByMethod?.MANUAL ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.collectedByMethod?.MANUAL ?? 0)}</span>
               </div>
             </div>
           </CardContent>
@@ -201,19 +199,19 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
             <ArrowUpCircle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(data?.transferred ?? 0)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(data?.transferred ?? 0)}</div>
             <div className="mt-3 space-y-1 text-xs text-muted-foreground">
               <div className="flex items-center justify-between">
                 <span>Bank transfer</span>
-                <span className="tabular-nums">{money(data?.transferredByMethod?.BANK_TRANSFER ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.transferredByMethod?.BANK_TRANSFER ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Cash</span>
-                <span className="tabular-nums">{money(data?.transferredByMethod?.CASH ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.transferredByMethod?.CASH ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Manual</span>
-                <span className="tabular-nums">{money(data?.transferredByMethod?.MANUAL ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.transferredByMethod?.MANUAL ?? 0)}</span>
               </div>
             </div>
           </CardContent>
@@ -224,7 +222,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
             <Landmark className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold tabular-nums text-foreground">{money(data?.owed ?? 0)}</div>
+            <div className="text-2xl font-bold tabular-nums text-foreground">{formatMoney(data?.owed ?? 0)}</div>
           </CardContent>
         </Card>
       </div>
@@ -355,7 +353,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
                                 ? "Manual"
                                 : "—"}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums font-medium">{money(entry.amount)}</TableCell>
+                        <TableCell className="text-right tabular-nums font-medium">{formatMoney(entry.amount)}</TableCell>
                         <TableCell className="text-foreground">{entry.note ?? "—"}</TableCell>
                         {isAdmin && (
                           <TableCell>

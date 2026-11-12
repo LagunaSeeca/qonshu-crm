@@ -5,7 +5,7 @@ import { getAccountAnalytics, listAccountPayments } from "./partner-analytics";
 import { fetchPartnerStats, fetchPartners } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
-import { NotFoundError } from "@/lib/auth/guards";
+import { NotFoundError, ForbiddenError } from "@/lib/auth/guards";
 import type { SessionUser } from "@/lib/auth/guards";
 
 // Single-account analytics is now LIVE-only: every KPI/breakdown comes straight from the
@@ -22,10 +22,10 @@ const range = { from: new Date("2026-06-01T00:00:00Z"), to: new Date("2026-06-30
 
 // "Configured" now means only a partner NAME — the account goes live off the shared
 // PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
-async function seed(slug: string, opts?: { configured?: boolean }) {
+async function seed(slug: string, opts?: { configured?: boolean; role?: "MEMBER" | "COMPANY_ADMIN" }) {
   const team = await makeTeam({ name: slug });
   const c = { id: team.companyId };
-  const u = await makeUser("MEMBER", team);
+  const u = await makeUser(opts?.role ?? "MEMBER", team);
   const configured = opts?.configured ?? true;
   const acc = await testPrisma.account.create({
     data: {
@@ -92,7 +92,7 @@ describe("partner analytics (live)", () => {
       const a = await getAccountAnalytics(testPrisma, user, acc.id, range);
 
       expect(a.status).toBe("ok");
-      expect(a.kpis.activeUsers).toBe(9);
+      expect(a.kpis.activeUsers).toBe(6); // logged_in_users, not active_users (9)
       expect(a.kpis.totalUsers).toBe(12);
       expect(a.kpis.totalDebt).toBe(456.7); // from total_debt
       expect(a.kpis.paymentsCount).toBe(4);
@@ -126,8 +126,31 @@ describe("partner analytics (live)", () => {
           dateFrom: "2026-06-01",
           dateTo: "2026-06-30",
           page: 1,
-          pageSize: 1,
+          pageSize: 500,
         }),
+      );
+    });
+
+    it("uniquePayingUsers counts DISTINCT online (CARD) payers in the requested range; no identities in the DTO", async () => {
+      const { acc, user } = await seed("pa-uniq");
+      vi.mocked(fetchPartnerStats).mockResolvedValue(
+        makePartnerStats({
+          logged_in_users: 5,
+          payments: [
+            makePartnerPayment({ id: "a1", user_id: "u1", user_name: "Alice Secret", method: "CARD" }),
+            makePartnerPayment({ id: "a2", user_id: "u1", user_name: "Alice Secret", method: "CARD" }),
+            makePartnerPayment({ id: "b1", user_id: "u2", user_name: "Bob Secret", method: "CARD" }),
+            makePartnerPayment({ id: "c1", user_id: "u3", user_name: "Cash Secret", method: "CASH" }),
+            makePartnerPayment({ id: "m1", user_id: "u4", user_name: "Manual Secret", method: "MANUAL" }),
+          ],
+        }),
+      );
+      const a = await getAccountAnalytics(testPrisma, user, acc.id, range);
+      expect(a.kpis.uniquePayingUsers).toBe(2);
+      expect(a.kpis.activeUsers).toBe(5);
+      expect(JSON.stringify(a)).not.toMatch(/Secret|u1|u2/);
+      expect(fetchPartnerStats).toHaveBeenCalledWith(
+        expect.objectContaining({ dateFrom: "2026-06-01", dateTo: "2026-06-30" }),
       );
     });
 
@@ -241,7 +264,7 @@ describe("partner analytics (live)", () => {
 
   describe("listAccountPayments", () => {
     it("passes through page/pageSize and maps rows + pagination from the live response", async () => {
-      const { acc, user } = await seed("pa-pg");
+      const { acc, user } = await seed("pa-pg", { role: "COMPANY_ADMIN" });
       vi.mocked(fetchPartnerStats).mockResolvedValue(
         makePartnerStats({
           payments: [
@@ -266,9 +289,15 @@ describe("partner analytics (live)", () => {
       expect(fetchPartnerStats).toHaveBeenCalledWith(expect.objectContaining({ page: 2, pageSize: 10 }));
     });
 
+    it("a MEMBER is refused payment detail outright (ForbiddenError) and the API is never called", async () => {
+      const { acc, user } = await seed("pa-pg-member"); // role MEMBER
+      await expect(listAccountPayments(testPrisma, user, acc.id, { ...range })).rejects.toBeInstanceOf(ForbiddenError);
+      expect(fetchPartnerStats).not.toHaveBeenCalled();
+    });
+
     it("returns an empty not-configured page for a cross-tenant account without calling the API", async () => {
-      const { acc } = await seed("pa-pg-x1");
-      const other = await seed("pa-pg-x2");
+      const { acc } = await seed("pa-pg-x1", { role: "COMPANY_ADMIN" });
+      const other = await seed("pa-pg-x2", { role: "COMPANY_ADMIN" });
 
       const res = await listAccountPayments(testPrisma, other.user, acc.id, { ...range });
 
@@ -279,7 +308,7 @@ describe("partner analytics (live)", () => {
     });
 
     it("maps upstream failure statuses the same way as getAccountAnalytics", async () => {
-      const { acc, user } = await seed("pa-pg-fail");
+      const { acc, user } = await seed("pa-pg-fail", { role: "COMPANY_ADMIN" });
       vi.mocked(fetchPartnerStats).mockRejectedValue(new UnknownPartnerError());
 
       const res = await listAccountPayments(testPrisma, user, acc.id, { ...range });

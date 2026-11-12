@@ -1,8 +1,9 @@
 import type { PrismaClient } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
-import { NotFoundError } from "@/lib/auth/guards";
+import { NotFoundError, assertCan } from "@/lib/auth/guards";
 import { getAccount } from "./accounts";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
+import { fetchAllPayments, countUniquePayers } from "./partner-payments";
 import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import { InvalidApiKeyError, UnknownPartnerError } from "@/lib/partner-api/errors";
 import type { PartnerStatsResponse } from "@/lib/partner-api/schema";
@@ -25,7 +26,8 @@ type CategoryRow = { category: string; amount: number };
 export type AccountAnalytics = {
   status: AnalyticsStatus;
   kpis: {
-    activeUsers: number;
+    activeUsers: number; // Partner API `logged_in_users` — users active on the app
+    uniquePayingUsers: number; // DISTINCT online (CARD) payers in the range — a count only, no identities
     totalUsers: number;
     totalDebt: number; // current debt snapshot from `total_debt` (the historical debt trend is gone)
     paymentsCount: number;
@@ -76,20 +78,21 @@ function statusForError(e: unknown): AnalyticsStatus {
 function emptyAnalytics(status: AnalyticsStatus): AccountAnalytics {
   return {
     status,
-    kpis: { activeUsers: 0, totalUsers: 0, totalDebt: 0, paymentsCount: 0, paymentsAmount: 0, utilityCount: 0, utilityAmount: 0 },
+    kpis: { activeUsers: 0, uniquePayingUsers: 0, totalUsers: 0, totalDebt: 0, paymentsCount: 0, paymentsAmount: 0, utilityCount: 0, utilityAmount: 0 },
     installs: { total: 0, ios: 0, android: 0, activated: 0, activationRate: 0 },
     byMethod: [],
     byCategory: [],
   };
 }
 
-function mapStats(s: PartnerStatsResponse): AccountAnalytics {
+function mapStats(s: PartnerStatsResponse, uniquePayingUsers: number): AccountAnalytics {
   const activationRate =
     s.total_installations > 0 ? Math.round((s.logged_in_users / s.total_installations) * 1000) / 10 : 0;
   return {
     status: "ok",
     kpis: {
-      activeUsers: s.active_users,
+      activeUsers: s.logged_in_users,
+      uniquePayingUsers,
       totalUsers: s.total_users,
       totalDebt: s.total_debt,
       paymentsCount: s.total_payments_count,
@@ -150,18 +153,16 @@ export async function getAccountAnalytics(
   if (!creds) return emptyAnalytics("not-configured");
 
   try {
-    // pageSize 1: this endpoint only needs the range-wide aggregates (which are independent of
-    // pagination); the payments page itself is served by listAccountPayments.
-    const stats = await fetchPartnerStats({
+    // Pages every payment in the range (live, not persisted) ONLY to count distinct payers; the
+    // range-wide aggregates come from the page-1 summary. Rows themselves are never returned here.
+    const all = await fetchAllPayments({
       baseUrl: creds.baseUrl,
       apiKey: creds.apiKey,
       partner: creds.partner,
       dateFrom: isoDate(range.from),
       dateTo: isoDate(range.to),
-      page: 1,
-      pageSize: 1,
     });
-    return mapStats(stats);
+    return mapStats(all.summary, countUniquePayers(all.payments));
   } catch (e) {
     return emptyAnalytics(statusForError(e));
   }
@@ -173,6 +174,9 @@ export async function listAccountPayments(
   accountId: string,
   opts: { from: Date; to: Date; page?: number; pageSize?: number },
 ): Promise<AccountPayments> {
+  // Payer names + amounts per payment: not for MEMBER. Gated in the service (throws
+  // ForbiddenError -> 403) before any scope lookup or upstream call.
+  assertCan(user, "view_payment_detail");
   const acc = await getAccount(db, user, accountId);
   // Fail closed: a foreign / out-of-scope account yields an empty page, never another partner's
   // transactions.

@@ -123,7 +123,7 @@ describe("a PENDING partner link grants no partner data on any surface", () => {
     expect(analytics.kpis.totalDebt).toBe(0);
 
     // 2. The payments page.
-    const payments = await listAccountPayments(testPrisma, t.suMember, acc.id, range);
+    const payments = await listAccountPayments(testPrisma, t.suAdmin, acc.id, range);
     expect(payments.status).toBe("not-configured");
     expect(payments.rows).toEqual([]);
 

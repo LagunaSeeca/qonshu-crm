@@ -8,15 +8,43 @@ const report = {
   kpis: {
     sales: { openLeads: 3, wonInPeriod: 1 },
     activity: { meetingsDone: 4, openTasks: 5, overdueTasks: 2 },
-    partners: { accounts: 2, activeAccounts: 2, appUsers: 24, activeAppUsers: 20, engagedUsers: 18, paymentsAmount: 30000, appInstalls: 22, installsIos: 13, installsAndroid: 9 },
+    partners: { accounts: 2, activeAccounts: 2, appUsers: 24, activeAppUsers: 20, uniquePayingUsers: 15, engagedUsers: 18, paymentsAmount: 30000, appInstalls: 22, installsIos: 13, installsAndroid: 9 },
     finance: { collected: 16400, transferred: 8000, owed: 8400, serviceFeesOutstanding: 1200 },
   },
   partnerRows: [{ accountId: "a1", accountName: "Acme", paymentsCount: 60, paymentsAmount: 15000, collected: 8200, transferred: 4000, owed: 4200 }],
+};
+// A MEMBER payload: the service omits the cash figures and `payments` entirely (not 0).
+const memberReport = {
+  ...report,
+  kpis: {
+    ...report.kpis,
+    finance: { serviceFeesOutstanding: 1200 },
+  },
+  partnerRows: [{ accountId: "a1", accountName: "Acme", paymentsCount: 60, paymentsAmount: 15000 }],
 };
 describe("ReportView", () => {
   it("renders period label, KPIs and partner rows", () => {
     render(<ReportView accounts={[]} initialReport={report} />);
     expect(screen.getByText("July 2026")).toBeInTheDocument();
     expect(screen.getByText("Acme")).toBeInTheDocument();
+  });
+  it("shows AZN, not USD", () => {
+    render(<ReportView accounts={[]} initialReport={report} />);
+    expect(screen.getAllByText(/₼/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+  });
+  it("member payload renders without cash figures or a payments table", () => {
+    render(<ReportView accounts={[]} initialReport={memberReport} />);
+    expect(screen.getByText("Acme")).toBeInTheDocument();
+    for (const label of ["Collected", "Transferred", "Owed"]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+    // Header and body column counts agree: Partner, Payments, Payments Amount only.
+    expect(screen.getAllByRole("columnheader")).toHaveLength(3);
+    expect(screen.getAllByRole("row")[1].querySelectorAll("td")).toHaveLength(3);
+    // Billing data is not settlement data and stays.
+    expect(screen.getByText("Service fees outstanding")).toBeInTheDocument();
+    // No payment-detail table: the only table is the partner table.
+    expect(screen.getAllByRole("table")).toHaveLength(1);
   });
 });

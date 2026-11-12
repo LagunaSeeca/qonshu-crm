@@ -160,10 +160,10 @@ describe("dashboard stats", () => {
 
     vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) => {
       if (partner === `${slug}-p1`) {
-        return makePartnerStats({ partner, total_users: 5, active_users: 4, engaged_users: 1, total_payments_amount: 20 });
+        return makePartnerStats({ partner, total_users: 5, active_users: 4, logged_in_users: 3, engaged_users: 1, total_payments_amount: 20 });
       }
       if (partner === `${slug}-p2`) {
-        return makePartnerStats({ partner, total_users: 2, active_users: 2, engaged_users: 1, total_payments_amount: 15 });
+        return makePartnerStats({ partner, total_users: 2, active_users: 2, logged_in_users: 1, engaged_users: 1, total_payments_amount: 15 });
       }
       throw new Error(`unexpected partner key: ${partner}`);
     });
@@ -172,7 +172,7 @@ describe("dashboard stats", () => {
     expect(s.partners.engagedUsers).toBe(2);
     expect(s.partners.paymentsAmount).toBe(35);
     expect(s.partners.appUsers).toBe(7);
-    expect(s.partners.activeAppUsers).toBe(6);
+    expect(s.partners.activeAppUsers).toBe(4); // logged_in_users (3+1), not active_users (4+2)
     // "accounts" stays a plain in-scope Account count (all 3, configured or not) — it's
     // CRM data, not partner-app data, so it isn't sourced from the live fan-out.
     expect(s.partners.accounts).toBe(3);

@@ -16,7 +16,7 @@ import {
   ListTodo,
   ReceiptText,
 } from "lucide-react";
-import { isAdmin } from "@/lib/auth/guards";
+import { isAdmin, can } from "@/lib/auth/guards";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +48,9 @@ interface SidebarProps {
 export function Sidebar({ role, companyName, teamName, onNavigate }: SidebarProps) {
   const pathname = usePathname();
   const nav = role === "PARTNER_VIEWER" ? NAV.filter((item) => PARTNER_NAV_HREFS.has(item.href)) : NAV;
+  // /settlements refuses callers without view_settlements (a MEMBER), so don't offer a dead link.
+  const canSettle = can({ id: "", companyId: null, teamId: null, role }, "view_settlements");
+  const visibleNav = nav.filter((item) => item.href !== "/settlements" || canSettle);
 
   // Team admins and the owner administer users AND decide partner links — a team admin confirms
   // the pending links their own team staked (src/lib/tenant/partner-link-approval.ts), which is
@@ -87,7 +90,7 @@ export function Sidebar({ role, companyName, teamName, onNavigate }: SidebarProp
 
       {/* Nav items */}
       <div className="flex flex-col gap-0.5 p-3 flex-1 overflow-y-auto">
-        {nav.map(({ href, label, icon: Icon }) => (
+        {visibleNav.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}

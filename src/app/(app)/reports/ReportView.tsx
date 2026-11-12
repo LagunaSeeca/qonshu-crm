@@ -23,15 +23,17 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { PERIODS, type PeriodType, type DashboardStats } from "../dashboard/DashboardView";
+import { formatMoney } from "@/lib/money";
 
 export type PartnerRow = {
   accountId: string;
   accountName: string;
   paymentsCount: number;
   paymentsAmount: number;
-  collected: number;
-  transferred: number;
-  owed: number;
+  // Settlement figures: omitted by the service for a caller without view_settlements (MEMBER).
+  collected?: number;
+  transferred?: number;
+  owed?: number;
 };
 
 export type Report = {
@@ -45,9 +47,6 @@ export type Report = {
 type Account = { id: string; name: string };
 
 type Props = { accounts: Account[]; initialReport: Report };
-
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 function SummaryRow({
   label,
@@ -163,6 +162,10 @@ export function ReportView({ accounts, initialReport }: Props) {
 
   const k = report.kpis;
   const rows = report.partnerRows;
+  // Permission, not data: the service sends the cash columns for every row or for none. Keyed off
+  // the report-level figure so header and body always agree on column count. The `?? 0` in the
+  // body is unreachable while showCash holds and exists only to satisfy the optional type.
+  const showCash = k.finance.collected !== undefined;
   const accountItems: Record<string, string> = {
     ALL: "All partners",
     ...Object.fromEntries(accounts.map((a) => [a.id, a.name])),
@@ -276,7 +279,7 @@ export function ReportView({ accounts, initialReport }: Props) {
                 value={`${k.partners.activeAppUsers.toLocaleString()}/${k.partners.appUsers.toLocaleString()}`}
               />
               <SummaryRow label="Users engaged" value={k.partners.engagedUsers.toLocaleString()} />
-              <SummaryRow label="Payments amount" value={money(k.partners.paymentsAmount)} />
+              <SummaryRow label="Payments amount" value={formatMoney(k.partners.paymentsAmount)} />
               <SummaryRow
                 label="App installs (iOS/Android)"
                 value={`${k.partners.appInstalls.toLocaleString()} (${k.partners.installsIos.toLocaleString()}/${k.partners.installsAndroid.toLocaleString()})`}
@@ -284,10 +287,10 @@ export function ReportView({ accounts, initialReport }: Props) {
             </div>
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Finance</h3>
-              <SummaryRow label="Collected" value={money(k.finance.collected)} />
-              <SummaryRow label="Transferred" value={money(k.finance.transferred)} />
-              <SummaryRow label="Owed" value={money(k.finance.owed)} emphasize />
-              <SummaryRow label="Service fees outstanding" value={money(k.finance.serviceFeesOutstanding)} />
+              {k.finance.collected !== undefined && <SummaryRow label="Collected" value={formatMoney(k.finance.collected)} />}
+              {k.finance.transferred !== undefined && <SummaryRow label="Transferred" value={formatMoney(k.finance.transferred)} />}
+              {k.finance.owed !== undefined && <SummaryRow label="Owed" value={formatMoney(k.finance.owed)} emphasize />}
+              <SummaryRow label="Service fees outstanding" value={formatMoney(k.finance.serviceFeesOutstanding)} />
             </div>
           </div>
         </CardContent>
@@ -312,9 +315,9 @@ export function ReportView({ accounts, initialReport }: Props) {
                     <TableHead className="font-semibold text-foreground">Partner</TableHead>
                     <TableHead className="text-right font-semibold text-foreground">Payments</TableHead>
                     <TableHead className="text-right font-semibold text-foreground">Payments Amount</TableHead>
-                    <TableHead className="text-right font-semibold text-foreground">Collected</TableHead>
-                    <TableHead className="text-right font-semibold text-foreground">Transferred</TableHead>
-                    <TableHead className="text-right font-semibold text-foreground">Owed</TableHead>
+                    {showCash && <TableHead className="text-right font-semibold text-foreground">Collected</TableHead>}
+                    {showCash && <TableHead className="text-right font-semibold text-foreground">Transferred</TableHead>}
+                    {showCash && <TableHead className="text-right font-semibold text-foreground">Owed</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -322,10 +325,14 @@ export function ReportView({ accounts, initialReport }: Props) {
                     <TableRow key={r.accountId}>
                       <TableCell className="font-medium">{r.accountName}</TableCell>
                       <TableCell className="text-right tabular-nums">{r.paymentsCount.toLocaleString()}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(r.paymentsAmount)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(r.collected)}</TableCell>
-                      <TableCell className="text-right tabular-nums">{money(r.transferred)}</TableCell>
-                      <TableCell className="text-right tabular-nums font-medium">{money(r.owed)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatMoney(r.paymentsAmount)}</TableCell>
+                      {showCash && (
+                        <>
+                          <TableCell className="text-right tabular-nums">{formatMoney(r.collected ?? 0)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatMoney(r.transferred ?? 0)}</TableCell>
+                          <TableCell className="text-right tabular-nums font-medium">{formatMoney(r.owed ?? 0)}</TableCell>
+                        </>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>

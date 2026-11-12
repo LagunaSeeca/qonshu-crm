@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
+import { can } from "@/lib/auth/guards";
 import { leadScopeWhere } from "./scope";
 import { listCompanySettlements } from "./settlements";
 import { listCompanyServiceFees } from "./service-fees";
@@ -9,8 +10,18 @@ import { getCompanyAnalytics } from "./company-analytics";
 export type DashboardStats = {
   sales: { openLeads: number; wonInPeriod: number };
   activity: { meetingsDone: number; openTasks: number; overdueTasks: number };
-  partners: { accounts: number; activeAccounts: number; appUsers: number; activeAppUsers: number; engagedUsers: number; paymentsAmount: number; appInstalls: number; installsIos: number; installsAndroid: number };
-  finance: { collected: number; transferred: number; owed: number; serviceFeesOutstanding: number };
+  partners: { accounts: number; activeAccounts: number; appUsers: number; activeAppUsers: number; uniquePayingUsers: number; engagedUsers: number; paymentsAmount: number; appInstalls: number; installsIos: number; installsAndroid: number };
+  // The settlement figures (company cash) are PRESENT ONLY when the caller can("view_settlements").
+  // For a MEMBER the three keys are ABSENT from the object entirely — not 0 — so they are absent
+  // from the JSON and from the RSC props a server page hands to the client bundle, exactly as
+  // reports.ts omits `payments`. A member still gets every other (general) statistic, and service
+  // fees are CRM billing rather than settlement/cash data, so they stay.
+  finance: {
+    collected?: number;
+    transferred?: number;
+    owed?: number;
+    serviceFeesOutstanding: number;
+  };
 };
 
 // The "partners" section used to read the persisted PartnerAppUser/PartnerPayment mock tables.
@@ -29,12 +40,17 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
   const stageWhere = user.role === "SUPER_ADMIN"
     ? { companyId, teamId: { not: null } }
     : { companyId, teamId: user.teamId! };
+  // The settlement roll-up asserts view_settlements, which a MEMBER does not hold: calling it
+  // unconditionally would make a member's whole dashboard throw instead of rendering the general
+  // statistics they ARE entitled to. Skip the fetch (not just the display) — the gate stays in
+  // listCompanySettlements, this decides whether the figures belong in the DTO at all.
+  const withSettlements = can(user, "view_settlements");
   const [leads, stages, accounts, analytics, settlements, serviceFees] = await Promise.all([
     db.lead.findMany({ where: leadWhere }),
     db.stage.findMany({ where: stageWhere }),
     listAccounts(db, user),
     getCompanyAnalytics(db, user, range),
-    listCompanySettlements(db, user),
+    withSettlements ? listCompanySettlements(db, user) : null,
     listCompanyServiceFees(db, user),
   ]);
   const stageById = new Map(stages.map((s) => [s.id, s]));
@@ -63,13 +79,23 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
       accounts: accounts.length,
       activeAccounts: accounts.filter((a) => a.status === "ACTIVE").length,
       appUsers: analytics.totals.appUsers,
-      activeAppUsers: analytics.totals.activeUsers,
+      activeAppUsers: analytics.totals.activeUsers, // = Partner API logged_in_users ("active on app")
+      uniquePayingUsers: analytics.totals.uniquePayingUsers,
       engagedUsers: analytics.totals.engagedUsers,
       paymentsAmount: analytics.totals.paymentsAmount,
       appInstalls: analytics.totals.installs,
       installsIos: analytics.totals.iosInstalls,
       installsAndroid: analytics.totals.androidInstalls,
     },
-    finance: { ...settlements.totals, serviceFeesOutstanding: serviceFees.totals.outstanding },
+    finance: {
+      ...(settlements
+        ? {
+            collected: settlements.totals.collected,
+            transferred: settlements.totals.transferred,
+            owed: settlements.totals.owed,
+          }
+        : {}),
+      serviceFeesOutstanding: serviceFees.totals.outstanding,
+    },
   };
 }

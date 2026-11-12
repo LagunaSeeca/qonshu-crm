@@ -3,7 +3,7 @@ import { testPrisma, resetDb } from "@/test/db";
 import { makeTeam, makeUser, su, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import { getAccount, listAccounts } from "./accounts";
 import { getCompanyAnalytics } from "./company-analytics";
-import { listCompanySettlements, addSettlementEntry } from "./settlements";
+import { listCompanySettlements } from "./settlements";
 import { listCompanyServiceFees, addServiceFee } from "./service-fees";
 import { leadScopeWhere, accountScopeWhere } from "./scope";
 import { createUser, InvalidUserRoleError } from "./users";
@@ -44,16 +44,23 @@ async function seed(slug: string) {
   const acc2 = await testPrisma.account.create({
     data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Other Account"), name: "Other Account", accountManagerId: admin.id, ...confirmedPartnerLink(otherPartnerKey) },
   });
-  statsByPartner.set(ownPartnerKey, makePartnerStats({ partner: ownPartnerKey, total_payments_amount: 150, total_debt: 40 }));
-  statsByPartner.set(otherPartnerKey, makePartnerStats({ partner: otherPartnerKey, total_payments_amount: 5000, total_debt: 999 }));
+  // `amount_by_card` is what Settlements calls "Collected" (card payments only — see
+  // ./settlements.ts), so the two ledger figures below are now upstream numbers, not DB rows.
+  statsByPartner.set(ownPartnerKey, makePartnerStats({ partner: ownPartnerKey, total_payments_amount: 150, total_debt: 40, amount_by_card: 200 }));
+  statsByPartner.set(otherPartnerKey, makePartnerStats({ partner: otherPartnerKey, total_payments_amount: 5000, total_debt: 999, amount_by_card: 8000 }));
 
   const partnerRecord = await makeUser("PARTNER_VIEWER", team, { accountId: acc1.id });
   const partnerUser: SessionUser = su(partnerRecord);
   const partnerUserNoAccount: SessionUser = { ...su(partnerRecord), accountId: null };
 
-  // Settlement entries on both accounts.
-  await addSettlementEntry(testPrisma, adminUser, acc1.id, { type: "COLLECTED", amount: 200, method: "CASH", occurredAt: new Date() });
-  await addSettlementEntry(testPrisma, adminUser, acc2.id, { type: "COLLECTED", amount: 8000, method: "CASH", occurredAt: new Date() });
+  // Manual transfer rows on both accounts. Written straight to the table rather than through
+  // addSettlementEntry: settlement WRITES are SUPER_ADMIN-only now (write_settlements), and this
+  // file is seeding data for read-scope cases, not exercising the write gate.
+  for (const [acc, amount] of [[acc1, 20], [acc2, 900]] as const) {
+    await testPrisma.settlementEntry.create({
+      data: { companyId: c.id, accountId: acc.id, type: "TRANSFER", amount, method: "CASH", occurredAt: new Date(), createdById: admin.id },
+    });
+  }
 
   // Service fees on both accounts.
   await addServiceFee(testPrisma, adminUser, acc1.id, { periodMonth: new Date("2026-07-01"), amount: 100 });

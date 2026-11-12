@@ -2,7 +2,7 @@ import type { PrismaClient, Account } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
 import { listAccounts, getAccount } from "./accounts";
-import { fetchPartnerStats } from "@/lib/partner-api/client";
+import { fetchAllPayments, countUniquePayers } from "./partner-payments";
 import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import {
   InvalidApiKeyError,
@@ -124,7 +124,7 @@ export async function getCompanyAnalytics(
   // order so settled[i] lines up with resolved[i].
   const settled = await Promise.allSettled(
     resolved.map(({ creds }) =>
-      fetchPartnerStats({
+      fetchAllPayments({
         baseUrl: creds.baseUrl,
         apiKey: creds.apiKey,
         partner: creds.partner,
@@ -139,6 +139,8 @@ export async function getCompanyAnalytics(
     accounts: 0,
     appUsers: 0,
     activeUsers: 0,
+    uniquePayingUsers: 0,
+    uniquePayingUsersPartial: false, // true when payment paging was truncated, so the count is a floor
     engagedUsers: 0,
     totalDebt: 0,
     installs: 0,
@@ -172,12 +174,17 @@ export async function getCompanyAnalytics(
       });
       return;
     }
-    const s = res.value;
+    const s = res.value.summary;
     statuses.push({ accountId: a.id, accountName: a.name, status: "ok" });
 
     totals.accounts += 1;
     totals.appUsers += s.total_users;
-    totals.activeUsers += s.active_users;
+    // "Active users" = users active ON THE APP = the API's logged_in_users (NOT active_users).
+    totals.activeUsers += s.logged_in_users;
+    // DISTINCT online (CARD) payers in the requested range, summed per account (user ids are
+    // per-partner, so they never merge across accounts). Count only — no ids leave this module.
+    totals.uniquePayingUsers += countUniquePayers(res.value.payments);
+    if (res.value.partial) totals.uniquePayingUsersPartial = true;
     totals.engagedUsers += s.engaged_users;
     totals.totalDebt += s.total_debt;
     totals.installs += s.total_installations;

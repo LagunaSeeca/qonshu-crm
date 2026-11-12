@@ -8,7 +8,6 @@ import { createLead, moveLeadStage } from "../src/lib/tenant/leads";
 import { createAccountWithLogin, createPartnerLogin } from "../src/lib/tenant/accounts";
 import { normalizeBuildingName } from "../src/lib/tenant/building-claim";
 import { setAccountFieldValue } from "../src/lib/tenant/account-fields";
-import { addSettlementEntry } from "../src/lib/tenant/settlements";
 import { addServiceFee, markFeePaid } from "../src/lib/tenant/service-fees";
 import type { SessionUser } from "../src/lib/auth/guards";
 
@@ -167,17 +166,21 @@ async function main() {
   for (const [i, acc] of accounts.entries()) {
     const actor = acc.accountManagerId === m2.id ? m2Session : m1Session;
     if ((await prisma.settlementEntry.count({ where: { accountId: acc.id } })) === 0) {
+      // Transfers only. "Collected" is no longer a stored row — it is the partner API's
+      // `amount_by_card` for the period, fetched live (see src/lib/tenant/settlements.ts) — and
+      // the rows are written directly because settlement writes are SUPER_ADMIN-only now, while
+      // `actor` here is the account's own manager.
       const rows = [
-        { type: "COLLECTED", amount: 5000, method: "CASH", ago: 21 },
-        { type: "COLLECTED", amount: 3200, method: "BANK_TRANSFER", ago: 14 },
-        { type: "COLLECTED", amount: 1500, method: "MANUAL", ago: 7 },
-        { type: "TRANSFER", amount: 4000, method: "CASH", ago: 3 },
-        { type: "TRANSFER", amount: 1200, method: "BANK_TRANSFER", ago: 1 },
+        { amount: 4000, method: "CASH", ago: 3 },
+        { amount: 1200, method: "BANK_TRANSFER", ago: 1 },
       ] as const;
       for (const r of rows) {
-        await addSettlementEntry(prisma, actor, acc.id, {
-          type: r.type, amount: r.amount, method: r.method, occurredAt: new Date(now - r.ago * DAY),
-          note: `${r.type === "COLLECTED" ? "Collected from" : "Transferred for"} ${acc.name}`,
+        await prisma.settlementEntry.create({
+          data: {
+            companyId: acc.companyId, accountId: acc.id, type: "TRANSFER", amount: r.amount,
+            method: r.method, occurredAt: new Date(now - r.ago * DAY),
+            note: `Transferred for ${acc.name}`, createdById: actor.id,
+          },
         });
         entries++;
       }

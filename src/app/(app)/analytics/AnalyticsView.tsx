@@ -39,6 +39,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { cn } from "@/lib/utils";
 import { PERIODS, type PeriodType } from "../dashboard/DashboardView";
 import { CATEGORY_LABELS, CATEGORY_ORDER, CATEGORY_COLORS } from "@/lib/analytics/categories";
+import { formatMoney } from "@/lib/money";
 
 export type Totals = {
   accounts: number;
@@ -113,9 +114,6 @@ function colorFor(kind: "method" | "category", key: string) {
   const idx = order.indexOf(key);
   return CATEGORY_COLORS[idx >= 0 ? idx : 0];
 }
-
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 function buildQuery(period: PeriodType, from: string, to: string, accountId: string): URLSearchParams {
   const sp = new URLSearchParams({ period });
@@ -207,7 +205,7 @@ function BreakdownRows({
               <div className={`h-full rounded-full ${color.bar}`} style={{ width: `${pct}%` }} />
             </div>
             <span className="w-20 shrink-0 text-right tabular-nums text-muted-foreground">
-              {money(r.amount)}
+              {formatMoney(r.amount)}
             </span>
           </li>
         );
@@ -236,7 +234,7 @@ function PartnerBars({ rows }: { rows: PartnerRow[] }) {
               <div className="h-full rounded-full bg-sky-600" style={{ width: `${pct}%` }} />
             </div>
             <span className="w-24 shrink-0 text-right tabular-nums text-muted-foreground">
-              {money(r.paymentsAmount)}
+              {formatMoney(r.paymentsAmount)}
             </span>
           </li>
         );
@@ -410,7 +408,7 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
           icon={Users}
         />
         <KpiTile label="Users Engaged" value={t.engagedUsers.toLocaleString()} icon={UserCheck} />
-        <KpiTile label="Total Debt" value={money(t.totalDebt)} icon={Wallet} />
+        <KpiTile label="Total Debt" value={formatMoney(t.totalDebt)} icon={Wallet} />
       </KpiGroup>
 
       <Card>
@@ -463,8 +461,8 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
 
       <KpiGroup title="Payments">
         <KpiTile label="Payments" value={t.paymentsCount.toLocaleString()} icon={Receipt} />
-        <KpiTile label="Payments Amount" value={money(t.paymentsAmount)} icon={DollarSign} />
-        <KpiTile label="Utility Amount" value={money(t.utilityAmount)} icon={Zap} />
+        <KpiTile label="Payments Amount" value={formatMoney(t.paymentsAmount)} icon={DollarSign} />
+        <KpiTile label="Utility Amount" value={formatMoney(t.utilityAmount)} icon={Zap} />
       </KpiGroup>
 
       {/* Breakdowns */}
@@ -547,7 +545,7 @@ export function AnalyticsView({ initialData, initialPeriod, accounts = [], showC
                       <TableCell className="text-right tabular-nums">{p.engagedUsers.toLocaleString()}</TableCell>
                       <TableCell className="text-right tabular-nums">{p.paymentsCount.toLocaleString()}</TableCell>
                       <TableCell className="text-right tabular-nums font-medium">
-                        {money(p.paymentsAmount)}
+                        {formatMoney(p.paymentsAmount)}
                       </TableCell>
                     </TableRow>
                   ))}

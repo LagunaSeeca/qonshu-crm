@@ -25,6 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatMoney } from "@/lib/money";
 
 // ---- Types mirror the normalized shape returned by GET /api/accounts/[id]/objects ----
 type Unit = {
@@ -73,9 +74,6 @@ const KNOWN_STATUSES = new Set([
   "unknown_partner",
   "partner_api_unavailable",
 ]);
-
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 // net < 0 → owes (red); net > 0 → credit (green); 0 → neutral.
 function netClass(net: number) {
@@ -209,10 +207,10 @@ function UnitTable({
                   </Badge>
                 </TableCell>
               )}
-              <TableCell className="text-right tabular-nums text-foreground">{money(u.debt)}</TableCell>
-              <TableCell className="text-right tabular-nums text-foreground">{money(u.balance)}</TableCell>
+              <TableCell className="text-right tabular-nums text-foreground">{formatMoney(u.debt)}</TableCell>
+              <TableCell className="text-right tabular-nums text-foreground">{formatMoney(u.balance)}</TableCell>
               <TableCell className={cn("text-right tabular-nums font-medium", netClass(u.net))}>
-                {money(u.net)}
+                {formatMoney(u.net)}
               </TableCell>
             </TableRow>
           ))}

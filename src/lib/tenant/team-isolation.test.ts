@@ -178,7 +178,7 @@ async function world() {
     acctTasks[k] = await testPrisma.accountTask.create({ data: { companyId, accountId: a.id, title: `acct task ${k}` } });
     asks[k] = await testPrisma.accountAsk.create({ data: { companyId, accountId: a.id, title: `ask ${k}`, authorId: U[k].id } });
     entries[k] = await testPrisma.settlementEntry.create({ data: {
-      companyId, accountId: a.id, type: "COLLECTED", amount: amount[k] * 100, method: "CASH",
+      companyId, accountId: a.id, type: "TRANSFER", amount: amount[k] * 100, method: "CASH",
       occurredAt: new Date(), createdById: U[k].id,
     } });
     fees[k] = await testPrisma.serviceFee.create({ data: {
@@ -461,11 +461,10 @@ describe("team isolation", () => {
         run: (_w, a, k, x) => reopenAsk(testPrisma, a, x[k].resolvedAsk),
         mutated: async (_w, k, x) => (await testPrisma.accountAsk.findUniqueOrThrow({ where: { id: x[k].resolvedAsk } })).status === "OPEN",
       },
-      {
-        name: "deleteSettlementEntry",
-        run: (w, a, k) => deleteSettlementEntry(testPrisma, a, w.entries[k].id),
-        mutated: async (w, k) => (await testPrisma.settlementEntry.findUnique({ where: { id: w.entries[k].id } })) === null,
-      },
+      // deleteSettlementEntry is NOT in this matrix: settlement writes are SUPER_ADMIN-only
+      // (write_settlements), so every actor here is refused on ROLE before scope is consulted —
+      // which this matrix would read as a leak-free pass for the wrong reason. Its scope
+      // behaviour for the one role that CAN write is covered in ./settlements.test.ts.
       {
         name: "markFeePaid",
         run: (w, a, k) => markFeePaid(testPrisma, a, w.fees[k].id, {}),
@@ -513,7 +512,6 @@ describe("team isolation", () => {
         ["toggleAccountTask", () => toggleAccountTask(testPrisma, w.S.m1, ghost, true), () => toggleAccountTask(testPrisma, w.S.m1, w.acctTasks.m2.id, true)],
         ["resolveAsk", () => resolveAsk(testPrisma, w.S.m1, ghost), () => resolveAsk(testPrisma, w.S.m1, w.asks.m2.id)],
         ["reopenAsk", () => reopenAsk(testPrisma, w.S.m1, ghost), () => reopenAsk(testPrisma, w.S.m1, x.m2.resolvedAsk)],
-        ["deleteSettlementEntry", () => deleteSettlementEntry(testPrisma, w.S.m1, ghost), () => deleteSettlementEntry(testPrisma, w.S.m1, w.entries.m2.id)],
         ["markFeePaid", () => markFeePaid(testPrisma, w.S.m1, ghost, {}), () => markFeePaid(testPrisma, w.S.m1, w.fees.m2.id, {})],
         ["markFeeUnpaid", () => markFeeUnpaid(testPrisma, w.S.m1, ghost), () => markFeeUnpaid(testPrisma, w.S.m1, x.m2.paidFee)],
         ["updateServiceFee", () => updateServiceFee(testPrisma, w.S.m1, ghost, { amount: 1 }), () => updateServiceFee(testPrisma, w.S.m1, x.m2.editFee, { amount: 1 })],
@@ -543,7 +541,8 @@ describe("team isolation", () => {
 
     it("a missing/foreign parent also blocks the by-parent reads (no empty-200 masquerading)", async () => {
       const w = await world();
-      expect(await outcome(() => getAccountSettlement(testPrisma, w.S.m1, w.accounts.m2.id))).toBe("NotFound");
+      // A MEMBER has no view_settlements, so this is a role refusal before any scope check.
+      expect(await outcome(() => getAccountSettlement(testPrisma, w.S.m1, w.accounts.m2.id))).toBe("Forbidden");
       expect(await outcome(() => getAccountSettlement(testPrisma, w.S.adminB, w.accounts.m1.id))).toBe("NotFound");
       expect(await outcome(() => getAccountSettlement(testPrisma, w.S.adminA, w.accounts.m1.id))).toBe("ok");
     });
@@ -574,7 +573,7 @@ describe("team isolation", () => {
         const sees = SEES[actorKey];
         const leadCount = sees.reduce((n, k) => n + w.leads[k].length, 0);
         const childSees = sees.filter((k): k is (typeof CHILD_OWNERS)[number] => k !== "adminA");
-        const collected = childSees.reduce((n, k) => n + { m1: 100, m2: 200, m3: 400 }[k], 0);
+        const cash = childSees.reduce((n, k) => n + { m1: 100, m2: 200, m3: 400 }[k], 0);
         const outstanding = childSees.reduce((n, k) => n + { m1: 10, m2: 20, m3: 40 }[k], 0);
         // Two open tasks per child owner (lead task + account task), plus the one handed to adminA
         // on m1's lead, which belongs to m1's book.
@@ -583,25 +582,49 @@ describe("team isolation", () => {
         expect(stats.partners.accounts).toBe(sees.length);
         expect(stats.activity.meetingsDone).toBe(childSees.length * 2);
         expect(stats.activity.openTasks).toBe(openTasks);
-        expect(stats.finance.collected).toBe(collected);
-        expect(stats.finance.owed).toBe(collected);
         expect(stats.finance.serviceFeesOutstanding).toBe(outstanding);
+        // Cash: a MEMBER has no view_settlements, so the figures are ABSENT from the DTO (never 0,
+        // which would read as a real balance) while the general statistics above still render. For
+        // the roles that do hold it, the fixture's 1/2/4 x 100 rows are TRANSFERS and Collected is
+        // live card takings — 0 here, since these fixture accounts have no confirmed partner link
+        // (same as the settlements roll-up test below; this assertion used to encode the removed
+        // COLLECTED entry type, which is why it still expected `collected` to be the cash sum).
+        if (w.S[actorKey].role === "MEMBER") {
+          expect(stats.finance.collected).toBeUndefined();
+          expect(stats.finance.transferred).toBeUndefined();
+          expect(stats.finance.owed).toBeUndefined();
+        } else {
+          expect(stats.finance.collected).toBe(0);
+          expect(stats.finance.transferred).toBe(cash);
+          expect(stats.finance.owed).toBe(-cash);
+        }
       });
 
       it("company settlements and service fees list only in-scope accounts, with matching totals", async () => {
         const w = await world();
         const sees = SEES[actorKey];
-        const settlements = await listCompanySettlements(testPrisma, w.S[actorKey]);
         const fees = await listCompanyServiceFees(testPrisma, w.S[actorKey]);
-        expect(sorted(settlements.rows.map((r) => r.accountId))).toEqual(sorted(sees.map((k) => w.accounts[k].id)));
         expect(sorted(fees.rows.map((r) => r.accountId))).toEqual(sorted(sees.map((k) => w.accounts[k].id)));
         const rowSum = (n: number[]) => n.reduce((a, b) => a + b, 0);
-        expect(settlements.totals.collected).toBe(rowSum(settlements.rows.map((r) => r.collected)));
         expect(fees.totals.billed).toBe(rowSum(fees.rows.map((r) => r.billed)));
-        const expectedCollected = sees.reduce((n, k) => n + ({ m1: 100, m2: 200, m3: 400, adminA: 0 }[k]), 0);
         const expectedBilled = sees.reduce((n, k) => n + ({ m1: 10, m2: 20, m3: 40, adminA: 0 }[k]), 0);
-        expect(settlements.totals.collected).toBe(expectedCollected);
         expect(fees.totals.billed).toBe(expectedBilled);
+
+        // Settlements are gated on view_settlements, which a MEMBER does not hold — the roll-up
+        // is refused outright rather than narrowed. For the roles that do hold it, the scope is
+        // still the test's `sees` set, Collected is 0 (these fixture accounts have no confirmed
+        // partner link, so nothing is fetched) and the fixture rows count as transfers.
+        if (w.S[actorKey].role === "MEMBER") {
+          expect(await outcome(() => listCompanySettlements(testPrisma, w.S[actorKey]))).toBe("Forbidden");
+        } else {
+          const settlements = await listCompanySettlements(testPrisma, w.S[actorKey]);
+          expect(sorted(settlements.rows.map((r) => r.accountId))).toEqual(sorted(sees.map((k) => w.accounts[k].id)));
+          expect(settlements.totals.transferred).toBe(rowSum(settlements.rows.map((r) => r.transferred)));
+          expect(settlements.totals.collected).toBe(0);
+          expect(settlements.totals.transferred).toBe(
+            sees.reduce((n, k) => n + ({ m1: 100, m2: 200, m3: 400, adminA: 0 }[k]), 0),
+          );
+        }
       });
     });
 
@@ -691,7 +714,13 @@ describe("team isolation", () => {
         const visible = SEES[actorKey];
         const report = await getReport(testPrisma, w.S[actorKey], { range: nowRange(), label: "now" });
         expect(sorted(report.partnerRows.map((r) => r.accountId)), `${actorKey} rows`).toEqual(sorted(visible.map((k) => w.accounts[k].id)));
-        expect(sorted(report.payments.map((p) => p.id)), `${actorKey} payments`).toEqual(sorted(visible.map((k) => `pay-partner-${k}`)));
+        if (actorKey.startsWith("m")) {
+          // MEMBER: no payment rows (and no payer names) anywhere in the payload.
+          expect(report.payments, `${actorKey} payments`).toBeUndefined();
+          expect(JSON.stringify(report), `${actorKey} payer identity`).not.toContain("payer-partner-");
+        } else {
+          expect(sorted(report.payments!.map((p) => p.id)), `${actorKey} payments`).toEqual(sorted(visible.map((k) => `pay-partner-${k}`)));
+        }
         expect(sorted(report.accountStatuses.map((s) => s.accountId)), `${actorKey} statuses`).toEqual(sorted(visible.map((k) => w.accounts[k].id)));
         // The strongest form: a foreign partner is never even REQUESTED from the upstream API.
         const requested = new Set(vi.mocked(fetchPartnerStats).mock.calls.map((c) => c[0].partner));
@@ -851,7 +880,10 @@ describe("team isolation", () => {
         expect(await outcome(() => getAccountFields(testPrisma, p, w.accounts.m2.id))).toBe("NotFound");
         expect(sorted((await listCompanySettlements(testPrisma, p)).rows.map((r) => r.accountId))).toEqual([w.accounts.m1.id]);
         expect(sorted((await listCompanyServiceFees(testPrisma, p)).rows.map((r) => r.accountId))).toEqual([w.accounts.m1.id]);
-        expect((await listCompanySettlements(testPrisma, p)).totals.collected).toBe(100);
+        // Collected is the partner API's card total, and this account has no confirmed partner
+        // link, so it is 0; the fixture row is a TRANSFER and shows up as such.
+        expect((await listCompanySettlements(testPrisma, p)).totals.collected).toBe(0);
+        expect((await listCompanySettlements(testPrisma, p)).totals.transferred).toBe(100);
       });
 
       it("by-id child mutations on another building are NotFound and change nothing", async () => {
@@ -859,7 +891,7 @@ describe("team isolation", () => {
         const p = (await repFor(w, "m1")).session;
         expect(await outcome(() => toggleAccountTask(testPrisma, p, w.acctTasks.m2.id, true))).toBe("NotFound");
         expect(await outcome(() => resolveAsk(testPrisma, p, w.asks.m3.id))).toBe("NotFound");
-        expect(await outcome(() => deleteSettlementEntry(testPrisma, p, w.entries.m2.id))).toBe("NotFound");
+        expect(await outcome(() => deleteSettlementEntry(testPrisma, p, w.entries.m2.id))).toBe("Forbidden");
         expect(await outcome(() => markFeePaid(testPrisma, p, w.fees.m3.id, {}))).toBe("NotFound");
         expect((await testPrisma.accountTask.findUniqueOrThrow({ where: { id: w.acctTasks.m2.id } })).done).toBe(false);
         expect(await testPrisma.settlementEntry.count({ where: { id: w.entries.m2.id } })).toBe(1);

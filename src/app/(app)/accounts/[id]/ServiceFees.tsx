@@ -18,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatMoney } from "@/lib/money";
 
 type FeeStatus = "UNPAID" | "PAID";
 type FeeMethod = "CASH" | "BANK_TRANSFER" | "MANUAL";
@@ -45,9 +46,6 @@ type Props = {
   isAdmin?: boolean;
   initialData?: FeesData;
 };
-
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 const METHOD_LABELS: Record<string, string> = { CASH: "Cash", BANK_TRANSFER: "Bank account", MANUAL: "Manual" };
 
@@ -216,7 +214,7 @@ export function ServiceFees({ accountId, isAdmin = false, initialData }: Props) 
             <ReceiptText className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(data?.totalBilled ?? 0)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(data?.totalBilled ?? 0)}</div>
           </CardContent>
         </Card>
         <Card size="sm">
@@ -225,7 +223,7 @@ export function ServiceFees({ accountId, isAdmin = false, initialData }: Props) 
             <CheckCircle2 className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(data?.totalPaid ?? 0)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(data?.totalPaid ?? 0)}</div>
           </CardContent>
         </Card>
         <Card size="sm">
@@ -234,7 +232,7 @@ export function ServiceFees({ accountId, isAdmin = false, initialData }: Props) 
             <Circle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold tabular-nums text-foreground">{money(data?.totalOutstanding ?? 0)}</div>
+            <div className="text-2xl font-bold tabular-nums text-foreground">{formatMoney(data?.totalOutstanding ?? 0)}</div>
           </CardContent>
         </Card>
       </div>
@@ -334,7 +332,7 @@ export function ServiceFees({ accountId, isAdmin = false, initialData }: Props) 
                   {fees.map((fee) => (
                     <TableRow key={fee.id}>
                       <TableCell className="text-foreground font-medium">{monthLabel(fee.periodMonth)}</TableCell>
-                      <TableCell className="text-right tabular-nums font-medium">{money(fee.amount)}</TableCell>
+                      <TableCell className="text-right tabular-nums font-medium">{formatMoney(fee.amount)}</TableCell>
                       <TableCell className="text-muted-foreground">
                         {fee.dueDate ? new Date(fee.dueDate).toLocaleDateString() : "—"}
                       </TableCell>

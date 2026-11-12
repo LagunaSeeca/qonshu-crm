@@ -87,7 +87,7 @@ describe("reports (live partner API)", () => {
     expect(r.partnerRows.length).toBe(1);
     expect(r.partnerRows[0].paymentsCount).toBe(2);
     expect(r.partnerRows[0].paymentsAmount).toBe(300);
-    expect(r.payments.length).toBe(2);
+    expect(r.payments!.length).toBe(2);
     expect(r.accountStatuses[0].status).toBe("ok");
 
     const csv = toCsv(r);
@@ -101,6 +101,58 @@ describe("reports (live partner API)", () => {
     expect(fetchPartnerStats).toHaveBeenCalledWith(
       expect.objectContaining({ partner: "r1-p1", dateFrom: "2026-07-01", dateTo: "2026-07-31" }),
     );
+  });
+
+  it("a MEMBER's report carries no payment rows and no payer identity in JSON or CSV, but keeps aggregates", async () => {
+    const team = await makeTeam();
+    const memberRow = await makeUser("MEMBER", team);
+    await makeAccount(memberRow.id, "Partner, Inc", "rmem-p1");
+    const payments = [
+      makePartnerPayment({ id: "pay-A", user_id: "uid-alice", user_name: "Alice Leaky", amount: 100, method: "CARD" }),
+      makePartnerPayment({ id: "pay-B", user_id: "uid-bob", user_name: "Bob Leaky", amount: 200, method: "CARD" }),
+      makePartnerPayment({ id: "pay-C", user_id: "uid-alice", user_name: "Alice Leaky", amount: 50, method: "CARD" }),
+    ];
+    vi.mocked(fetchPartnerStats).mockResolvedValue(
+      makePartnerStats({
+        partner: "rmem-p1", total_payments_count: 3, total_payments_amount: 350, logged_in_users: 7,
+        payments, payments_total_count: 3,
+      }),
+    );
+
+    const member = await getReport(testPrisma, su(memberRow), { range, label: "July 2026" });
+    expect("payments" in member).toBe(false);
+    expect(member.partnerRows[0].paymentsCount).toBe(3);
+    expect(member.partnerRows[0].paymentsAmount).toBe(350);
+    expect(member.kpis.partners.activeAppUsers).toBe(7);
+    expect(member.kpis.partners.uniquePayingUsers).toBe(2);
+
+    const json = JSON.stringify(member);
+    const csv = toCsv(member);
+    for (const leak of ["Alice Leaky", "Bob Leaky", "uid-alice", "uid-bob", "pay-A", "pay-B"]) {
+      expect(json, `json leaks ${leak}`).not.toContain(leak);
+      expect(csv, `csv leaks ${leak}`).not.toContain(leak);
+    }
+    expect(csv).not.toContain("Payment ID");
+    expect(csv).toContain("Unique paying users,2");
+
+    // Cash is settlement data, which view_settlements withholds from a MEMBER: the keys are
+    // absent from the rows and the KPIs (never 0, which would read as a real balance), and the
+    // export drops the columns rather than printing blanks.
+    expect("collected" in member.partnerRows[0]).toBe(false);
+    expect(member.kpis.finance.collected).toBeUndefined();
+    expect(member.kpis.finance.owed).toBeUndefined();
+    expect(csv).not.toContain("Collected");
+    expect(csv).not.toContain("Owed");
+  });
+
+  it("admins and super admins still get payment rows", async () => {
+    const { user } = await setup("radm", { configured: true, partnerKey: "radm-p1" });
+    vi.mocked(fetchPartnerStats).mockResolvedValue(
+      makePartnerStats({ partner: "radm-p1", payments: [makePartnerPayment({ id: "pay-X" })], payments_total_count: 1 }),
+    );
+    const r = await getReport(testPrisma, user, { range, label: "July 2026" });
+    expect(r.payments!.map((p) => p.id)).toEqual(["pay-X"]);
+    expect(toCsv(r)).toContain("pay-X");
   });
 
   it("pages through all payment pages and flattens them, using summary totals for the aggregate", async () => {
@@ -119,17 +171,17 @@ describe("reports (live partner API)", () => {
 
     const r = await getReport(testPrisma, user, { range, label: "July 2026" });
 
-    // Isolate the report's own paginated calls (page-less calls come from the live KPI/analytics
-    // fan-out inside getDashboardStats). Report pagination = page 1 + the 2 remaining pages, all
-    // at the 500 max page size.
+    // Isolate the calls that page the payment ROWS (pageSize 500) from the settlement roll-up's
+    // aggregate-only pageSize-1 probe. The live KPI fan-out inside getDashboardStats now shares
+    // the same pager (./partner-payments) and so issues an identical 1..3 pass of its own, which
+    // is why this asserts the pages COVERED rather than the raw call count.
     const pagedCalls = vi
       .mocked(fetchPartnerStats)
       .mock.calls.map((c) => c[0] as { page?: number; pageSize?: number })
-      .filter((a) => a.page !== undefined);
-    expect(pagedCalls.map((a) => a.page).sort()).toEqual([1, 2, 3]);
-    expect(pagedCalls.every((a) => a.pageSize === 500)).toBe(true);
+      .filter((a) => a.page !== undefined && a.pageSize === 500);
+    expect([...new Set(pagedCalls.map((a) => a.page))].sort()).toEqual([1, 2, 3]);
     // flattened detail = one row per page
-    expect(r.payments.map((p) => p.id).sort()).toEqual(["p-1", "p-2", "p-3"]);
+    expect(r.payments!.map((p) => p.id).sort()).toEqual(["p-1", "p-2", "p-3"]);
     // aggregate comes from the summary totals (not the page count)
     expect(r.partnerRows[0].paymentsCount).toBe(3);
     expect(r.partnerRows[0].paymentsAmount).toBe(600);
@@ -157,7 +209,7 @@ describe("reports (live partner API)", () => {
     // aggregate still authoritative; only page 1's detail survived
     expect(r.partnerRows[0].paymentsCount).toBe(2);
     expect(r.partnerRows[0].paymentsAmount).toBe(250);
-    expect(r.payments.map((p) => p.id)).toEqual(["p-1"]);
+    expect(r.payments!.map((p) => p.id)).toEqual(["p-1"]);
     expect(toCsv(r)).toContain("Skipped accounts");
   });
 
@@ -224,14 +276,15 @@ describe("reports (live partner API)", () => {
 
     const r = await getReport(db, user, { range, label: "July 2026" });
 
-    // Isolate this report's own paginated calls from the page-less calls made by
-    // getDashboardStats' internal getCompanyAnalytics fan-out (which already dedups on its own —
-    // see company-analytics.test.ts). Only one account should ever be fetched, not two.
+    // Only one ACCOUNT is ever fetched, not two: the single page of payment rows is requested once
+    // per consumer — this report, and the getCompanyAnalytics fan-out inside getDashboardStats,
+    // which dedups on its own (see company-analytics.test.ts) and now shares the same pager — so
+    // two calls, not the four an undeduped pair of accounts would make.
     const pagedCalls = vi
       .mocked(fetchPartnerStats)
-      .mock.calls.map((call) => call[0] as { page?: number })
-      .filter((a) => a.page !== undefined);
-    expect(pagedCalls).toHaveLength(1);
+      .mock.calls.map((call) => call[0] as { page?: number; pageSize?: number })
+      .filter((a) => a.page !== undefined && a.pageSize === 500);
+    expect(pagedCalls).toHaveLength(2);
 
     // Every account is still a row (shape preserved) — the loser shows 0, not hidden, and the
     // totals across both rows reflect ONE partner's figures, not two.

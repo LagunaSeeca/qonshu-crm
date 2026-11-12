@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { formatMoney } from "@/lib/money";
 
 export type PeriodType = "WEEKLY" | "BIWEEKLY" | "MONTHLY" | "YEARLY" | "CUSTOM";
 
@@ -34,13 +35,18 @@ export type DashboardStats = {
     activeAccounts: number;
     appUsers: number;
     activeAppUsers: number;
+    uniquePayingUsers: number;
     engagedUsers: number;
     paymentsAmount: number;
     appInstalls: number;
     installsIos: number;
     installsAndroid: number;
   };
-  finance: { collected: number; transferred: number; owed: number; serviceFeesOutstanding: number };
+  // collected/transferred/owed are settlement (cash) figures. The service OMITS them entirely for a
+  // caller without view_settlements (a MEMBER) — omitted, not 0, because 0 would read as "collected
+  // nothing". Optional here so that case is representable; the UI must not render a placeholder.
+  // serviceFeesOutstanding is CRM billing data, not settlement data, and is always present.
+  finance: { collected?: number; transferred?: number; owed?: number; serviceFeesOutstanding: number };
 };
 
 type Props = { initialStats: DashboardStats; initialPeriod: PeriodType };
@@ -51,9 +57,6 @@ export const PERIODS: { key: Exclude<PeriodType, "CUSTOM">; label: string }[] = 
   { key: "MONTHLY", label: "Monthly" },
   { key: "YEARLY", label: "Yearly" },
 ];
-
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 function KpiCard({
   label,
@@ -238,7 +241,7 @@ export function DashboardView({ initialStats, initialPeriod }: Props) {
             hint="Made a payment this period"
             href="/accounts"
           />
-          <KpiCard label="Payments amount" value={money(stats.partners.paymentsAmount)} icon={DollarSign} href="/accounts" />
+          <KpiCard label="Payments amount" value={formatMoney(stats.partners.paymentsAmount)} icon={DollarSign} href="/accounts" />
           <KpiCard
             label="App installs"
             value={stats.partners.appInstalls.toLocaleString()}
@@ -249,12 +252,20 @@ export function DashboardView({ initialStats, initialPeriod }: Props) {
         </KpiGroup>
 
         <KpiGroup title="Finance">
-          <KpiCard label="Collected" value={money(stats.finance.collected)} icon={ArrowDownCircle} href="/settlements" />
-          <KpiCard label="Transferred" value={money(stats.finance.transferred)} icon={ArrowUpCircle} href="/settlements" />
-          <KpiCard label="Owed" value={money(stats.finance.owed)} icon={Landmark} emphasize href="/settlements" />
+          {/* Each cash card exists only when the service supplied the figure; /settlements refuses
+              members, so the link goes with the card. No placeholder card for a hidden value. */}
+          {stats.finance.collected !== undefined && (
+            <KpiCard label="Collected" value={formatMoney(stats.finance.collected)} icon={ArrowDownCircle} href="/settlements" />
+          )}
+          {stats.finance.transferred !== undefined && (
+            <KpiCard label="Transferred" value={formatMoney(stats.finance.transferred)} icon={ArrowUpCircle} href="/settlements" />
+          )}
+          {stats.finance.owed !== undefined && (
+            <KpiCard label="Owed" value={formatMoney(stats.finance.owed)} icon={Landmark} emphasize href="/settlements" />
+          )}
           <KpiCard
             label="Service fees outstanding"
-            value={money(stats.finance.serviceFeesOutstanding)}
+            value={formatMoney(stats.finance.serviceFeesOutstanding)}
             icon={ReceiptText}
             href="/service-fees"
           />

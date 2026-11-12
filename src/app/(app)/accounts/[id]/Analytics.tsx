@@ -34,6 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { CATEGORY_LABELS, CATEGORY_ORDER, CATEGORY_COLORS } from "@/lib/analytics/categories";
+import { formatMoney } from "@/lib/money";
 
 type RangePreset = "DAILY" | "7D" | "30D" | "90D" | "1Y";
 type RangeSel = { preset: RangePreset; from: string; to: string };
@@ -126,9 +127,6 @@ function colorFor(kind: "method" | "category", key: string) {
   return CATEGORY_COLORS[idx >= 0 ? idx : 0];
 }
 
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-
 function buildRangeQuery(range: RangeSel): URLSearchParams {
   const sp = new URLSearchParams();
   if (range.from && range.to) {
@@ -219,7 +217,7 @@ function BreakdownRows({
               <div className={`h-full rounded-full ${color.bar}`} style={{ width: `${pct}%` }} />
             </div>
             <span className="w-20 shrink-0 text-right tabular-nums text-muted-foreground">
-              {money(r.amount)}
+              {formatMoney(r.amount)}
             </span>
           </li>
         );
@@ -396,10 +394,10 @@ export function Analytics({ accountId, initialData, isAdmin = false }: Props) {
     ? [
         { label: "Active Users", value: data.kpis.activeUsers.toLocaleString(), icon: Users },
         { label: "Total Users", value: data.kpis.totalUsers.toLocaleString(), icon: UsersRound },
-        { label: "Total Debt", value: money(data.kpis.totalDebt), icon: Wallet },
+        { label: "Total Debt", value: formatMoney(data.kpis.totalDebt), icon: Wallet },
         { label: "Payments", value: data.kpis.paymentsCount.toLocaleString(), icon: Receipt },
-        { label: "Payments Amount", value: money(data.kpis.paymentsAmount), icon: DollarSign },
-        { label: "Utility Amount", value: money(data.kpis.utilityAmount), icon: Zap },
+        { label: "Payments Amount", value: formatMoney(data.kpis.paymentsAmount), icon: DollarSign },
+        { label: "Utility Amount", value: formatMoney(data.kpis.utilityAmount), icon: Zap },
       ]
     : [];
 
@@ -591,7 +589,7 @@ export function Analytics({ accountId, initialData, isAdmin = false }: Props) {
                           <TableCell className="text-muted-foreground">
                             {new Date(p.occurredAt).toLocaleDateString()}
                           </TableCell>
-                          <TableCell className="text-right tabular-nums font-medium">{money(p.amount)}</TableCell>
+                          <TableCell className="text-right tabular-nums font-medium">{formatMoney(p.amount)}</TableCell>
                           <TableCell>
                             <Badge variant="outline" className={`font-medium ${colorFor("method", p.method).badge}`}>
                               {METHOD_LABELS[p.method] ?? p.method}

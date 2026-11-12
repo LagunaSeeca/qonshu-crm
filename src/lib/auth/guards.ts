@@ -7,18 +7,37 @@ import type { Role } from "@prisma/client";
 // is a data-leak shape rather than a bug. Null is the explicit "no team" value, used by
 // SUPER_ADMIN and by PARTNER_VIEWER (scoped to one Account via accountId instead).
 export type SessionUser = { id: string; companyId: string | null; teamId: string | null; role: Role; accountId?: string | null };
-export type Action = "manage_users" | "manage_companies" | "view_company_data";
+export type Action =
+  | "manage_users"
+  | "manage_companies"
+  | "view_payment_detail"
+  | "view_settlements"
+  | "write_settlements"
+  | "view_object_detail";
 export class ForbiddenError extends Error {}
 export class NotFoundError extends Error {}
 
-const MATRIX: Record<Action, Role[]> = {
+// Explicit allowlists: the list is the WHOLE truth for an action. Unlike assertRole, there is no
+// automatic SUPER_ADMIN widening here (write_settlements admits SUPER_ADMIN but not COMPANY_ADMIN),
+// so SUPER_ADMIN is listed wherever it belongs and nowhere else. The removed `view_company_data`
+// entry had no callers and omitted SUPER_ADMIN/PARTNER_VIEWER, contradicting the current model.
+const MATRIX: Record<Action, readonly Role[]> = {
   manage_companies: ["SUPER_ADMIN"],
   manage_users: ["COMPANY_ADMIN", "SUPER_ADMIN"],
-  view_company_data: ["COMPANY_ADMIN", "MEMBER"],
+  view_payment_detail: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
+  view_settlements: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
+  write_settlements: ["SUPER_ADMIN"],
+  view_object_detail: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
 };
 
+// Fails closed: an unknown/future role or an unknown action yields false, never a default-allow.
 export function can(user: SessionUser, action: Action): boolean {
+  if (!Object.hasOwn(MATRIX, action)) return false;
   return MATRIX[action].includes(user.role);
+}
+
+export function assertCan(user: SessionUser, action: Action): void {
+  if (!can(user, action)) throw new ForbiddenError(`not permitted: ${action}`);
 }
 
 // The two roles that may administer a team's book. Use this instead of comparing against

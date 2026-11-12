@@ -3,7 +3,7 @@ import { testPrisma, resetDb } from "@/test/db";
 import { getCompanyAnalytics } from "./company-analytics";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
-import { makePartnerStats } from "@/test/partner-stats-fixture";
+import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
 import { dbWithPhantomPartnerKey } from "@/test/duplicate-partner-db";
 import { makeTeam, makeUser, su, uniq, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 
@@ -62,6 +62,37 @@ describe("company analytics (live fan-out)", () => {
     else process.env.PARTNER_API_KEY = savedApiKey;
   });
   afterAll(() => testPrisma.$disconnect());
+
+  it("uniquePayingUsers = distinct CARD payers per account in the range, summed; member sees count only", async () => {
+    const team = await makeTeam();
+    const m = await makeUser("MEMBER", team);
+    await makeAccount(m.id, "Acc One", "uniq-p1");
+    await makeAccount(m.id, "Acc Two", "uniq-p2");
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) =>
+      makePartnerStats({
+        partner,
+        logged_in_users: 3,
+        payments:
+          partner === "uniq-p1"
+            ? [
+                makePartnerPayment({ id: "1", user_id: "u1", user_name: "Zed Hidden", method: "CARD" }),
+                makePartnerPayment({ id: "2", user_id: "u1", user_name: "Zed Hidden", method: "CARD" }),
+                makePartnerPayment({ id: "3", user_id: "u2", user_name: "Yan Hidden", method: "CASH" }),
+              ]
+            : [makePartnerPayment({ id: "4", user_id: "u1", user_name: "Xi Hidden", method: "CARD" })],
+      }),
+    );
+    const a = await getCompanyAnalytics(testPrisma, su(m), range);
+    // u1 in partner 1 and u1 in partner 2 are different people (ids are per-partner): 1 + 1.
+    expect(a.totals.uniquePayingUsers).toBe(2);
+    expect(a.totals.activeUsers).toBe(6);
+    expect(a.totals.uniquePayingUsersPartial).toBe(false);
+    expect(JSON.stringify(a)).not.toContain("Hidden");
+    // date-filtered, not lifetime: the range is forwarded to the live API.
+    expect(fetchPartnerStats).toHaveBeenCalledWith(
+      expect.objectContaining({ dateFrom: "2026-07-01", dateTo: "2026-07-31" }),
+    );
+  });
 
   // Defence in depth for a duplicate that predates @@unique([externalPartnerKey]): every figure
   // here is a plain SUM, so two accounts on one complex would double the whole page. A real
@@ -156,7 +187,7 @@ describe("company analytics (live fan-out)", () => {
 
     expect(a.totals.accounts).toBe(2);
     expect(a.totals.appUsers).toBe(11);
-    expect(a.totals.activeUsers).toBe(9);
+    expect(a.totals.activeUsers).toBe(4); // = logged_in_users, NOT active_users (8+1)
     expect(a.totals.engagedUsers).toBe(7);
     expect(a.totals.totalDebt).toBe(45);
     expect(a.totals.installs).toBe(5);
