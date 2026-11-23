@@ -116,6 +116,40 @@ export async function createSuperAdmin(
   return { id: created.id, email: created.email, companyId, created: true };
 }
 
+export type ResetResult = { id: string; email: string; role: string };
+
+// Set a NEW password on an existing login. The only way to recover an account whose password is
+// lost: --promote does not touch the hash, --create refuses once a super admin exists, and
+// bootstrap.ts refuses a non-empty database — so without this there is no path back into a live
+// system short of hand-written SQL.
+//
+// Scoped deliberately narrow: it writes ONLY passwordHash. It does not touch role, status, team or
+// company, so it can never be used to widen privilege — an operator who can run it can already
+// reach the database. It works on ANY role, not just the owner, because a locked-out team admin is
+// the same problem.
+export async function resetPassword(
+  db: Db,
+  args: { email: string; password: string },
+): Promise<ResetResult> {
+  if (!args.email) throw new Error("RESET_EMAIL is required");
+  if (!args.password || args.password.length < MIN_PASSWORD) {
+    throw new Error(`RESET_PASSWORD is required and must be at least ${MIN_PASSWORD} characters`);
+  }
+  // Same exact-then-case-insensitive lookup as promoteSuperAdmin, for the same reason: this is
+  // typed by hand into a shell during an outage.
+  const trimmed = args.email.trim();
+  let user = await db.user.findUnique({ where: { email: trimmed } });
+  if (!user) {
+    const loose = await db.user.findMany({ where: { email: { equals: trimmed, mode: "insensitive" } }, take: 2 });
+    if (loose.length > 1) throw new Error(`${trimmed} matches more than one login by case — use the exact email`);
+    user = loose[0] ?? null;
+  }
+  if (!user) throw new Error(`no user with email ${trimmed}`);
+
+  await db.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(args.password) } });
+  return { id: user.id, email: user.email, role: user.role };
+}
+
 // The org the owner belongs to. Keeps an existing companyId, else takes the named slug, else THE
 // single company. Ambiguity throws: picking one of several companies for the operator would attach
 // the owner to the wrong org with no way to notice.
@@ -141,7 +175,8 @@ async function resolveCompanyId(
 const USAGE = `Usage:
   npx tsx prisma/scripts/super-admin.ts --promote <email>
   npx tsx prisma/scripts/super-admin.ts --create        (reads SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD,
-                                                         optional SUPER_ADMIN_NAME, SUPER_ADMIN_COMPANY_SLUG)`;
+                                                         optional SUPER_ADMIN_NAME, SUPER_ADMIN_COMPANY_SLUG)
+  npx tsx prisma/scripts/super-admin.ts --reset-password (reads RESET_EMAIL / RESET_PASSWORD)`;
 
 // The client is built HERE rather than at module scope so this file can be imported by its test
 // (which supplies its own test client) without needing DATABASE_URL.
@@ -179,6 +214,16 @@ async function main(argv: string[]): Promise<void> {
           ? `created SUPER_ADMIN ${r.email} (id ${r.id}, company ${r.companyId})`
           : `SUPER_ADMIN ${r.email} already provisioned (id ${r.id}) — nothing to do`,
       );
+      return;
+    }
+    if (argv[0] === "--reset-password") {
+      // Credentials from the environment ONLY, same as --create: argv lands in shell history,
+      // `ps` output and CI logs. The new password is never echoed.
+      const r = await resetPassword(db, {
+        email: process.env.RESET_EMAIL ?? "",
+        password: process.env.RESET_PASSWORD ?? "",
+      });
+      console.log(`password reset for ${r.email} (id ${r.id}, role ${r.role}) — role and status unchanged`);
       return;
     }
     throw new Error(USAGE);

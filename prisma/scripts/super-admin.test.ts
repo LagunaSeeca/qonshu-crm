@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
 import { makeCompany, makeTeamWithUsers, makeUser, uniq } from "@/test/fixtures";
 import { verifyPassword } from "@/lib/auth/password";
-import { createSuperAdmin, promoteSuperAdmin } from "./super-admin";
+import { createSuperAdmin, promoteSuperAdmin, resetPassword } from "./super-admin";
 
 describe("promoteSuperAdmin", () => {
   beforeEach(resetDb);
@@ -121,5 +121,57 @@ describe("createSuperAdmin", () => {
     await expect(
       createSuperAdmin(testPrisma, { email: `${uniq("o-")}@test.local`, password: "pw12345678" }),
     ).rejects.toThrow(/no company exists/);
+  });
+});
+
+describe("resetPassword", () => {
+  beforeEach(resetDb);
+  afterAll(() => testPrisma.$disconnect());
+
+  it("replaces the hash so the new password verifies and the old one stops working", async () => {
+    const { admin } = await makeTeamWithUsers();
+    const before = await testPrisma.user.findUniqueOrThrow({ where: { id: admin.id } });
+
+    const r = await resetPassword(testPrisma, { email: admin.email, password: "brand-new-pw-1" });
+    expect(r.email).toBe(admin.email);
+
+    const after = await testPrisma.user.findUniqueOrThrow({ where: { id: admin.id } });
+    expect(await verifyPassword("brand-new-pw-1", after.passwordHash)).toBe(true);
+    expect(await verifyPassword("password123", after.passwordHash)).toBe(false);
+    expect(after.passwordHash).not.toBe(before.passwordHash);
+  });
+
+  // The whole point of the narrow scope: an operator recovering a login must not be able to
+  // silently widen it. Everything except the hash must be byte-identical afterwards.
+  it("changes ONLY the password — never role, status, team or company", async () => {
+    const { member } = await makeTeamWithUsers();
+    const before = await testPrisma.user.findUniqueOrThrow({ where: { id: member.id } });
+
+    await resetPassword(testPrisma, { email: member.email, password: "another-pw-12" });
+
+    const after = await testPrisma.user.findUniqueOrThrow({ where: { id: member.id } });
+    expect({ ...after, passwordHash: "" }).toEqual({ ...before, passwordHash: "" });
+    expect(after.role).toBe("MEMBER");
+  });
+
+  it("rejects a short password before touching the row, and an unknown email", async () => {
+    const { admin } = await makeTeamWithUsers();
+    const before = await testPrisma.user.findUniqueOrThrow({ where: { id: admin.id } });
+
+    await expect(resetPassword(testPrisma, { email: admin.email, password: "short" })).rejects.toThrow(/at least 8/);
+    await expect(resetPassword(testPrisma, { email: "", password: "valid-pw-1234" })).rejects.toThrow(/required/);
+    await expect(
+      resetPassword(testPrisma, { email: "nobody@test.local", password: "valid-pw-1234" }),
+    ).rejects.toThrow(/no user with email/);
+
+    const after = await testPrisma.user.findUniqueOrThrow({ where: { id: admin.id } });
+    expect(after.passwordHash).toBe(before.passwordHash);
+  });
+
+  it("finds the login case-insensitively, as the operator will type it", async () => {
+    const { admin } = await makeTeamWithUsers();
+    await resetPassword(testPrisma, { email: admin.email.toUpperCase(), password: "cased-pw-1234" });
+    const after = await testPrisma.user.findUniqueOrThrow({ where: { id: admin.id } });
+    expect(await verifyPassword("cased-pw-1234", after.passwordHash)).toBe(true);
   });
 });
