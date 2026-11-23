@@ -4,7 +4,7 @@ import { NotFoundError, can } from "@/lib/auth/guards";
 import { getAccount, listAccounts } from "./accounts";
 import { getDashboardStats, type DashboardStats } from "./dashboard";
 import { listCompanySettlements } from "./settlements";
-import { fetchAllPayments, type AllPayments } from "./partner-payments";
+import { fetchAllPayments } from "./partner-payments";
 import { getCompanyAnalytics } from "./company-analytics";
 import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import {
@@ -15,6 +15,7 @@ import {
 import type {
   PaymentMethod,
   PaymentCategory,
+  PartnerPayment,
 } from "@/lib/partner-api/schema";
 
 // Reports are now a LIVE read: the per-partner payment figures and the flattened payment-level
@@ -32,6 +33,10 @@ export type PartnerRow = {
   // Settlement figures (live card takings + the company's own transfer ledger). PRESENT ONLY when
   // the caller can("view_settlements"); for a MEMBER the keys are absent from the row entirely —
   // not 0 — so they are absent from the JSON, the CSV and the RSC props. Same rule as `payments`.
+  //
+  // `collected`/`owed` are ALSO absent for an account whose card total could not be established
+  // (see AccountSettlement.collected): a 0 there is a money figure a reader would act on. A
+  // consumer must render the absence as "unknown", never as 0 or a blank cell.
   collected?: number;
   transferred?: number;
   owed?: number;
@@ -128,7 +133,24 @@ export async function getReport(
   // getCompanyAnalytics itself, and the row-level pass below used to page every partner a SECOND
   // time for the identical partner+range — ~40 upstream requests per account per render. The
   // analytics call keeps the per-account results (`includePayments`) and both consumers read them.
-  const analytics = await getCompanyAnalytics(db, user, opts.range, { includePayments: true });
+  //
+  // `accountId` IS FORWARDED. Without it a single-account report took getCompanyAnalytics'
+  // all-accounts branch: the header named one partner while every KPI below it described every
+  // account in the caller's scope, and the live fan-out hit every partner to produce numbers the
+  // report then never showed. `accounts` above is already narrowed to exactly this account, so
+  // the analytics scope now matches the report's scope. (A PARTNER_VIEWER is pinned to their own
+  // account inside getCompanyAnalytics regardless, so this is a no-op for them.)
+  //
+  // `includePayments` IS GATED ON view_payment_detail. The option hands back the raw payment rows,
+  // which carry payer identity (user_id / user_name); its contract is that only a caller gating
+  // detail on that permission may ask for them. A member's report discards the rows further down
+  // (`if (!withDetail) return;`), so asking for them was a contract violation waiting to become a
+  // leak the first time anything returned or logged `analytics`. The aggregates a member's report
+  // still shows come from the page-1 summary, not the rows, so no figure changes.
+  const analytics = await getCompanyAnalytics(db, user, opts.range, {
+    ...(opts.accountId ? { accountId: opts.accountId } : {}),
+    includePayments: withDetail,
+  });
   const [kpis, settlements] = await Promise.all([
     getDashboardStats(db, user, opts.range, { analytics }),
     // The settlement figures must cover the REPORTED range, not the current month: called without
@@ -174,29 +196,81 @@ export async function getReport(
     resolved.push({ account: a, creds });
   }
 
-  // Reuse the analytics fan-out's result for this account when it has one — same partner, same
-  // range, same pager, so the rows are identical and the request is pure duplication. The
-  // fallback stays for an account the analytics scope did not cover (a PARTNER scope report on an
-  // account outside that caller's company-wide read), and keeps allSettled's shape so the loop
-  // below — including per-error reasons and `partial` — is unchanged.
+  // What this report needs to know about each account, assembled from the ONE fan-out above.
+  // `rows` is empty for a caller without view_payment_detail — not a claim that the account took
+  // no payments (the figures beside it are the page-1 summary totals, which cover the FULL range);
+  // the rows are discarded for that caller further down regardless.
+  type AccountOutcome =
+    | { ok: true; count: number; amount: number; partial: boolean; rows: PartnerPayment[] }
+    | { ok: false; reason: AccountReportReason };
+
+  // EXACTLY ONE UPSTREAM FAN-OUT PER RENDER, FOR EVERY ROLE.
+  //
+  // With view_payment_detail the per-account rows come out of `analytics.paymentsByAccount`. A
+  // caller WITHOUT it gets that map as null on purpose (it carries payer identity — see the
+  // getCompanyAnalytics call above), so the per-account FIGURES are read off the same fan-out's
+  // other outputs instead: `analytics.partners` (count/amount, both from the page-1 summary),
+  // `analytics.accountStatuses` (per-account success / skip reason) and
+  // `analytics.partialByAccount` (whether paging truncated). None of those holds a payment row, a
+  // user_id or a user_name, so handing them to a MEMBER leaks nothing.
+  //
+  // Falling through to the per-account fetch below for a member instead would re-page EVERY
+  // account — two full fan-outs per report. At ~30 linked accounts that was already over the
+  // Vercel function timeout before the paymentsByAccount reuse landed, and members (sales
+  // managers) are the heaviest users of /reports. So the no-detail path must never refetch.
   const cached = analytics.paymentsByAccount;
-  const settled: PromiseSettledResult<AllPayments>[] = await Promise.all(
-    resolved.map(async ({ account, creds }): Promise<PromiseSettledResult<AllPayments>> => {
+  const analyticsPartnerById = new Map(analytics.partners.map((p) => [p.accountId, p]));
+  const analyticsStatusById = new Map(analytics.accountStatuses.map((s) => [s.accountId, s]));
+
+  const outcomes: AccountOutcome[] = await Promise.all(
+    resolved.map(async ({ account, creds }): Promise<AccountOutcome> => {
       const hit = cached?.get(account.id);
-      if (hit) return hit;
-      try {
+      if (hit) {
+        if (hit.status === "rejected") return { ok: false, reason: skipReason(hit.reason) };
         return {
-          status: "fulfilled",
-          value: await fetchAllPayments({
-            baseUrl: creds.baseUrl,
-            apiKey: creds.apiKey,
-            partner: creds.partner,
-            dateFrom,
-            dateTo,
-          }),
+          ok: true,
+          count: hit.value.summary.total_payments_count,
+          amount: hit.value.summary.total_payments_amount,
+          partial: hit.value.partial,
+          rows: hit.value.payments,
+        };
+      }
+      // No rows map: same fan-out, aggregates only. AccountSkipReason is a subset of
+      // AccountReportReason, so the upstream failure reason survives verbatim rather than
+      // collapsing to a generic "error" — and `partial` survives too, which is the whole point of
+      // partialByAccount.
+      const st = analyticsStatusById.get(account.id);
+      if (!cached && st) {
+        if (st.status === "skipped") return { ok: false, reason: st.reason ?? "error" };
+        const p = analyticsPartnerById.get(account.id);
+        return {
+          ok: true,
+          count: p?.paymentsCount ?? 0,
+          amount: p?.paymentsAmount ?? 0,
+          partial: analytics.partialByAccount.get(account.id) ?? false,
+          rows: [],
+        };
+      }
+      // Last resort: an account the analytics scope did not cover at all. With opts.accountId now
+      // forwarded, both go through the same scope readers, so this should be unreachable — it is
+      // kept so a future scope divergence costs an extra request instead of dropping a row.
+      try {
+        const all = await fetchAllPayments({
+          baseUrl: creds.baseUrl,
+          apiKey: creds.apiKey,
+          partner: creds.partner,
+          dateFrom,
+          dateTo,
+        });
+        return {
+          ok: true,
+          count: all.summary.total_payments_count,
+          amount: all.summary.total_payments_amount,
+          partial: all.partial,
+          rows: all.payments,
         };
       } catch (reason) {
-        return { status: "rejected", reason };
+        return { ok: false, reason: skipReason(reason) };
       }
     }),
   );
@@ -204,30 +278,21 @@ export async function getReport(
   const liveByAccount = new Map<string, { count: number; amount: number }>();
   const payments: PaymentRow[] = [];
 
-  settled.forEach((res, i) => {
+  outcomes.forEach((res, i) => {
     const a = resolved[i].account;
-    if (res.status === "rejected") {
-      statuses.push({
-        accountId: a.id,
-        accountName: a.name,
-        status: "skipped",
-        reason: skipReason(res.reason),
-      });
+    if (!res.ok) {
+      statuses.push({ accountId: a.id, accountName: a.name, status: "skipped", reason: res.reason });
       return;
     }
-    const { summary, payments: rows, partial } = res.value;
-    liveByAccount.set(a.id, {
-      count: summary.total_payments_count,
-      amount: summary.total_payments_amount,
-    });
+    liveByAccount.set(a.id, { count: res.count, amount: res.amount });
     statuses.push({
       accountId: a.id,
       accountName: a.name,
-      status: partial ? "partial" : "ok",
-      reason: partial ? "partial" : undefined,
+      status: res.partial ? "partial" : "ok",
+      reason: res.partial ? "partial" : undefined,
     });
     if (!withDetail) return;
-    for (const p of rows) {
+    for (const p of res.rows) {
       payments.push({
         accountId: a.id,
         accountName: a.name,
@@ -254,9 +319,17 @@ export async function getReport(
       accountName: a.name,
       paymentsCount: live?.count ?? 0,
       paymentsAmount: live?.amount ?? 0,
-      // Absent (not 0) for a caller without view_settlements — see PartnerRow.
-      ...(settlements
-        ? { collected: s?.collected ?? 0, transferred: s?.transferred ?? 0, owed: s?.owed ?? 0 }
+      // Absent (not 0) for a caller without view_settlements, AND absent when the figure itself
+      // could not be established. `s?.collected ?? 0` used to reinstate here exactly the
+      // fabricated ₼0 the settlement service now refuses to produce: an account whose card total
+      // could not be fetched printed "₼0 collected" in the report and the CSV, with `owed`
+      // inflated to match. Transferred is our own ledger, so it is known whenever the row is.
+      ...(settlements && s
+        ? {
+            transferred: s.transferred,
+            ...(s.collected !== undefined ? { collected: s.collected } : {}),
+            ...(s.owed !== undefined ? { owed: s.owed } : {}),
+          }
         : {}),
     };
   });
@@ -277,6 +350,14 @@ function esc(v: string | number): string {
   if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
+
+// A cash cell whose figure could not be established. The word is deliberate: `0` and an empty
+// cell both read as "this partner collected nothing", which is a different and false statement,
+// and the bare `r.collected!` this replaces would have printed the string "undefined" once the
+// service started omitting the key. Spreadsheet software will not silently total a text cell
+// either, which is the right outcome for a column that is missing a value.
+const UNKNOWN_CASH = "unknown";
+const cashCell = (n: number | undefined): string | number => (n === undefined ? UNKNOWN_CASH : n);
 
 const REASON_LABEL: Record<AccountReportReason, string> = {
   not_configured: "not configured",
@@ -330,7 +411,7 @@ export function toCsv(report: Report): string {
         r.accountName,
         r.paymentsCount,
         r.paymentsAmount,
-        ...(withSettlements ? [r.collected!, r.transferred!, r.owed!] : []),
+        ...(withSettlements ? [cashCell(r.collected), cashCell(r.transferred), cashCell(r.owed)] : []),
       ]
         .map(esc)
         .join(","),

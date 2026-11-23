@@ -27,6 +27,12 @@ export default async function SettlementsPage() {
 
   const { totals, rows } = await listCompanySettlements(prisma, user);
 
+  // Collected comes from the partner API per request and can legitimately be UNKNOWN (upstream
+  // down, key rejected, no link). The service omits the key in that case rather than sending 0,
+  // because a ₼0 Collected reads as "collected nothing" — a false statement about money. Render
+  // the absence as "—", never as a number, and never with `?? 0`.
+  const money = (n: number | undefined) => (n === undefined ? "—" : formatMoney(n));
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -39,6 +45,21 @@ export default async function SettlementsPage() {
         }
       />
 
+      {/* Partial-data disclosure. Without this the totals below are understated by however much
+          the unreachable accounts had collected, while still reading as authoritative. Transferred
+          is NOT affected — those are our own DB rows and always known — which is also why
+          Collected - Transferred != Owed while this banner is showing. */}
+      {totals.partial && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3">
+          <p className="text-sm font-medium text-foreground">Partial data</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Collected could not be retrieved for {totals.degradedAccountIds.length}{" "}
+            {totals.degradedAccountIds.length === 1 ? "account" : "accounts"}, shown as “—” below.
+            The Collected and Owed totals cover only the accounts that responded.
+          </p>
+        </div>
+      )}
+
       {/* Totals */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card size="sm">
@@ -47,7 +68,7 @@ export default async function SettlementsPage() {
             <ArrowDownCircle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{formatMoney(totals.collected)}</div>
+            <div className="text-xl font-bold tabular-nums">{money(totals.collected)}</div>
           </CardContent>
         </Card>
         <Card size="sm">
@@ -65,7 +86,7 @@ export default async function SettlementsPage() {
             <Landmark className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold tabular-nums text-foreground">{formatMoney(totals.owed)}</div>
+            <div className="text-2xl font-bold tabular-nums text-foreground">{money(totals.owed)}</div>
           </CardContent>
         </Card>
       </div>
@@ -105,9 +126,9 @@ export default async function SettlementsPage() {
                       </Link>
                     )}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{formatMoney(r.collected)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{money(r.collected)}</TableCell>
                   <TableCell className="text-right tabular-nums">{formatMoney(r.transferred)}</TableCell>
-                  <TableCell className="text-right tabular-nums font-medium">{formatMoney(r.owed)}</TableCell>
+                  <TableCell className="text-right tabular-nums font-medium">{money(r.owed)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

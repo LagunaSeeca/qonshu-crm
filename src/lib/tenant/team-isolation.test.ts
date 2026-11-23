@@ -599,9 +599,13 @@ describe("team isolation", () => {
           expect(stats.finance.transferred).toBeUndefined();
           expect(stats.finance.owed).toBeUndefined();
         } else {
+          // CHANGED ON PURPOSE: these accounts have no confirmed partner link, so their Collected
+          // is UNKNOWN and no longer folded in as 0 — which means Owed is no longer -Transferred
+          // (a figure that read as "the partners owe us that much back"). Collected/Owed sum only
+          // the accounts that answered — none here — while Transferred stays the full, known total.
           expect(stats.finance.collected).toBe(0);
           expect(stats.finance.transferred).toBe(cash);
-          expect(stats.finance.owed).toBe(-cash);
+          expect(stats.finance.owed).toBe(0);
         }
       });
 
@@ -626,6 +630,9 @@ describe("team isolation", () => {
           expect(sorted(settlements.rows.map((r) => r.accountId))).toEqual(sorted(sees.map((k) => w.accounts[k].id)));
           expect(settlements.totals.transferred).toBe(rowSum(settlements.rows.map((r) => r.transferred)));
           expect(settlements.totals.collected).toBe(0);
+          // ...and because nothing was fetched, the roll-up declares itself incomplete rather than
+          // letting a 0 Collected pass as "these partners collected nothing".
+          expect(settlements.totals.partial).toBe(settlements.rows.length > 0);
           expect(settlements.totals.transferred).toBe(
             sees.reduce((n, k) => n + ({ m1: 100, m2: 200, m3: 400, adminA: 0 }[k]), 0),
           );

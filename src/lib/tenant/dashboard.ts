@@ -67,7 +67,13 @@ export async function getDashboardStats(
     db.stage.findMany({ where: stageWhere }),
     listAccounts(db, user),
     opts?.analytics ?? getCompanyAnalytics(db, user, range),
-    withSettlements ? listCompanySettlements(db, user) : null,
+    // THE RANGE IS PASSED, not defaulted. Called without a period, listCompanySettlements falls
+    // back to currentSettlementPeriod() (this calendar month), so the three cash KPIs described a
+    // different window from every other figure in this DTO: the period selector moved sales,
+    // activity and partner numbers while Collected/Transferred/Owed sat on the current month, and
+    // reports.ts (which DOES pass the range to its own roll-up) printed both side by side,
+    // unlabelled. Same window for every number here or they cannot be read together.
+    withSettlements ? listCompanySettlements(db, user, { from: range.from, to: range.to }) : null,
     listCompanyServiceFees(db, user),
   ]);
   const stageById = new Map(stages.map((s) => [s.id, s]));

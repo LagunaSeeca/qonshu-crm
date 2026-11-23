@@ -26,46 +26,25 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatMoney } from "@/lib/money";
+import type {
+  ObjectsFull,
+  ObjectsResult,
+  ObjectsSummary,
+  ObjectsTotals,
+  NormalizedBuilding,
+  NormalizedUnit,
+} from "@/lib/tenant/account-objects";
 
-// ---- Types mirror the normalized shape returned by GET /api/accounts/[id]/objects ----
-type Unit = {
-  id: number;
-  number: string;
-  ownerId: number | null;
-  ownerName: string | null;
-  ownerMobile: string | null;
-  debt: number;
-  balance: number;
-  net: number;
-};
-type PropertyUnit = Unit & { type: string };
-type Block = { id: number; name: string; apartments: Unit[] };
-type Building = {
-  id: number;
-  name: string;
-  blocks: Block[];
-  // Flat lists live directly on the building — NOT nested under blocks.
-  parkings: Unit[];
-  properties: PropertyUnit[];
-  offices: Unit[];
-};
-
-type OkPayload = {
-  status: "ok";
-  partner: string;
-  complexType: "RESIDENTIAL" | "COMMERCIAL";
-  buildings: Building[];
-};
+// Types come straight from the service so drift is a compile error. A caller without
+// `view_object_detail` (a MEMBER) gets ObjectsSummary, which has NO `buildings` key.
+type Building = NormalizedBuilding;
+type Unit = NormalizedUnit;
 
 // Every state the API can resolve to, plus a local "error" catch-all for generic
-// { error } bodies (401/404/500) and network failures.
-type ObjectsState =
-  | OkPayload
-  | { status: "not_configured" }
-  | { status: "invalid_api_key" }
-  | { status: "unknown_partner" }
-  | { status: "partner_api_unavailable" }
-  | { status: "error" };
+// { error } bodies (401/404/500) and network failures. The API also answers 404
+// { status: "not_found" } for an out-of-scope account.
+type ObjectsState = ObjectsResult | { status: "error" };
+type OkState = ObjectsFull | ObjectsSummary;
 
 const KNOWN_STATUSES = new Set([
   "ok",
@@ -73,6 +52,7 @@ const KNOWN_STATUSES = new Set([
   "invalid_api_key",
   "unknown_partner",
   "partner_api_unavailable",
+  "not_found",
 ]);
 
 // net < 0 → owes (red); net > 0 → credit (green); 0 → neutral.
@@ -115,6 +95,10 @@ const STATUS_CONTENT: Record<
     body: "The partner service is temporarily unavailable. Please try again in a little while.",
     retry: true,
   },
+  not_found: {
+    title: "Account not found",
+    body: "This account could not be found or is outside your access.",
+  },
   error: {
     title: "Couldn't load objects",
     body: "Something went wrong loading this complex's structure. Please try again.",
@@ -148,7 +132,7 @@ function StatusCard({
   );
 }
 
-function ComplexTypeBadge({ type }: { type: OkPayload["complexType"] }) {
+function ComplexTypeBadge({ type }: { type: OkState["complexType"] }) {
   const cls =
     type === "RESIDENTIAL"
       ? "text-sky-700 border-sky-300 bg-sky-50 dark:text-sky-400 dark:border-sky-700 dark:bg-sky-950"
@@ -157,6 +141,32 @@ function ComplexTypeBadge({ type }: { type: OkPayload["complexType"] }) {
     <Badge variant="outline" className={`font-medium ${cls}`}>
       {type === "RESIDENTIAL" ? "Residential" : "Commercial"}
     </Badge>
+  );
+}
+
+const TOTAL_ITEMS: { key: keyof ObjectsTotals; label: string }[] = [
+  { key: "buildings", label: "Buildings" },
+  { key: "blocks", label: "Blocks" },
+  { key: "apartments", label: "Apartments" },
+  { key: "parkings", label: "Parkings" },
+  { key: "properties", label: "Properties" },
+  { key: "offices", label: "Offices" },
+];
+
+// Counts only — no money. Shown to every viewer, including members.
+function TotalsBar({ totals }: { totals: ObjectsTotals }) {
+  return (
+    <dl
+      aria-label="Portfolio totals"
+      className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6"
+    >
+      {TOTAL_ITEMS.map(({ key, label }) => (
+        <div key={key} className="rounded-lg border border-border px-3 py-2">
+          <dt className="text-xs text-muted-foreground">{label}</dt>
+          <dd className="text-lg font-semibold tabular-nums text-foreground">{totals[key]}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -320,7 +330,10 @@ export function Objects({ accountId }: Props) {
     return <StatusCard status={state.status} onRetry={retry} />;
   }
 
-  const { partner, complexType, buildings } = state;
+  const { partner, complexType, totals } = state;
+  // Narrow on `detail`: only "full" carries `buildings`. A member sees the totals bar and no
+  // per-unit detail — that is the intended screen, not an empty list.
+  const buildings = state.detail === "full" ? state.buildings : null;
 
   return (
     <div className="space-y-4">
@@ -331,14 +344,16 @@ export function Objects({ accountId }: Props) {
           <div className="min-w-0">
             <h2 className="text-base font-semibold text-foreground truncate">{partner}</h2>
             <p className="text-xs text-muted-foreground">
-              {buildings.length} {buildings.length === 1 ? "building" : "buildings"}
+              {totals.buildings} {totals.buildings === 1 ? "building" : "buildings"}
             </p>
           </div>
         </div>
         <ComplexTypeBadge type={complexType} />
       </div>
 
-      {buildings.length === 0 ? (
+      <TotalsBar totals={totals} />
+
+      {buildings === null ? null : buildings.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center gap-2 py-12 text-center">
             <Building2 className="size-8 opacity-40 text-muted-foreground" />

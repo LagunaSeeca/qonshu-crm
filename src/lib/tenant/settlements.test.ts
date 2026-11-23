@@ -53,8 +53,7 @@ async function setup(slug: string, opts: { linked?: boolean } = {}) {
 }
 
 // Writes bypass the service where the test is not about the write gate: addSettlementEntry needs
-// write_settlements (COMPANY_ADMIN or SUPER_ADMIN), and most cases below are about arithmetic or
-// reads.
+// write_settlements (SUPER_ADMIN only), and most cases below are about arithmetic or reads.
 function seedTransfer(companyId: string, accountId: string, createdById: string, amount: number, occurredAt: Date, method: "CASH" | "BANK_TRANSFER" | "MANUAL" = "CASH") {
   return testPrisma.settlementEntry.create({
     data: { companyId, accountId, type: "TRANSFER", amount, method, occurredAt, createdById },
@@ -168,7 +167,10 @@ describe("settlements", () => {
     const { acc, adminUser } = await setup("s-unlinked", { linked: false });
     const s = await getAccountSettlement(testPrisma, adminUser, acc.id);
     expect(s.status).toBe("not-configured");
-    expect(s.collected).toBe(0);
+    // CHANGED ON PURPOSE: Collected is now OMITTED (not 0) whenever status !== "ok", so an
+    // unreachable/unasked upstream cannot be rendered as a money figure.
+    expect(s.collected).toBeUndefined();
+    expect(s.remaining).toBeUndefined();
     expect(fetchPartnerStats).not.toHaveBeenCalled();
   });
 
@@ -195,7 +197,11 @@ describe("settlements", () => {
     vi.mocked(fetchPartnerStats).mockRejectedValue(err);
     const s = await getAccountSettlement(testPrisma, adminUser, acc.id);
     expect(s.status).toBe(status);
-    expect(s.collected).toBe(0);
+    // CHANGED ON PURPOSE: a failed fetch omits Collected (and `remaining`/`owed`) instead of
+    // reporting 0 / -Transferred, which read as a real balance.
+    expect(s.collected).toBeUndefined();
+    expect(s.remaining).toBeUndefined();
+    expect(s.owed).toBeUndefined();
   });
 
   it("one failing account does not sink the company roll-up", async () => {
@@ -217,6 +223,11 @@ describe("settlements", () => {
     expect(s.rows.find((r) => r.accountId === bad.id)?.status).toBe("invalid-key");
     expect(s.rows.find((r) => r.accountId === acc.id)?.status).toBe("ok");
     expect(s.totals.collected).toBe(600);
+    // The failing account contributes no Collected at all (not a 0), and the totals now SAY so
+    // instead of presenting a 1-of-2 sum as the company's position.
+    expect(s.rows.find((r) => r.accountId === bad.id)?.collected).toBeUndefined();
+    expect(s.totals.partial).toBe(true);
+    expect(s.totals.degradedAccountIds).toEqual([bad.id]);
   });
 
   // --- the roll-up -----------------------------------------------------------------------
@@ -230,7 +241,11 @@ describe("settlements", () => {
 
     const sumA = await listCompanySettlements(testPrisma, A.adminUser);
     expect(sumA.rows).toHaveLength(1);
-    expect(sumA.totals).toEqual({ collected: 1000, transferred: 250, remaining: 750, owed: 750 });
+    // CHANGED ON PURPOSE: `totals` carries the degraded-data flags now (both empty here — every
+    // account answered), so the exact-shape assertion has to list them.
+    expect(sumA.totals).toEqual({
+      collected: 1000, transferred: 250, remaining: 750, owed: 750, partial: false, degradedAccountIds: [],
+    });
 
     const sumB = await listCompanySettlements(testPrisma, B.adminUser);
     expect(sumB.rows).toHaveLength(1);
@@ -261,41 +276,49 @@ describe("settlements", () => {
     expect(fetchPartnerStats).not.toHaveBeenCalled();
   });
 
-  // `write_settlements` is ["COMPANY_ADMIN", "SUPER_ADMIN"]. A team admin recording a cash
-  // transfer against their own team's building is the ordinary case the settlements UI exists
-  // for — the capability only ever listing SUPER_ADMIN was a regression that locked every team
-  // admin out of the transfer routes these capabilities replaced. A MEMBER stays refused: they
-  // cannot even READ a settlement (see the read gate above), so they must not amend one.
-  it("WRITES require write_settlements: a COMPANY_ADMIN may write, a MEMBER is Forbidden", async () => {
+  // `write_settlements` is ["SUPER_ADMIN"] — an explicit product rule: "only superadmin should be
+  // able to add settlements transfers". A transfer row moves `remaining`/`owed` directly, i.e.
+  // what Qonshu owes a partner, so neither a MEMBER nor a team admin may amend one; a team admin
+  // READS settlements (see the read gate above) but cannot write.
+  //
+  // This capability WAS once widened to COMPANY_ADMIN, because a team admin got a 403 from a
+  // transfer control the UI still rendered. The 403 was correct and the UI was the bug (the
+  // controls now derive from can(user, "write_settlements"), so they are hidden). If this test is
+  // ever failing again, check the product rule before widening the matrix.
+  it("WRITES require write_settlements: only the SUPER_ADMIN may write; MEMBER and team admin are Forbidden", async () => {
     const { c, acc, adminUser, memberUser, saUser } = await setup("s-gate-write");
     const seeded = await seedTransfer(c.id, acc.id, saUser.id, 10, inPeriod);
 
-    await expect(
-      addSettlementEntry(testPrisma, memberUser, acc.id, { amount: 5, method: "CASH", occurredAt: inPeriod }),
-    ).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(
-      updateSettlementEntry(testPrisma, memberUser, seeded.id, { amount: 5 }),
-    ).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(deleteSettlementEntry(testPrisma, memberUser, seeded.id)).rejects.toBeInstanceOf(ForbiddenError);
-    // The member created, changed and removed nothing.
+    for (const refused of [memberUser, adminUser]) {
+      await expect(
+        addSettlementEntry(testPrisma, refused, acc.id, { amount: 5, method: "CASH", occurredAt: inPeriod }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(
+        updateSettlementEntry(testPrisma, refused, seeded.id, { amount: 5 }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+      await expect(deleteSettlementEntry(testPrisma, refused, seeded.id)).rejects.toBeInstanceOf(ForbiddenError);
+    }
+    // Neither of them created, changed or removed anything.
     expect(await testPrisma.settlementEntry.count({ where: { accountId: acc.id } })).toBe(1);
     expect(Number((await testPrisma.settlementEntry.findUniqueOrThrow({ where: { id: seeded.id } })).amount)).toBe(10);
 
-    // The team admin's writes all land, which is what makes the member's refusal a gate rather
-    // than a broken code path.
-    const added = await addSettlementEntry(testPrisma, adminUser, acc.id, {
+    // The owner's writes all land, which is what makes the refusals above a gate rather than a
+    // broken code path.
+    const added = await addSettlementEntry(testPrisma, saUser, acc.id, {
       amount: 5, method: "CASH", occurredAt: inPeriod,
     });
-    await updateSettlementEntry(testPrisma, adminUser, seeded.id, { amount: 7 });
+    await updateSettlementEntry(testPrisma, saUser, seeded.id, { amount: 7 });
     expect(Number((await testPrisma.settlementEntry.findUniqueOrThrow({ where: { id: seeded.id } })).amount)).toBe(7);
-    await deleteSettlementEntry(testPrisma, adminUser, added.id);
+    await deleteSettlementEntry(testPrisma, saUser, added.id);
     expect(await testPrisma.settlementEntry.count({ where: { accountId: acc.id } })).toBe(1);
   });
 
-  // The caller here must be a role the gate REFUSES, otherwise the test proves nothing: a
-  // COMPANY_ADMIN now passes write_settlements and falls through to the scope check, which is
-  // where "entry not in scope" comes from. A MEMBER is the role whose refusal has to be
-  // indistinguishable between a real id in another tenant and an id that does not exist at all.
+  // The caller here must be a role the gate REFUSES, otherwise the test proves nothing. With
+  // write_settlements = ["SUPER_ADMIN"] both a MEMBER and a team admin are refused on ROLE before
+  // the scope check runs; a MEMBER is used because its refusal has to be indistinguishable
+  // between a real id in another tenant and an id that does not exist at all. The cross-team
+  // SCOPE check (a refused role never reaches it) is covered in team-isolation.test.ts with a
+  // SUPER_ADMIN-shaped caller.
   it("the write gate fires before the scope check, so a wrong-role caller is not an id oracle", async () => {
     const A = await setup("s-oracle-a");
     const B = await setup("s-oracle-b");

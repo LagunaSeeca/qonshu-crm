@@ -145,6 +145,52 @@ describe("reports (live partner API)", () => {
     expect(csv).not.toContain("Owed");
   });
 
+  // The regression this guards: a MEMBER does not get `paymentsByAccount` (it carries payer
+  // identity), so the report used to fall through to its own per-account pager — TWO full
+  // fan-outs per render for the role that runs /reports most, which at ~30 linked accounts was
+  // already over the function timeout. The per-account figures and the `partial` flag now come
+  // off the SAME fan-out via analytics.partners / accountStatuses / partialByAccount.
+  it("a MEMBER's report pages each account exactly ONCE and still reports per-account partial", async () => {
+    const team = await makeTeam();
+    const memberRow = await makeUser("MEMBER", team);
+    const acc = await makeAccount(memberRow.id, "Truncated Bldg", "rmem1-p1");
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ page }) => {
+      if (page === 2) throw new PartnerApiUnavailableError(); // a later page drops => partial
+      return makePartnerStats({
+        partner: "rmem1-p1",
+        total_payments_count: 2,
+        total_payments_amount: 500,
+        payments_page: page ?? 1,
+        payments_page_count: 2,
+        payments_total_count: 2,
+        payments: [makePartnerPayment({ id: "pay-hidden", user_id: "uid-hidden", user_name: "Hidden Payer" })],
+      });
+    });
+
+    const member = await getReport(testPrisma, su(memberRow), { range, label: "July 2026" });
+
+    // ONE fan-out: each payment page fetched once, not twice.
+    const pagedCalls = vi
+      .mocked(fetchPartnerStats)
+      .mock.calls.map((c) => c[0] as { page?: number; pageSize?: number })
+      .filter((a) => a.page !== undefined && a.pageSize === 500);
+    expect(pagedCalls).toHaveLength(2); // pages 1 and 2, once each — not 4
+
+    // The per-account status survives the detour through the aggregates.
+    const st = member.accountStatuses.find((s) => s.accountId === acc.id)!;
+    expect(st.status).toBe("partial");
+    expect(st.reason).toBe("partial");
+    // Aggregates still come from the page-1 summary, which covers the full range.
+    expect(member.partnerRows[0].paymentsCount).toBe(2);
+    expect(member.partnerRows[0].paymentsAmount).toBe(500);
+    // And nothing identity-bearing rode along on the new path.
+    expect("payments" in member).toBe(false);
+    const json = JSON.stringify(member);
+    for (const leak of ["Hidden Payer", "uid-hidden", "pay-hidden"]) {
+      expect(json, `json leaks ${leak}`).not.toContain(leak);
+    }
+  });
+
   it("admins and super admins still get payment rows", async () => {
     const { user } = await setup("radm", { configured: true, partnerKey: "radm-p1" });
     vi.mocked(fetchPartnerStats).mockResolvedValue(

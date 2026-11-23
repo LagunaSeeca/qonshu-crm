@@ -163,9 +163,14 @@ export function ReportView({ accounts, initialReport }: Props) {
   const k = report.kpis;
   const rows = report.partnerRows;
   // Permission, not data: the service sends the cash columns for every row or for none. Keyed off
-  // the report-level figure so header and body always agree on column count. The `?? 0` in the
-  // body is unreachable while showCash holds and exists only to satisfy the optional type.
+  // the report-level figure so header and body always agree on column count.
   const showCash = k.finance.collected !== undefined;
+  // A per-row cash figure is absent for TWO different reasons: the viewer may not see cash at all
+  // (then showCash is false and the columns are gone), or Collected for that one partner could
+  // not be retrieved from the partner API this request. Render the second case as "unknown" —
+  // never 0 and never blank, both of which read as "this partner collected nothing", a false
+  // statement about money. The CSV does the same via cashCell() in reports.ts.
+  const cash = (n: number | undefined) => (n === undefined ? "unknown" : formatMoney(n));
   const accountItems: Record<string, string> = {
     ALL: "All partners",
     ...Object.fromEntries(accounts.map((a) => [a.id, a.name])),
@@ -328,9 +333,9 @@ export function ReportView({ accounts, initialReport }: Props) {
                       <TableCell className="text-right tabular-nums">{formatMoney(r.paymentsAmount)}</TableCell>
                       {showCash && (
                         <>
-                          <TableCell className="text-right tabular-nums">{formatMoney(r.collected ?? 0)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatMoney(r.transferred ?? 0)}</TableCell>
-                          <TableCell className="text-right tabular-nums font-medium">{formatMoney(r.owed ?? 0)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{cash(r.collected)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{cash(r.transferred)}</TableCell>
+                          <TableCell className="text-right tabular-nums font-medium">{cash(r.owed)}</TableCell>
                         </>
                       )}
                     </TableRow>

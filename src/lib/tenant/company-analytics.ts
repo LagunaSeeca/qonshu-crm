@@ -171,10 +171,18 @@ export async function getCompanyAnalytics(
   // without re-issuing a single upstream request. Null unless the caller asked for it.
   const paymentsByAccount: Map<string, PromiseSettledResult<AllPayments>> | null =
     opts?.includePayments ? new Map() : null;
+  // accountId -> "this account's payment paging was TRUNCATED" (a later page failed, or the page
+  // cap was hit), straight off this fan-out. ALWAYS populated, unlike paymentsByAccount, because
+  // it is NON-IDENTITY-BEARING BY CONSTRUCTION: an account id and a boolean, no payment row, no
+  // user_id, no user_name. That is what lets a caller WITHOUT view_payment_detail (a MEMBER's
+  // report) reproduce this fan-out's per-account outcome instead of paging the upstream a second
+  // time — and losing the per-account `partial` status is exactly what it prevents.
+  const partialByAccount = new Map<string, boolean>();
 
   settled.forEach((res, i) => {
     const a = resolved[i].account;
     paymentsByAccount?.set(a.id, res);
+    if (res.status === "fulfilled") partialByAccount.set(a.id, res.value.partial);
     if (res.status === "rejected") {
       statuses.push({
         accountId: a.id,
@@ -250,6 +258,9 @@ export async function getCompanyAnalytics(
     // Opt-in (see `includePayments`). Null for every page that only needs the aggregates, so no
     // payment row — and no Map, which would not survive serialization — reaches RSC props.
     paymentsByAccount,
+    // Always present, and safe for any caller — see where it is built. Like paymentsByAccount it
+    // is a Map, so a server page must not put it straight into RSC props.
+    partialByAccount,
   };
 }
 

@@ -10,7 +10,9 @@
       "Read(//c/Users/alial/.claude/plugins/cache/superpowers-dev/superpowers/6.0.2/skills/subagent-driven-development/scripts/**)",
       "Bash(wsl.exe -l -v)",
       "Bash(wsl.exe --status)",
-      "Bash(bash __TRACKED_VAR__/scripts/task-brief docs/superpowers/plans/2026-06-18-tenant-foundation.md 1)"
+      "Bash(bash __TRACKED_VAR__/scripts/task-brief docs/superpowers/plans/2026-06-18-tenant-foundation.md 1)",
+      "Bash(npx vercel *)",
+      "Bash(DATABASE_URL='postgresql://postgres:LpXEdXCQlHHLvulgOuydlHmJgSNbhCfL@tokaido.proxy.rlwy.net:13587/railway' NODE_PATH=\"C:/Users/alial/Desktop/Projects/Qonshu CRM/node_modules\" node \"C:/Users/alial/AppData/Local/Temp/claude/2c1caac7fe402f60/f9c302fb-9dfc-49f6-877c-d5beb1ffa784/scratchpad/users.cjs\")"
     ]
   }
 }

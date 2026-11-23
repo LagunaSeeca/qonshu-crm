@@ -29,7 +29,13 @@ const MATRIX: Record<Action, readonly Role[]> = {
   manage_users: ["COMPANY_ADMIN", "SUPER_ADMIN"],
   view_payment_detail: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
   view_settlements: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
-  write_settlements: ["COMPANY_ADMIN", "SUPER_ADMIN"],
+  // SUPER_ADMIN ALONE, by explicit product rule: "only superadmin should be able to add
+  // settlements transfers". Do NOT widen this to COMPANY_ADMIN again. It was widened once,
+  // because a team admin got a 403 from a transfer control the UI still rendered — but the 403
+  // was correct and the UI was the bug; the control is now hidden unless the viewer holds this
+  // capability. A transfer row moves `remaining`/`owed` directly, i.e. what Qonshu owes a
+  // partner, so write authority stays with the owner.
+  write_settlements: ["SUPER_ADMIN"],
   view_object_detail: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
 };
 

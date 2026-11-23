@@ -72,8 +72,9 @@ export function resolveSettlementPeriod(
 }
 
 // Mirrors AnalyticsStatus in ./partner-analytics.ts: the UI has to tell "this partner is not
-// linked yet" (Collected is 0, and that is the truth) apart from "we could not reach the
-// upstream" (Collected is unknown, and showing 0 would be a lie).
+// linked yet" apart from "we could not reach the upstream" — in both cases Collected is reported
+// as UNKNOWN (the key is omitted, see AccountSettlement.collected) and `status` is the only thing
+// that explains which, because a 0 in either case is a figure a user would read as money.
 export type SettlementStatus =
   | "ok"
   | "not-configured" // no confirmed partner link and/or no resolvable API key — never called
@@ -191,15 +192,27 @@ export async function deleteSettlementEntry(db: PrismaClient, user: SessionUser,
 export type AccountSettlement = {
   period: SettlementPeriod;
   status: SettlementStatus;
-  collected: number; // live `amount_by_card` for the period; 0 whenever status !== "ok"
+  /**
+   * Live `amount_by_card` for the period. PRESENT ONLY when `status === "ok"`. When the upstream
+   * was not asked or could not answer, this key — and everything derived from it — is ABSENT from
+   * the object entirely, not 0, exactly as a MEMBER's omitted settlement keys are absent. A 0 here
+   * was a fabricated money figure: `remaining` came out as -Transferred, so an account with
+   * ₼50,000 of transfers and a timing-out API rendered "-₼50,000", which reads as "the partner
+   * owes us ₼50,000 back". An absent key cannot be formatted into a number a user would act on;
+   * `status` is the explanation to show in its place.
+   */
+  collected?: number;
+  /** Our own transfer rows for the period. Always known — the DB is never "unavailable" here. */
   transferred: number;
-  remaining: number;
+  /** Collected - Transferred. Absent whenever `collected` is (it cannot be computed). */
+  remaining?: number;
   /**
    * @deprecated Alias of `remaining`, kept ONLY so the settlements UI, the dashboard and the
    * report export keep compiling while they are migrated off the old ledger shape. It is the
-   * same number, not a second one. Delete it once no caller reads it.
+   * same number, not a second one. Absent exactly when `remaining` is. Delete it once no caller
+   * reads it.
    */
-  owed: number;
+  owed?: number;
   transferredByMethod: Record<SettlementMethod, number>;
   transfers: SettlementEntry[];
 };
@@ -231,27 +244,25 @@ export async function getAccountSettlement(
 
   const resolved = credsFor(acc);
   if ("status" in resolved) {
-    // Collected is unknown (or genuinely zero); the transfers are still ours to report, and
-    // `remaining` stays Collected - Transferred with Collected at 0 rather than being faked.
-    return {
-      period,
-      status: resolved.status,
-      collected: 0,
-      transferred,
-      remaining: -transferred,
-      owed: -transferred,
-      transferredByMethod,
-      transfers,
-    };
+    // The upstream was never asked, so Collected is UNKNOWN: omit it and everything derived from
+    // it rather than returning 0 and a `remaining` of -Transferred. The transfers are still ours
+    // to report. (This also covers "not-configured", where 0 would arguably be the truth — but
+    // the caller cannot tell the two apart from the numbers alone, only from `status`, so the one
+    // rule "status !== ok means no figure" is what makes a fabricated figure unrepresentable.)
+    return { period, status: resolved.status, transferred, transferredByMethod, transfers };
   }
 
-  let collected = 0;
+  let collected: number | null = null;
   let status: SettlementStatus = "ok";
   try {
     collected = await fetchCollected(resolved.creds, period);
   } catch (e) {
     status = statusForError(e);
   }
+
+  // The fetch threw: same rule. `collected` stays null and the three money keys are omitted, so a
+  // timeout can never reach the UI as a concrete manat figure.
+  if (collected === null) return { period, status, transferred, transferredByMethod, transfers };
 
   return {
     period,
@@ -269,21 +280,45 @@ export type CompanySettlementRow = {
   accountId: string;
   accountName: string;
   status: SettlementStatus;
-  collected: number;
+  /** Present ONLY when `status === "ok"` — see AccountSettlement.collected for why. */
+  collected?: number;
   transferred: number;
-  remaining: number;
+  /** Present exactly when `collected` is. */
+  remaining?: number;
   /** @deprecated Alias of `remaining` — see AccountSettlement.owed. */
-  owed: number;
+  owed?: number;
 };
 
 export type CompanySettlements = {
   period: SettlementPeriod;
   totals: {
+    /**
+     * Summed over the rows whose Collected ACTUALLY ARRIVED. A row whose fetch failed contributes
+     * nothing — it used to contribute `?? 0`, so with 3 of 10 accounts timing out the company
+     * figure was understated by ~30% (and `remaining`/`owed` correspondingly inflated) while
+     * presenting itself as authoritative. `remaining`/`owed` are summed over the SAME rows, so
+     * `collected - <those rows' transfers> = remaining` still holds for that subset.
+     */
     collected: number;
+    /**
+     * Summed over EVERY row, including the degraded ones: transfers are our own DB records and are
+     * always known, so narrowing them would be its own fabrication. NOTE the consequence: when
+     * `partial` is true this covers more accounts than `collected` does, so
+     * `collected - transferred !== remaining`. Do not present the three as one balance sheet
+     * without saying the data is incomplete.
+     */
     transferred: number;
     remaining: number;
     /** @deprecated Alias of `remaining` — see AccountSettlement.owed. */
     owed: number;
+    /**
+     * True when at least one in-scope account's Collected could not be established, i.e. these
+     * totals are a floor over a subset. A consumer MUST check this before presenting them as the
+     * company's cash position.
+     */
+    partial: boolean;
+    /** The accounts left out of `collected`/`remaining`/`owed`; their `status` says why. */
+    degradedAccountIds: string[];
   };
   rows: CompanySettlementRow[];
 };
@@ -347,27 +382,40 @@ export async function listCompanySettlements(
   });
 
   const rows: CompanySettlementRow[] = perAccount.map((p) => {
-    const collected = collectedById.get(p.account.id) ?? 0;
+    // `collectedById.get(id) ?? 0` used to live here: an account whose fetch failed (or was never
+    // attempted) got a 0 Collected and therefore a `remaining` of -Transferred, which the cash
+    // table rendered as a negative manat figure indistinguishable from a real one. No value means
+    // no keys.
+    const collected = collectedById.get(p.account.id);
     const transferred = sumAmount(transfers.filter((t) => t.accountId === p.account.id));
-    return {
+    const base = {
       accountId: p.account.id,
       accountName: p.account.name,
       status: statusById.get(p.account.id) ?? p.status,
-      collected,
       transferred,
-      remaining: collected - transferred,
-      owed: collected - transferred,
     };
+    if (collected === undefined) return base;
+    return { ...base, collected, remaining: collected - transferred, owed: collected - transferred };
   });
 
-  const totals = rows.reduce(
-    (t, r) => ({
-      collected: t.collected + r.collected,
-      transferred: t.transferred + r.transferred,
-      remaining: t.remaining + r.remaining,
-      owed: t.owed + r.remaining,
-    }),
-    { collected: 0, transferred: 0, remaining: 0, owed: 0 },
+  // Split once, so the totals say WHICH accounts they cover. `owed` is read off the same
+  // `remaining` as its sibling — it was already `t.owed + r.remaining` while every other
+  // accumulator read its own key, which is correct only because the two are aliases; keeping them
+  // on one expression means they cannot drift if someone ever gives `owed` its own meaning.
+  const complete = rows.filter((r): r is CompanySettlementRow & { remaining: number; collected: number } =>
+    r.collected !== undefined,
   );
+  const degradedAccountIds = rows.filter((r) => r.collected === undefined).map((r) => r.accountId);
+  const sum = (ns: number[]) => ns.reduce((a, b) => a + b, 0);
+  const remaining = sum(complete.map((r) => r.remaining));
+  const totals = {
+    collected: sum(complete.map((r) => r.collected)),
+    // Every row, not just the complete ones — see CompanySettlements.totals.transferred.
+    transferred: sum(rows.map((r) => r.transferred)),
+    remaining,
+    owed: remaining,
+    partial: degradedAccountIds.length > 0,
+    degradedAccountIds,
+  };
   return { period, totals, rows };
 }
