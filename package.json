@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "seed": "tsx prisma/seed.ts",
     "reset-data": "tsx prisma/scripts/reset-data.ts",
+    "bootstrap": "tsx prisma/scripts/bootstrap.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

@@ -24,7 +24,9 @@ import { hashPassword } from "../../src/lib/auth/password";
 // nothing, and re-running --create with the same SUPER_ADMIN_EMAIL reports "already provisioned"
 // and succeeds without touching the row.
 
-const MIN_PASSWORD = 8; // matches the app's own policy (api/users CreateBody)
+// Exported so prisma/scripts/bootstrap.ts can enforce the SAME minimum instead of keeping a
+// second copy of the number.
+export const MIN_PASSWORD = 8; // matches the app's own policy (api/users CreateBody)
 
 type Db = PrismaClient;
 
