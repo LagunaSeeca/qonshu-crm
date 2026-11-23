@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Landmark, ArrowDownCircle, ArrowUpCircle } from "lucide-react";
 import { getSessionUser } from "@/lib/auth/session";
-import { isAdmin } from "@/lib/auth/guards";
+import { can } from "@/lib/auth/guards";
 import { prisma } from "@/db/client";
 import { listCompanySettlements } from "@/lib/tenant/settlements";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,6 +22,9 @@ export default async function SettlementsPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
+  // A MEMBER can reach this by bookmark/history/KPI link; bounce instead of letting the guard throw a 500.
+  if (!can(user, "view_settlements")) redirect("/dashboard");
+
   const { totals, rows } = await listCompanySettlements(prisma, user);
 
   return (
@@ -30,7 +33,7 @@ export default async function SettlementsPage() {
         title="Settlements"
         subtitle="Company-wide bank-balance and cash-transfer registry"
         action={
-          isAdmin(user) && (
+          can(user, "write_settlements") && (
             <AddSettlementEntry accounts={rows.map((r) => ({ id: r.accountId, name: r.accountName }))} />
           )
         }

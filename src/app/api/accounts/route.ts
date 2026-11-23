@@ -30,6 +30,10 @@ const Create = z.object({ name: z.string().min(1), website: z.string().optional(
   //
   // The automatic link still happens: createAccountWithLogin resolves an exact, unambiguous,
   // UNCLAIMED name match as a SYSTEM action (src/lib/tenant/accounts.ts).
+  // ADMIN-ONLY, enforced in createAccountWithLogin rather than by the route's role gate, which
+  // must keep admitting a MEMBER so members can still create accounts. Sending this field as a
+  // MEMBER is a 403 and creates nothing — minting a PARTNER_VIEWER grants the very capabilities a
+  // MEMBER is denied (see src/app/api/accounts/[id]/partner-login/route.ts).
   partnerLogin: z.object({
     name: z.string().min(1),
     email: z.string().email(),

@@ -1,7 +1,7 @@
 import { redirect, notFound } from "next/navigation";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
-import { isAdmin } from "@/lib/auth/guards";
+import { can, isAdmin } from "@/lib/auth/guards";
 import { getAccount, listPartnerLogins } from "@/lib/tenant/accounts";
 import { listAccountActivities } from "@/lib/tenant/account-activities";
 import { listAccountTasks } from "@/lib/tenant/account-tasks";
@@ -86,6 +86,10 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
         mime: att.mime,
       }))}
       isAdmin={admin}
+      canViewSettlements={can(user, "view_settlements")}
+      canWriteSettlements={can(user, "write_settlements")}
+      canSeePayments={can(user, "view_payment_detail")}
+      canManagePartnerAccess={admin}
     />
   );
 }

@@ -11,18 +11,22 @@ import {
 } from "@/lib/tenant/accounts";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
 
-// The representative login for ONE building, created by the person who manages that building.
+// The representative login for ONE building.
 //
-// WHY IT IS NOT BEHIND THE USER-ADMIN GATE: a sales manager owns the relationship with their
-// complex's representative. Making them queue behind a team admin to hand over portal access is
-// the kind of friction that ends with one shared login for every building. So MEMBER, team admin
-// and SUPER_ADMIN may all call this (assertRole admits a SUPER_ADMIN wherever it admits a
-// COMPANY_ADMIN — see src/lib/auth/guards.ts).
+// CREATING ONE IS ADMIN-ONLY (assertRole admits a SUPER_ADMIN wherever it admits a COMPANY_ADMIN —
+// see src/lib/auth/guards.ts). A PARTNER_VIEWER is granted exactly the capabilities a MEMBER is
+// denied (view_settlements, view_payment_detail, view_object_detail), so a member allowed to mint
+// one — with a password they choose — on an account they manage can log in as it and read the
+// settlement and payment data their own gate refuses. Scope does not contain that: the account is
+// legitimately theirs. Hence the role gate, and hence the SAME gate inside createPartnerLogin,
+// which is the authoritative one; this route gate only makes the refusal cheap and keeps the
+// reply a 403 rather than a 400 about the body.
 //
-// `getAccount` inside the lib functions is the ENTIRE authorization: it applies accountScopeWhere,
-// so a MEMBER can only name an account they themselves manage and can therefore only ever mint a
-// login confined to their own building. A PARTNER_VIEWER is refused by the role gate before that,
-// which matters — otherwise a partner could mint a second login on its own account.
+// LISTING stays open to a MEMBER: the rows are masked (id/name/email/status) and a member can only
+// name an account they manage, so it tells them nothing about their own building they may not see.
+// `getAccount` inside the lib functions still decides WHICH account may be named. A PARTNER_VIEWER
+// is refused by the role gate on both verbs, which matters — otherwise a partner could enumerate
+// or mint logins on its own account.
 export const dynamic = "force-dynamic";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -45,7 +49,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const user = await getSessionUser(); if (!user) throw new UnauthorizedError();
     // Role FIRST, then parse: a caller who may not use this route must get 403, never a 400 that
     // confirms the route exists and tells them its body shape.
-    assertRole(user, ["COMPANY_ADMIN", "MEMBER"]);
+    assertRole(user, ["COMPANY_ADMIN"]);
     const d = Body.parse(await req.json());
     const login = await createPartnerLogin(prisma, user, (await params).id, d);
     return NextResponse.json(login, { status: 201 });

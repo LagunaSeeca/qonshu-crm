@@ -2,7 +2,7 @@ import type { PrismaClient, Account } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
 import { listAccounts, getAccount } from "./accounts";
-import { fetchAllPayments, countUniquePayers } from "./partner-payments";
+import { fetchAllPayments, countUniquePayers, type AllPayments } from "./partner-payments";
 import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import {
   InvalidApiKeyError,
@@ -61,7 +61,11 @@ export async function getCompanyAnalytics(
   db: PrismaClient,
   user: SessionUser,
   range: { from: Date; to: Date },
-  opts?: { accountId?: string },
+  // `includePayments` makes the fan-out's raw per-account results available to the caller via
+  // `paymentsByAccount` INSTEAD OF the caller paging the same partner/range a second time. It is
+  // opt-in because the rows carry payer identity (user_id / user_name): only a caller that gates
+  // detail on `view_payment_detail` may ask for them (today: getReport). Nothing is persisted.
+  opts?: { accountId?: string; includePayments?: boolean },
 ) {
   // Scope resolution — same chokepoint rules as before: PARTNER_VIEWER is pinned to their own
   // account (a sentinel that matches nothing when unset → fail closed); admin/member may pass
@@ -162,9 +166,15 @@ export async function getCompanyAnalytics(
     UTILITY: 0,
   };
   const partners: PartnerRow[] = [];
+  // Keyed by accountId and keeping the SETTLED result (rejections included) so a second consumer
+  // reproduces this fan-out's outcome — successes, per-error reasons and `partial` alike —
+  // without re-issuing a single upstream request. Null unless the caller asked for it.
+  const paymentsByAccount: Map<string, PromiseSettledResult<AllPayments>> | null =
+    opts?.includePayments ? new Map() : null;
 
   settled.forEach((res, i) => {
     const a = resolved[i].account;
+    paymentsByAccount?.set(a.id, res);
     if (res.status === "rejected") {
       statuses.push({
         accountId: a.id,
@@ -237,6 +247,9 @@ export async function getCompanyAnalytics(
     accountStatuses: statuses,
     contributed,
     skipped,
+    // Opt-in (see `includePayments`). Null for every page that only needs the aggregates, so no
+    // payment row — and no Map, which would not survive serialization — reaches RSC props.
+    paymentsByAccount,
   };
 }
 

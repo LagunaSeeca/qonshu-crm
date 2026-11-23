@@ -72,7 +72,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
               Custom fields
             </Link>
           )}
-          <AccountCreate owners={owners} currentUserId={user.id} role={user.role} />
+          <AccountCreate owners={owners} currentUserId={user.id} role={user.role} canGrantPartnerAccess={isAdmin(user)} />
         </div>
       </div>
 

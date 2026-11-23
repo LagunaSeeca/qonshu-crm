@@ -52,8 +52,9 @@ async function setup(slug: string, opts: { linked?: boolean } = {}) {
   };
 }
 
-// Writes bypass the service where the test is not about the write gate: addSettlementEntry is
-// SUPER_ADMIN-only, and most cases below are about arithmetic or reads.
+// Writes bypass the service where the test is not about the write gate: addSettlementEntry needs
+// write_settlements (COMPANY_ADMIN or SUPER_ADMIN), and most cases below are about arithmetic or
+// reads.
 function seedTransfer(companyId: string, accountId: string, createdById: string, amount: number, occurredAt: Date, method: "CASH" | "BANK_TRANSFER" | "MANUAL" = "CASH") {
   return testPrisma.settlementEntry.create({
     data: { companyId, accountId, type: "TRANSFER", amount, method, occurredAt, createdById },
@@ -260,31 +261,50 @@ describe("settlements", () => {
     expect(fetchPartnerStats).not.toHaveBeenCalled();
   });
 
-  it("WRITES require write_settlements: SUPER_ADMIN only — a COMPANY_ADMIN is Forbidden", async () => {
+  // `write_settlements` is ["COMPANY_ADMIN", "SUPER_ADMIN"]. A team admin recording a cash
+  // transfer against their own team's building is the ordinary case the settlements UI exists
+  // for — the capability only ever listing SUPER_ADMIN was a regression that locked every team
+  // admin out of the transfer routes these capabilities replaced. A MEMBER stays refused: they
+  // cannot even READ a settlement (see the read gate above), so they must not amend one.
+  it("WRITES require write_settlements: a COMPANY_ADMIN may write, a MEMBER is Forbidden", async () => {
     const { c, acc, adminUser, memberUser, saUser } = await setup("s-gate-write");
     const seeded = await seedTransfer(c.id, acc.id, saUser.id, 10, inPeriod);
 
-    for (const actor of [adminUser, memberUser]) {
-      await expect(
-        addSettlementEntry(testPrisma, actor, acc.id, { amount: 5, method: "CASH", occurredAt: inPeriod }),
-      ).rejects.toBeInstanceOf(ForbiddenError);
-      await expect(
-        updateSettlementEntry(testPrisma, actor, seeded.id, { amount: 5 }),
-      ).rejects.toBeInstanceOf(ForbiddenError);
-      await expect(deleteSettlementEntry(testPrisma, actor, seeded.id)).rejects.toBeInstanceOf(ForbiddenError);
-    }
-    // Nothing was created, changed or removed by any of that.
+    await expect(
+      addSettlementEntry(testPrisma, memberUser, acc.id, { amount: 5, method: "CASH", occurredAt: inPeriod }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(
+      updateSettlementEntry(testPrisma, memberUser, seeded.id, { amount: 5 }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(deleteSettlementEntry(testPrisma, memberUser, seeded.id)).rejects.toBeInstanceOf(ForbiddenError);
+    // The member created, changed and removed nothing.
     expect(await testPrisma.settlementEntry.count({ where: { accountId: acc.id } })).toBe(1);
     expect(Number((await testPrisma.settlementEntry.findUniqueOrThrow({ where: { id: seeded.id } })).amount)).toBe(10);
+
+    // The team admin's writes all land, which is what makes the member's refusal a gate rather
+    // than a broken code path.
+    const added = await addSettlementEntry(testPrisma, adminUser, acc.id, {
+      amount: 5, method: "CASH", occurredAt: inPeriod,
+    });
+    await updateSettlementEntry(testPrisma, adminUser, seeded.id, { amount: 7 });
+    expect(Number((await testPrisma.settlementEntry.findUniqueOrThrow({ where: { id: seeded.id } })).amount)).toBe(7);
+    await deleteSettlementEntry(testPrisma, adminUser, added.id);
+    expect(await testPrisma.settlementEntry.count({ where: { accountId: acc.id } })).toBe(1);
   });
 
+  // The caller here must be a role the gate REFUSES, otherwise the test proves nothing: a
+  // COMPANY_ADMIN now passes write_settlements and falls through to the scope check, which is
+  // where "entry not in scope" comes from. A MEMBER is the role whose refusal has to be
+  // indistinguishable between a real id in another tenant and an id that does not exist at all.
   it("the write gate fires before the scope check, so a wrong-role caller is not an id oracle", async () => {
     const A = await setup("s-oracle-a");
     const B = await setup("s-oracle-b");
     const entry = await seedTransfer(A.c.id, A.acc.id, A.saUser.id, 10, inPeriod);
-    // B's admin asking about A's entry, and about an id that does not exist, get the SAME answer.
-    await expect(deleteSettlementEntry(testPrisma, B.adminUser, entry.id)).rejects.toBeInstanceOf(ForbiddenError);
-    await expect(deleteSettlementEntry(testPrisma, B.adminUser, "does-not-exist")).rejects.toBeInstanceOf(ForbiddenError);
+    // B's member asking about A's entry, and about an id that does not exist, get the SAME answer.
+    await expect(deleteSettlementEntry(testPrisma, B.memberUser, entry.id)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(deleteSettlementEntry(testPrisma, B.memberUser, "does-not-exist")).rejects.toBeInstanceOf(ForbiddenError);
+    // ...and A's entry is untouched.
+    expect(await testPrisma.settlementEntry.count({ where: { id: entry.id } })).toBe(1);
   });
 
   // --- the writes a SUPER_ADMIN may make ---------------------------------------------------

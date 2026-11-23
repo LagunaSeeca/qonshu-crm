@@ -13,7 +13,7 @@ const data = {
 };
 describe("Settlement", () => {
   it("renders balances + registry", () => {
-    render(<Settlement accountId="a1" isAdmin initialData={data} />);
+    render(<Settlement accountId="a1" canWrite initialData={data} />);
     expect(screen.getByText(/owed/i)).toBeInTheDocument();
     expect(screen.getByText("june")).toBeInTheDocument();
   });

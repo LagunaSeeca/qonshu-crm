@@ -9,20 +9,26 @@ import { isAdmin, type SessionUser } from "@/lib/auth/guards";
 // The normalized form of a building name: this IS the claim identity, and the value stored in
 // Lead.buildingKey / Account.buildingKey behind `@@unique([companyId, buildingKey])`.
 //
-// IT MUST STAY BYTE-IDENTICAL to `buildingKey()` in src/test/fixtures.ts, which mirrors the
-// migration backfill that produced every existing key
-// (`lower(regexp_replace(btrim(normalize(name, NFKC)), '\s+', ' ', 'g'))`). Same steps, same
-// order: NFKC, trim, collapse whitespace runs, lowercase, strip U+0307.
+// IT MUST STAY BYTE-IDENTICAL to `buildingKey()` in src/test/fixtures.ts. Steps, in order: NFKC,
+// strip zero-width characters, trim, collapse whitespace runs, lowercase, strip U+0307.
+//
+// IT IS NO LONGER IDENTICAL TO THE MIGRATION BACKFILL that produced the pre-existing keys
+// (`lower(regexp_replace(btrim(normalize(name, NFKC)), '\s+', ' ', 'g'))`): that SQL does neither
+// the zero-width strip (added here in 5067784) nor the U+0307 strip. So for a name containing a
+// zero-width character or an "İ", a key written before those strips existed does not equal the key
+// this function computes today, and the two spellings are claimable separately until the row is
+// re-saved. New writes all go through this function, so the divergence is confined to legacy rows;
+// closing it needs a fresh backfill migration, not an edit to an applied one.
 //
 // WHY THE U+0307 STRIP: `"İ".toLowerCase()` in JS yields "i" + U+0307 COMBINING DOT ABOVE,
 // whereas Postgres `lower()` yields a bare "i". Without the strip, every Azerbaijani name
 // ("İSMAYIL bey", "İŞIQ") would have the app computing a key the database's own backfill could
 // never produce — two spellings of one building, each claimable separately.
 //
-// WHY THE STRIP COMES LAST (after trim/collapse, not before): that is the order fixtures.ts and
-// the backfill use, and the keys already in the database were produced that way. The orders
-// differ only for the pathological input of a bare combining dot surrounded by spaces, and for
-// that input the stored key is the one this order produces. Matching the data wins.
+// WHY THE STRIP COMES LAST (after trim/collapse, not before): that is the order fixtures.ts uses,
+// and the keys written by the app so far were produced that way. The orders differ only for the
+// pathological input of a bare combining dot surrounded by spaces, and for that input the stored
+// key is the one this order produces. Matching the data wins.
 //
 // This supersedes normalizePartnerName() in src/lib/platform/partner-allowlist.ts, which only
 // trimmed and lowercased — so it matched neither the backfill (no whitespace collapse) nor the

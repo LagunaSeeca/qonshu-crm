@@ -1,11 +1,11 @@
 import type { PrismaClient } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { can } from "@/lib/auth/guards";
-import { leadScopeWhere } from "./scope";
+import { leadScopeWhere, accountScopeWhere } from "./scope";
 import { listCompanySettlements } from "./settlements";
 import { listCompanyServiceFees } from "./service-fees";
 import { listAccounts } from "./accounts";
-import { getCompanyAnalytics } from "./company-analytics";
+import { getCompanyAnalytics, type CompanyAnalytics } from "./company-analytics";
 
 export type DashboardStats = {
   sales: { openLeads: number; wonInPeriod: number };
@@ -30,7 +30,17 @@ export type DashboardStats = {
 // the dashboard's existing KPI shape. Accounts that aren't partner-configured or that error are
 // silently excluded from the totals (never fatal to the page); account/activeAccount counts stay
 // a local DB read since Account itself is CRM data, not partner-app data. No DB writes occur.
-export async function getDashboardStats(db: PrismaClient, user: SessionUser, range: { from: Date; to: Date }): Promise<DashboardStats> {
+//
+// `opts.analytics` lets a caller that has ALREADY run getCompanyAnalytics for the same range hand
+// it over instead of making this function repeat the whole live fan-out (getReport does: it needs
+// the same per-account payment pages for its row detail). The partner KPIs are read off it
+// unchanged, so the figures are identical either way — this only stops the second fan-out.
+export async function getDashboardStats(
+  db: PrismaClient,
+  user: SessionUser,
+  range: { from: Date; to: Date },
+  opts?: { analytics?: CompanyAnalytics },
+): Promise<DashboardStats> {
   // leadScopeWhere throws for PARTNER_VIEWER / companyless callers, so the CRM numbers below can
   // never be computed outside a scope. Member = own leads, team admin = team, super admin = company.
   const leadWhere = leadScopeWhere(user);
@@ -45,11 +55,18 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
   // statistics they ARE entitled to. Skip the fetch (not just the display) — the gate stays in
   // listCompanySettlements, this decides whether the figures belong in the DTO at all.
   const withSettlements = can(user, "view_settlements");
+  // The account-relation filter for the counts below. It is the SAME scope listAccounts() reads
+  // under (both are accountScopeWhere), so filtering through the relation describes exactly the
+  // row set the old `accountId: { in: [...] }` list did — without materializing the ids.
+  const accountWhere = accountScopeWhere(user);
   const [leads, stages, accounts, analytics, settlements, serviceFees] = await Promise.all([
-    db.lead.findMany({ where: leadWhere }),
+    // Only the fields the roll-ups below read. For a SUPER_ADMIN `leadWhere` is the whole company,
+    // and hydrating every column of every lead on each dashboard/report render is a large
+    // per-request allocation for three values.
+    db.lead.findMany({ where: leadWhere, select: { id: true, stageId: true, wonAt: true } }),
     db.stage.findMany({ where: stageWhere }),
     listAccounts(db, user),
-    getCompanyAnalytics(db, user, range),
+    opts?.analytics ?? getCompanyAnalytics(db, user, range),
     withSettlements ? listCompanySettlements(db, user) : null,
     listCompanyServiceFees(db, user),
   ]);
@@ -59,21 +76,26 @@ export async function getDashboardStats(db: PrismaClient, user: SessionUser, ran
   const wonInPeriod = leads.filter(
     (l) => stageById.get(l.stageId)?.type === "WON" && l.wonAt && l.wonAt >= range.from && l.wonAt <= range.to,
   ).length;
-  const leadIds = leads.map((l) => l.id);
-  const accountIds = accounts.map((a) => a.id);
-  const [leadMeetings, acctMeetings, leadTasks, acctTasks] = await Promise.all([
-    db.activity.count({ where: { companyId, leadId: { in: leadIds }, kind: "MEETING", occurredAt: { gte: range.from, lte: range.to } } }),
-    db.accountActivity.count({ where: { companyId, accountId: { in: accountIds }, kind: "MEETING", occurredAt: { gte: range.from, lte: range.to } } }),
-    db.task.findMany({ where: { companyId, leadId: { in: leadIds }, done: false } }),
-    db.accountTask.findMany({ where: { companyId, accountId: { in: accountIds }, done: false } }),
-  ]);
-  const allOpenTasks = [...leadTasks, ...acctTasks];
+  // Scoped through the parent relation rather than by sending every lead/account id back as an
+  // `IN` list (the same shape work.ts uses): an org-wide list is both a big bind-parameter payload
+  // — tens of thousands of ids approaches Postgres' 65535 ceiling — and it is work the database
+  // can do itself. Open/overdue are counted rather than fetched; `dueDate: { lt }` already
+  // excludes nulls, exactly as the old `t.dueDate && t.dueDate < range.to` filter did.
+  const [leadMeetings, acctMeetings, openLeadTasks, overdueLeadTasks, openAcctTasks, overdueAcctTasks] =
+    await Promise.all([
+      db.activity.count({ where: { companyId, lead: leadWhere, kind: "MEETING", occurredAt: { gte: range.from, lte: range.to } } }),
+      db.accountActivity.count({ where: { companyId, account: accountWhere, kind: "MEETING", occurredAt: { gte: range.from, lte: range.to } } }),
+      db.task.count({ where: { companyId, lead: leadWhere, done: false } }),
+      db.task.count({ where: { companyId, lead: leadWhere, done: false, dueDate: { lt: range.to } } }),
+      db.accountTask.count({ where: { companyId, account: accountWhere, done: false } }),
+      db.accountTask.count({ where: { companyId, account: accountWhere, done: false, dueDate: { lt: range.to } } }),
+    ]);
   return {
     sales: { openLeads: openLeads.length, wonInPeriod },
     activity: {
       meetingsDone: leadMeetings + acctMeetings,
-      openTasks: allOpenTasks.length,
-      overdueTasks: allOpenTasks.filter((t) => t.dueDate && t.dueDate < range.to).length,
+      openTasks: openLeadTasks + openAcctTasks,
+      overdueTasks: overdueLeadTasks + overdueAcctTasks,
     },
     partners: {
       accounts: accounts.length,

@@ -18,15 +18,18 @@ export class ForbiddenError extends Error {}
 export class NotFoundError extends Error {}
 
 // Explicit allowlists: the list is the WHOLE truth for an action. Unlike assertRole, there is no
-// automatic SUPER_ADMIN widening here (write_settlements admits SUPER_ADMIN but not COMPANY_ADMIN),
-// so SUPER_ADMIN is listed wherever it belongs and nowhere else. The removed `view_company_data`
-// entry had no callers and omitted SUPER_ADMIN/PARTNER_VIEWER, contradicting the current model.
+// automatic SUPER_ADMIN widening here, so SUPER_ADMIN is listed wherever it belongs and nowhere
+// else — and, for the same reason, so is COMPANY_ADMIN: `write_settlements` listing only
+// SUPER_ADMIN locked team admins out of the transfer routes these capabilities replaced
+// (`assertRole(user, ["COMPANY_ADMIN"])` on master), which left nobody but the super admin able to
+// record a transfer. The removed `view_company_data` entry had no callers and omitted
+// SUPER_ADMIN/PARTNER_VIEWER, contradicting the current model.
 const MATRIX: Record<Action, readonly Role[]> = {
   manage_companies: ["SUPER_ADMIN"],
   manage_users: ["COMPANY_ADMIN", "SUPER_ADMIN"],
   view_payment_detail: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
   view_settlements: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
-  write_settlements: ["SUPER_ADMIN"],
+  write_settlements: ["COMPANY_ADMIN", "SUPER_ADMIN"],
   view_object_detail: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
 };
 

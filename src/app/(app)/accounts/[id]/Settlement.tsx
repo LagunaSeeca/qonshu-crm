@@ -53,7 +53,8 @@ type SettlementData = {
 
 type Props = {
   accountId: string;
-  isAdmin?: boolean;
+  /** Whether the viewer holds `write_settlements` (add/edit/delete entries). */
+  canWrite?: boolean;
   initialData?: SettlementData;
 };
 
@@ -75,7 +76,7 @@ function TypeBadge({ type }: { type: EntryType }) {
   );
 }
 
-export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
+export function Settlement({ accountId, canWrite = false, initialData }: Props) {
   const router = useRouter();
 
   const [data, setData] = useState<SettlementData | null>(initialData ?? null);
@@ -229,7 +230,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
       )}
 
       {/* Add entry (admin only) */}
-      {isAdmin && (
+      {canWrite && (
         <Card>
           <CardHeader className="border-b border-border pb-4">
             <CardTitle className="text-base font-semibold">Add Entry</CardTitle>
@@ -332,7 +333,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
                       <TableHead className="font-semibold text-foreground">Method</TableHead>
                       <TableHead className="text-right font-semibold text-foreground">Amount</TableHead>
                       <TableHead className="font-semibold text-foreground">Note</TableHead>
-                      {isAdmin && <TableHead className="w-10" />}
+                      {canWrite && <TableHead className="w-10" />}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -355,7 +356,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
                         </TableCell>
                         <TableCell className="text-right tabular-nums font-medium">{formatMoney(entry.amount)}</TableCell>
                         <TableCell className="text-foreground">{entry.note ?? "—"}</TableCell>
-                        {isAdmin && (
+                        {canWrite && (
                           <TableCell>
                             <Button
                               type="button"

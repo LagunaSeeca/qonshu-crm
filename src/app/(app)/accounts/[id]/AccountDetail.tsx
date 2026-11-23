@@ -70,6 +70,14 @@ type Props = {
   asks: Ask[];
   attachments: Attachment[];
   isAdmin?: boolean;
+  /** `view_settlements`: without it the Settlement tab can only 403, so it is not rendered. */
+  canViewSettlements?: boolean;
+  /** `write_settlements`: add/edit/delete settlement entries. */
+  canWriteSettlements?: boolean;
+  /** `view_payment_detail`: without it the Analytics tab can only 403, so it is not rendered. */
+  canSeePayments?: boolean;
+  /** Admin-only: minting/revoking partner logins. */
+  canManagePartnerAccess?: boolean;
   /** People the viewer may reassign the account to. Only used when `isAdmin`. */
   owners?: { id: string; name: string; teamId: string | null; teamName: string | null }[];
   /** The owner sees several teams, so the manager picker groups people by team. */
@@ -117,7 +125,7 @@ function isOverdue(dueDate: string | null, done: boolean) {
 
 type TabKey = "activity" | "tasks" | "asks" | "files" | "settlement" | "serviceFees" | "objects" | "analytics";
 
-export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false, owners = [], groupOwners = false, partnerLogins = [] }: Props) {
+export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false, canViewSettlements = true, canWriteSettlements = false, canSeePayments = true, canManagePartnerAccess = false, owners = [], groupOwners = false, partnerLogins = [] }: Props) {
   const router = useRouter();
 
   // Account fields
@@ -289,7 +297,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
   // Names for the read-only view come from `members`; the admin picker lists `owners`.
   const managerItems = Object.fromEntries([...members, ...owners].map((m) => [m.id, m.name]));
 
-  const tabs: { key: TabKey; label: string; disabled?: boolean }[] = [
+  const allTabs: { key: TabKey; label: string; disabled?: boolean }[] = [
     { key: "activity", label: "Activity" },
     { key: "tasks", label: "Tasks" },
     { key: "asks", label: "Asks" },
@@ -299,6 +307,9 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
     { key: "objects", label: "Objects" },
     { key: "analytics", label: "Analytics" },
   ];
+  const tabs = allTabs.filter(
+    (t) => (t.key !== "settlement" || canViewSettlements) && (t.key !== "analytics" || canSeePayments),
+  );
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -428,7 +439,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
 
         <AccountFields accountId={account.id} isAdmin={isAdmin} />
 
-        <PartnerAccess accountId={account.id} logins={partnerLogins} />
+        {canManagePartnerAccess && <PartnerAccess accountId={account.id} logins={partnerLogins} />}
         </div>
 
         {/* RIGHT: Manual tabs — all panels stay in DOM */}
@@ -760,9 +771,11 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
           </div>
 
           {/* Settlement panel */}
-          <div hidden={activeTab !== "settlement"}>
-            <Settlement accountId={account.id} isAdmin={isAdmin} />
-          </div>
+          {canViewSettlements && (
+            <div hidden={activeTab !== "settlement"}>
+              <Settlement accountId={account.id} canWrite={canWriteSettlements} />
+            </div>
+          )}
 
           {/* Service fees panel */}
           <div hidden={activeTab !== "serviceFees"}>
@@ -775,9 +788,11 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
           </div>
 
           {/* Analytics panel */}
-          <div hidden={activeTab !== "analytics"}>
-            <Analytics accountId={account.id} isAdmin={isAdmin} />
-          </div>
+          {canSeePayments && (
+            <div hidden={activeTab !== "analytics"}>
+              <Analytics accountId={account.id} isAdmin={isAdmin} />
+            </div>
+          )}
         </div>
       </div>
     </div>

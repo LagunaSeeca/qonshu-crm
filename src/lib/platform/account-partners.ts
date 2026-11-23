@@ -173,10 +173,14 @@ export async function setAccountPartner(
     // ../tenant/partner-link-audit.ts exists to prevent.
     return db.$transaction(async (tx) => {
       const cleared = await tx.account.update({
-        // The confirmation stamp goes with the key. Leaving it set would make the NEXT pending
-        // link on this account read as already approved — a link staked by a salesperson that
-        // authorizes the complex's data from the moment it is written.
-        where: { id: accountId }, data: { externalPartnerKey: null, partnerLinkConfirmedAt: null },
+        // The confirmation stamp and the proposer both go with the key. Leaving the stamp set
+        // would make the NEXT pending link on this account read as already approved — a link
+        // staked by a salesperson that authorizes the complex's data from the moment it is
+        // written. Leaving the proposer behind blocks that person from confirming the next
+        // proposal on this account, which is somebody else's proposal (same reason
+        // rejectPartnerLink nulls it — ../tenant/partner-link-approval.ts).
+        where: { id: accountId },
+        data: { externalPartnerKey: null, partnerLinkConfirmedAt: null, partnerLinkProposedById: null },
       });
       // Only worth an audit row when something was actually unlinked. The name goes into the row:
       // after the clear the column is null, so the row is the only record of what it held.

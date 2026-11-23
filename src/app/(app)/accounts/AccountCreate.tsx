@@ -29,9 +29,11 @@ type Props = {
   owners?: Owner[];
   currentUserId: string;
   role: string;
+  /** Admin-only: a MEMBER minting a partner login is refused by the server. */
+  canGrantPartnerAccess?: boolean;
 };
 
-export function AccountCreate({ owners = [], currentUserId, role }: Props) {
+export function AccountCreate({ owners = [], currentUserId, role, canGrantPartnerAccess = false }: Props) {
   const isSuper = role === "SUPER_ADMIN";
   // A member always manages what they create — no picker at all (the server ignores a supplied one).
   const showManagerPicker = role !== "MEMBER";
@@ -92,7 +94,7 @@ export function AccountCreate({ owners = [], currentUserId, role }: Props) {
           primaryContactName: primaryContactName || undefined,
           primaryContactEmail: primaryContactEmail || undefined,
           accountManagerId: showManagerPicker ? accountManagerId : undefined,
-          partnerLogin: showPartnerLogin && partnerLoginFilled
+          partnerLogin: canGrantPartnerAccess && showPartnerLogin && partnerLoginFilled
             ? { name: partnerName || name, email: partnerEmail, password: partnerPassword }
             : undefined,
         }),
@@ -201,6 +203,7 @@ export function AccountCreate({ owners = [], currentUserId, role }: Props) {
             </div>
           )}
 
+          {canGrantPartnerAccess && (
           <div className="border-t border-border pt-3">
             <button
               type="button"
@@ -254,6 +257,7 @@ export function AccountCreate({ owners = [], currentUserId, role }: Props) {
               </div>
             )}
           </div>
+          )}
         </form>
         <DialogFooter className="pt-2">
           <Button variant="outline" type="button" onClick={() => setOpen(false)} disabled={loading}>

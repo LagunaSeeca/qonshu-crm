@@ -4,7 +4,8 @@ import { NotFoundError, can } from "@/lib/auth/guards";
 import { getAccount, listAccounts } from "./accounts";
 import { getDashboardStats, type DashboardStats } from "./dashboard";
 import { listCompanySettlements } from "./settlements";
-import { fetchAllPayments } from "./partner-payments";
+import { fetchAllPayments, type AllPayments } from "./partner-payments";
+import { getCompanyAnalytics } from "./company-analytics";
 import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import {
   InvalidApiKeyError,
@@ -123,9 +124,19 @@ export async function getReport(
   const dateFrom = opts.range.from.toISOString().slice(0, 10);
   const dateTo = opts.range.to.toISOString().slice(0, 10);
 
+  // ONE live fan-out for the whole report. getDashboardStats would otherwise run
+  // getCompanyAnalytics itself, and the row-level pass below used to page every partner a SECOND
+  // time for the identical partner+range — ~40 upstream requests per account per render. The
+  // analytics call keeps the per-account results (`includePayments`) and both consumers read them.
+  const analytics = await getCompanyAnalytics(db, user, opts.range, { includePayments: true });
   const [kpis, settlements] = await Promise.all([
-    getDashboardStats(db, user, opts.range),
-    withSettlements ? listCompanySettlements(db, user) : null,
+    getDashboardStats(db, user, opts.range, { analytics }),
+    // The settlement figures must cover the REPORTED range, not the current month: called without
+    // a period, listCompanySettlements defaults to currentSettlementPeriod(), which put this
+    // month's Collected/Transferred/Owed next to (say) Q1's payment columns in one unlabelled row.
+    withSettlements
+      ? listCompanySettlements(db, user, { from: opts.range.from, to: opts.range.to })
+      : null,
   ]);
 
   // Resolve credentials for every account up front, synchronously. An account with no partner
@@ -163,16 +174,31 @@ export async function getReport(
     resolved.push({ account: a, creds });
   }
 
-  const settled = await Promise.allSettled(
-    resolved.map(({ creds }) =>
-      fetchAllPayments({
-        baseUrl: creds.baseUrl,
-        apiKey: creds.apiKey,
-        partner: creds.partner,
-        dateFrom,
-        dateTo,
-      }),
-    ),
+  // Reuse the analytics fan-out's result for this account when it has one — same partner, same
+  // range, same pager, so the rows are identical and the request is pure duplication. The
+  // fallback stays for an account the analytics scope did not cover (a PARTNER scope report on an
+  // account outside that caller's company-wide read), and keeps allSettled's shape so the loop
+  // below — including per-error reasons and `partial` — is unchanged.
+  const cached = analytics.paymentsByAccount;
+  const settled: PromiseSettledResult<AllPayments>[] = await Promise.all(
+    resolved.map(async ({ account, creds }): Promise<PromiseSettledResult<AllPayments>> => {
+      const hit = cached?.get(account.id);
+      if (hit) return hit;
+      try {
+        return {
+          status: "fulfilled",
+          value: await fetchAllPayments({
+            baseUrl: creds.baseUrl,
+            apiKey: creds.apiKey,
+            partner: creds.partner,
+            dateFrom,
+            dateTo,
+          }),
+        };
+      } catch (reason) {
+        return { status: "rejected", reason };
+      }
+    }),
   );
 
   const liveByAccount = new Map<string, { count: number; amount: number }>();

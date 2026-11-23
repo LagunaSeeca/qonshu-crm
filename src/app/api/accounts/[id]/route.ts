@@ -19,7 +19,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 const Patch = z.object({
   name: z.string().min(1).optional(), website: z.string().nullable().optional(),
   industry: z.string().nullable().optional(), status: z.enum(["ACTIVE","AT_RISK","CHURNED"]).optional(),
-  accountManagerId: z.string().optional(),
+  // min(1): an empty string is falsy, so updateAccount skips the reassignment branch, but `...data`
+  // still writes accountManagerId: "" and Postgres answers with an FK violation that surfaces as
+  // an unmapped 500. "Don't change the manager" is expressed by omitting the field.
+  accountManagerId: z.string().min(1).optional(),
   primaryContactName: z.string().nullable().optional(), primaryContactEmail: z.string().email().nullable().optional(),
   primaryContactPhone: z.string().nullable().optional(),
   // NO `externalPartnerKey` HERE, ON PURPOSE. The external partner namespace is GLOBAL (one

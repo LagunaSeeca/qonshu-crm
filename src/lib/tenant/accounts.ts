@@ -272,6 +272,13 @@ export async function createAccountWithLogin(db: PrismaClient, user: SessionUser
   partnerLogin?: { name: string; email: string; password: string };
 }): Promise<{ account: Account; partnerUser: User | null }> {
   const { partnerLogin, ...accountData } = data;
+  // Creating the ACCOUNT stays open to a MEMBER; attaching a partner login to it does not. This is
+  // the same gate as createPartnerLogin and for the same reason — a PARTNER_VIEWER holds the
+  // capabilities a MEMBER is denied, so minting one is privilege escalation. Checked before any
+  // write so a member's request creates nothing at all rather than the account alone.
+  if (partnerLogin && !isAdmin(user)) {
+    throw new ForbiddenError("only a team admin may create a partner login");
+  }
   if (partnerLogin && partnerLogin.password.length < 8) {
     throw new InvalidPartnerLoginError("password must be at least 8 characters");
   }
@@ -346,12 +353,16 @@ export async function listPartnerLogins(
   return rows;
 }
 
-// Create the representative login for ONE building, as the person who manages that building.
+// Create the representative login for ONE building.
 //
-// This is deliberately NOT behind the user-admin gate: a sales manager owns the relationship with
-// their complex's representative and must be able to hand them the portal without going through a
-// team admin. `getAccount` is the whole authorization — a MEMBER can only name an account they
-// manage, so a member can only ever mint a login confined to their own building.
+// ADMIN ONLY, AND ENFORCED HERE rather than only at the route. Scope is NOT sufficient
+// authorization for this write: a PARTNER_VIEWER holds exactly the capabilities a MEMBER is denied
+// (view_settlements, view_payment_detail, view_object_detail — see src/lib/auth/guards.ts), so a
+// member who may mint one on an account they manage can mint it with a password of their choosing,
+// log in as it, and read the settlement and payment data their own gate refuses. That is privilege
+// escalation, not delegation, which is why the earlier "a sales manager owns the relationship with
+// their representative" convenience could not stand. `getAccount` still runs first and still
+// decides WHICH account may be named; isAdmin decides whether the caller may mint at all.
 //
 // The new user gets `teamId: null` and `accountId` set: a partner is not in anybody's sales book
 // (see scope.ts — PARTNER_VIEWER is scoped by accountId, never by team).
@@ -361,6 +372,11 @@ export async function createPartnerLogin(
 ): Promise<PartnerLoginRow> {
   const account = await getAccount(db, user, accountId);
   if (!account) throw new NotFoundError("account not in scope");
+  // After the scope check on purpose: an out-of-scope account stays a 404 for everyone rather than
+  // turning into a 403 that confirms the id exists. isAdmin, not assertCan("view_settlements"),
+  // because that capability admits PARTNER_VIEWER — a partner must never mint a second login on
+  // its own account.
+  if (!isAdmin(user)) throw new ForbiddenError("only a team admin may create a partner login");
   if (login.password.length < 8) {
     throw new InvalidPartnerLoginError("password must be at least 8 characters");
   }

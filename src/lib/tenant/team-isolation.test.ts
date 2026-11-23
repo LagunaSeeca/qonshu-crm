@@ -204,8 +204,13 @@ async function world() {
 }
 type World = Awaited<ReturnType<typeof world>>;
 
+// The representative for one owner's building. Created by that building's TEAM ADMIN, never by
+// the owning member: minting a PARTNER_VIEWER is admin-only, because a PARTNER_VIEWER holds the
+// capabilities a MEMBER is denied and a member who could mint one could log in as it. So the
+// creator is adminA for Team A's buildings and adminB for m3's, over in Team B.
 async function repFor(w: World, k: OwnerKey): Promise<{ row: User; session: SessionUser }> {
-  const login = await createPartnerLogin(testPrisma, w.S[k], w.accounts[k].id, {
+  const creator = k === "m3" ? w.S.adminB : w.S.adminA;
+  const login = await createPartnerLogin(testPrisma, creator, w.accounts[k].id, {
     name: `Rep ${k}`, email: `${uniq("rep-")}@test.local`, password: "password123",
   });
   const row = await testPrisma.user.findUniqueOrThrow({ where: { id: login.id } });
@@ -811,7 +816,7 @@ describe("team isolation", () => {
   // 4. PARTNER LOGINS
   // ===========================================================================================
   describe("4. partner logins", () => {
-    it("a member creates the representative for their OWN account; the row is a team-less partner pinned to it", async () => {
+    it("the TEAM ADMIN creates the representative for a member's account; the row is a team-less partner pinned to it", async () => {
       const w = await world();
       const { row } = await repFor(w, "m1");
       expect(row.role).toBe("PARTNER_VIEWER");
@@ -819,6 +824,39 @@ describe("team isolation", () => {
       expect(row.teamId).toBeNull();
       expect(row.companyId).toBe(w.companyId);
       expect(row.status).toBe("ACTIVE");
+    });
+
+    // The member who MANAGES the building cannot mint its login — this is the privilege
+    // escalation the branch closed. A PARTNER_VIEWER may read settlements, payment detail and
+    // object detail, all of which a MEMBER is refused, so a member who could mint one with a
+    // password of their choosing could log in as it and read straight past their own gate.
+    // Scope does not help: the building genuinely is theirs.
+    it("the account's OWN member is Forbidden from minting its representative, and mints nothing", async () => {
+      const w = await world();
+      const login = { name: "Rep", email: `${uniq("rep-")}@t.local`, password: "password123" };
+      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.m1, w.accounts.m1.id, login))).toBe("Forbidden");
+      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.m3, w.accounts.m3.id, login))).toBe("Forbidden");
+      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.adminA, w.accounts.adminA.id, login))).toBe("ok");
+      // Exactly the admin's one row exists; neither member's attempt wrote anything.
+      const reps = await testPrisma.user.findMany({ where: { role: "PARTNER_VIEWER" } });
+      expect(reps.map((r) => r.accountId)).toEqual([w.accounts.adminA.id]);
+    });
+
+    // The ROLE gate sits AFTER getAccount on purpose. A member naming an id outside their scope
+    // must get the same NotFound as a member naming an id that does not exist — if the role
+    // refusal came first, the two answers would differ and the call would confirm which ids are
+    // real. Both members below are refused, but for the in-scope-but-unauthorized case only.
+    it("ordering: out of scope stays NotFound for a member, it does not become Forbidden", async () => {
+      const w = await world();
+      const login = { name: "Rep", email: `${uniq("rep-")}@t.local`, password: "password123" };
+      // m1 cannot see m2's (same team) or m3's (other team) account: NotFound, not Forbidden.
+      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.m1, w.accounts.m2.id, login))).toBe("NotFound");
+      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.m1, w.accounts.m3.id, login))).toBe("NotFound");
+      // ...the same answer a wholly made-up id gets, which is what makes it not an oracle.
+      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.m1, "no-such-account-id", login))).toBe("NotFound");
+      // Only the account m1 CAN see turns into the role refusal.
+      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.m1, w.accounts.m1.id, login))).toBe("Forbidden");
+      expect(await testPrisma.user.count({ where: { role: "PARTNER_VIEWER" } })).toBe(0);
     });
 
     it("refused on a teammate's account and on another team's account (404), and creates nothing", async () => {
@@ -838,13 +876,15 @@ describe("team isolation", () => {
       const w = await world();
       const first = await repFor(w, "m1");
       const again = { name: "Second", email: `${uniq("rep-")}@t.local`, password: "password123" };
-      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.m1, w.accounts.m1.id, again))).toBe("LoginExists");
+      // adminA, not m1: a member's attempt would be refused by the role gate and never reach the
+      // one-active-login rule this test is about.
+      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.adminA, w.accounts.m1.id, again))).toBe("LoginExists");
       expect(await testPrisma.user.count({ where: { accountId: w.accounts.m1.id, role: "PARTNER_VIEWER" } })).toBe(1);
       await setUserStatus(testPrisma, w.S.adminA, first.row.id, "INACTIVE");
-      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.m1, w.accounts.m1.id, again))).toBe("ok");
+      expect(await outcome(() => createPartnerLogin(testPrisma, w.S.adminA, w.accounts.m1.id, again))).toBe("ok");
     });
 
-    it("HTTP: own account 201, second 409, teammate's 404, partner 403", async () => {
+    it("HTTP: admin 201 then 409, other team's 404, member 403, partner 403", async () => {
       const w = await world();
       const post = (accountId: string) =>
         POST_PARTNER_LOGIN(
@@ -855,11 +895,17 @@ describe("team isolation", () => {
           }),
           { params: Promise.resolve({ id: accountId }) },
         );
+      // POST is assertRole(["COMPANY_ADMIN"]) — a MEMBER is 403 even on the building they
+      // manage, and the route's role check runs before the body is parsed, so the refusal never
+      // becomes a 400 about the payload.
       mockUser = w.S.m1;
+      expect((await post(w.accounts.m1.id)).status).toBe(403);
+      expect(await testPrisma.user.count({ where: { role: "PARTNER_VIEWER" } })).toBe(0);
+
+      mockUser = w.S.adminA;
       expect((await post(w.accounts.m1.id)).status).toBe(201);
-      expect((await post(w.accounts.m1.id)).status).toBe(409);
-      expect((await post(w.accounts.m2.id)).status).toBe(404);
-      expect((await post(w.accounts.m3.id)).status).toBe(404);
+      expect((await post(w.accounts.m1.id)).status).toBe(409); // one ACTIVE login per account
+      expect((await post(w.accounts.m3.id)).status).toBe(404); // Team B's building, out of scope
       const rep = await testPrisma.user.findFirstOrThrow({ where: { accountId: w.accounts.m1.id, role: "PARTNER_VIEWER" } });
       mockUser = su(rep);
       expect((await post(w.accounts.m1.id)).status).toBe(403); // a partner cannot mint a second login

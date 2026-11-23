@@ -21,9 +21,13 @@ describe("guards", () => {
     expect(() => assertRole(admin, ["COMPANY_ADMIN"])).not.toThrow();
   });
 
+  // `manage_companies`, not `write_settlements`: a COMPANY_ADMIN now legitimately holds
+  // write_settlements (locking team admins out of the transfer routes was the regression this
+  // branch fixed), so it can no longer serve as the action an admin is denied. Platform
+  // administration is still SUPER_ADMIN-only, which is what makes it the right negative case.
   it("assertCan throws ForbiddenError when not permitted", () => {
-    expect(() => assertCan(admin, "write_settlements")).toThrow(ForbiddenError);
-    expect(() => assertCan(su, "write_settlements")).not.toThrow();
+    expect(() => assertCan(admin, "manage_companies")).toThrow(ForbiddenError);
+    expect(() => assertCan(su, "manage_companies")).not.toThrow();
   });
   it("fails closed for an unknown role or action", () => {
     const ghost = { ...member, role: "FUTURE_ROLE" as never };
@@ -42,7 +46,11 @@ const EXPECTED: Record<A, Record<(typeof ROLES)[number], boolean>> = {
   manage_users:        { SUPER_ADMIN: true, COMPANY_ADMIN: true,  MEMBER: false, PARTNER_VIEWER: false },
   view_payment_detail: { SUPER_ADMIN: true, COMPANY_ADMIN: true,  MEMBER: false, PARTNER_VIEWER: true },
   view_settlements:    { SUPER_ADMIN: true, COMPANY_ADMIN: true,  MEMBER: false, PARTNER_VIEWER: true },
-  write_settlements:   { SUPER_ADMIN: true, COMPANY_ADMIN: false, MEMBER: false, PARTNER_VIEWER: false },
+  // A team admin WRITES settlements: these capabilities replaced `assertRole(user,
+  // ["COMPANY_ADMIN"])` on the old transfer routes, so listing only SUPER_ADMIN left nobody but
+  // the platform owner able to record a cash transfer. A MEMBER and a PARTNER_VIEWER stay out —
+  // a partner may read its own settlement, never amend it.
+  write_settlements:   { SUPER_ADMIN: true, COMPANY_ADMIN: true,  MEMBER: false, PARTNER_VIEWER: false },
   view_object_detail:  { SUPER_ADMIN: true, COMPANY_ADMIN: true,  MEMBER: false, PARTNER_VIEWER: true },
 };
 const ACTIONS = Object.keys(EXPECTED) as A[];

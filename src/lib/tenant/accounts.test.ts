@@ -9,7 +9,7 @@ import {
 } from "./accounts";
 import { createFieldDef, setAccountFieldValue, getAccountFields } from "./account-fields";
 import { BuildingClaimedError } from "./building-claim";
-import { ForbiddenError } from "@/lib/auth/guards";
+import { ForbiddenError, NotFoundError } from "@/lib/auth/guards";
 import { verifyPassword } from "@/lib/auth/password";
 import type { PartnerListResponse } from "@/lib/partner-api/schema";
 
@@ -320,7 +320,10 @@ describe("accounts: partner logins", () => {
   it("createAccountWithLogin provisions a PARTNER_VIEWER with no team and the account set", async () => {
     const t = await makeTeamWithUsers();
     const email = `${uniq("pl-")}@test.local`;
-    const { account, partnerUser } = await createAccountWithLogin(testPrisma, t.suMember, {
+    // The team ADMIN is the caller throughout this describe: minting a PARTNER_VIEWER is
+    // admin-only (see the privilege-escalation cases below). A member's call never gets far
+    // enough to exercise any of the behaviour these tests are about.
+    const { account, partnerUser } = await createAccountWithLogin(testPrisma, t.suAdmin, {
       name: uniq("Duo "),
       partnerLogin: { name: "Partner Contact", email, password: "pw123456" },
     });
@@ -341,24 +344,36 @@ describe("accounts: partner logins", () => {
   it("rolls the whole unit back when the partner email is already taken", async () => {
     const t = await makeTeamWithUsers();
     const email = `${uniq("dup-")}@test.local`;
-    await createAccountWithLogin(testPrisma, t.suMember, {
+    await createAccountWithLogin(testPrisma, t.suAdmin, {
       name: uniq("First "), partnerLogin: { name: "P1", email, password: "pw123456" },
     });
     const secondName = uniq("Second ");
-    await expect(createAccountWithLogin(testPrisma, t.suMember, {
+    await expect(createAccountWithLogin(testPrisma, t.suAdmin, {
       name: secondName, partnerLogin: { name: "P2", email, password: "pw123456" },
     })).rejects.toThrow();
     expect(await testPrisma.account.count({ where: { name: secondName } })).toBe(0);
   });
 
-  // The sales manager owns the relationship with their building's representative, so they create
-  // the login themselves — getAccount is the only thing that decides which account they may name.
-  it("the account's own MEMBER can create its login; another member cannot", async () => {
+  // PRIVILEGE ESCALATION, CLOSED. The premise this test used to assert — "the sales manager owns
+  // the relationship with their representative, so they create the login themselves" — WAS the
+  // vulnerability. A PARTNER_VIEWER holds exactly the capabilities a MEMBER is denied
+  // (view_settlements, view_payment_detail, view_object_detail), so a member who may mint one on
+  // an account they legitimately manage can set its password, log in as it, and read the
+  // settlement and payment data their own role refuses. Scope cannot catch that: the account
+  // really is theirs. Only a team admin may mint.
+  it("a MEMBER cannot create its account's login, an admin can", async () => {
     const t = await makeTeamWithUsers();
-    const peer = await makeUser("MEMBER", t.team);
     const acc = await createAccount(testPrisma, t.suMember, { name: uniq("Own ") });
 
-    const login = await createPartnerLogin(testPrisma, t.suMember, acc.id, {
+    // The account's OWN manager — in scope, and still refused.
+    await expect(createPartnerLogin(testPrisma, t.suMember, acc.id, {
+      name: "Rep", email: `${uniq("rep-")}@test.local`, password: "pw123456",
+    })).rejects.toThrow(ForbiddenError);
+    // ...and the refusal is complete: no partner User row was written before the throw.
+    expect(await testPrisma.user.count({ where: { accountId: acc.id } })).toBe(0);
+
+    // The team admin may, so the capability moved rather than disappeared.
+    const login = await createPartnerLogin(testPrisma, t.suAdmin, acc.id, {
       name: "Rep", email: `${uniq("rep-")}@test.local`, password: "pw123456",
     });
     const row = await testPrisma.user.findUniqueOrThrow({ where: { id: login.id } });
@@ -367,30 +382,74 @@ describe("accounts: partner logins", () => {
     expect(row.accountId).toBe(acc.id);
     // Masked: the returned shape carries no passwordHash at all.
     expect(Object.keys(login).sort()).toEqual(["email", "id", "name", "status"]);
+  });
 
-    await expect(createPartnerLogin(testPrisma, su(peer), acc.id, {
-      name: "Thief", email: `${uniq("thief-")}@test.local`, password: "pw123456",
-    })).rejects.toThrow(/not in scope/);
+  // An out-of-scope id is refused by getAccount, which runs FIRST — so the answer a non-admin
+  // gets is the same NotFound a non-existent id gets, not a Forbidden that would confirm the id
+  // exists. That ordering is deliberate: the role gate must not turn this call into an id oracle.
+  it("an out-of-scope id is NotFound for a non-admin, not Forbidden — no id oracle", async () => {
+    const a = await makeTeamWithUsers();
+    const b = await makeTeamWithUsers();
+    const peer = await makeUser("MEMBER", a.team);
+    const theirs = await createAccount(testPrisma, b.suMember, { name: uniq("Theirs ") });
+    const login = { name: "Thief", email: `${uniq("thief-")}@test.local`, password: "pw123456" };
+
+    // A real account in another company, an account on their own team they do not manage, and an
+    // id that does not exist at all: all three are NotFound, and none is Forbidden.
+    for (const id of [theirs.id, "does-not-exist-at-all"]) {
+      await expect(createPartnerLogin(testPrisma, a.suMember, id, login)).rejects.toThrow(NotFoundError);
+      await expect(createPartnerLogin(testPrisma, a.suMember, id, login)).rejects.not.toThrow(ForbiddenError);
+    }
+    const mine = await createAccount(testPrisma, a.suMember, { name: uniq("Mine ") });
+    await expect(createPartnerLogin(testPrisma, su(peer), mine.id, login)).rejects.toThrow(NotFoundError);
+
+    // A non-admin of ANOTHER company never learns that b's account exists, and nothing was made.
+    expect(await testPrisma.user.count({ where: { role: "PARTNER_VIEWER" } })).toBe(0);
+  });
+
+  // The gate on createAccountWithLogin runs before ANY write, so a member's attempt to smuggle a
+  // partner login in alongside a new account leaves the database exactly as it was — not the
+  // account alone, which would be a half-applied request.
+  it("a MEMBER's createAccountWithLogin with a partnerLogin creates neither the account nor the login", async () => {
+    const t = await makeTeamWithUsers();
+    const name = uniq("Smuggled ");
+    const email = `${uniq("esc-")}@test.local`;
+
+    await expect(createAccountWithLogin(testPrisma, t.suMember, {
+      name, partnerLogin: { name: "Rep", email, password: "pw123456" },
+    })).rejects.toThrow(ForbiddenError);
+
+    expect(await testPrisma.account.count({ where: { name } })).toBe(0);
+    expect(await testPrisma.user.count({ where: { email } })).toBe(0);
+    expect(await testPrisma.user.count({ where: { role: "PARTNER_VIEWER" } })).toBe(0);
+
+    // Creating the ACCOUNT is still a member's job — only ATTACHING a login is not. The same
+    // call without partnerLogin succeeds, which is what keeps this a targeted gate rather than a
+    // member losing the create path altogether.
+    const { account, partnerUser } = await createAccountWithLogin(testPrisma, t.suMember, { name });
+    expect(partnerUser).toBeNull();
+    expect(account.accountManagerId).toBe(t.member.id);
   });
 
   it("at most ONE ACTIVE partner login per account — a deactivated one makes room", async () => {
     const t = await makeTeamWithUsers();
     const acc = await createAccount(testPrisma, t.suMember, { name: uniq("One ") });
-    const first = await createPartnerLogin(testPrisma, t.suMember, acc.id, {
+    const first = await createPartnerLogin(testPrisma, t.suAdmin, acc.id, {
       name: "Rep 1", email: `${uniq("r1-")}@test.local`, password: "pw123456",
     });
 
-    await expect(createPartnerLogin(testPrisma, t.suMember, acc.id, {
+    await expect(createPartnerLogin(testPrisma, t.suAdmin, acc.id, {
       name: "Rep 2", email: `${uniq("r2-")}@test.local`, password: "pw123456",
     })).rejects.toThrow(PartnerLoginExistsError);
     expect(await testPrisma.user.count({ where: { accountId: acc.id } })).toBe(1);
 
     await testPrisma.user.update({ where: { id: first.id }, data: { status: "INACTIVE" } });
-    await expect(createPartnerLogin(testPrisma, t.suMember, acc.id, {
+    await expect(createPartnerLogin(testPrisma, t.suAdmin, acc.id, {
       name: "Rep 2", email: `${uniq("r2b-")}@test.local`, password: "pw123456",
     })).resolves.toBeTruthy();
 
-    // ...and both are listed, revoked one included, masked.
+    // ...and both are listed, revoked one included, masked. LISTING is still open to the account's
+    // own MEMBER — the rows are masked and scoped to one account they already manage.
     const logins = await listPartnerLogins(testPrisma, t.suMember, acc.id);
     expect(logins).toHaveLength(2);
     expect(logins.map((l) => l.status).sort()).toEqual(["ACTIVE", "INACTIVE"]);
@@ -399,7 +458,9 @@ describe("accounts: partner logins", () => {
   it("rejects a short password before touching the database", async () => {
     const t = await makeTeamWithUsers();
     const acc = await createAccount(testPrisma, t.suMember, { name: uniq("Short ") });
-    await expect(createPartnerLogin(testPrisma, t.suMember, acc.id, {
+    // An ADMIN caller on purpose: the password check sits after the role gate, so a member's call
+    // would be refused for the wrong reason and this test would stop covering the length rule.
+    await expect(createPartnerLogin(testPrisma, t.suAdmin, acc.id, {
       name: "Rep", email: `${uniq("s-")}@test.local`, password: "pw1",
     })).rejects.toThrow(/at least 8/);
     expect(await testPrisma.user.count({ where: { accountId: acc.id } })).toBe(0);

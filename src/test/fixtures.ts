@@ -21,12 +21,15 @@ export function uniq(prefix = "x"): string {
   return `${prefix}${seq}`;
 }
 
-// The same normalization the migration's backfill applies and the app applies on every write:
-// NFKC, trim, collapse internal whitespace, lowercase, then strip U+0307 (COMBINING DOT ABOVE).
+// The same normalization the APP applies on every write (normalizeBuildingName in
+// ./tenant/building-claim.ts): NFKC, strip zero-width characters, trim, collapse internal
+// whitespace, lowercase, then strip U+0307 (COMBINING DOT ABOVE).
 //
-// The U+0307 strip is what makes Azerbaijani input agree across the two layers:
-// `"İ".toLowerCase()` in JS yields "i" + U+0307, whereas Postgres `lower()` yields a bare "i".
-// Without the strip the app would compute a key the database's own backfill could never produce.
+// NOT the same as the migration's backfill, which is plain SQL and does neither the zero-width
+// nor the U+0307 strip — that is exactly why the app cannot delegate this to Postgres `lower()`
+// or to a generated column, and why every key comparison happens in JS. `"İ".toLowerCase()` in
+// JS yields "i" + U+0307 where `lower()` yields a bare "i", so a backfilled row and a freshly
+// written one would otherwise disagree on the same building name.
 export function buildingKey(name: string): string {
   return name.normalize("NFKC")
     .replace(/[​-‍⁠﻿]/g, "").trim().replace(/\s+/g, " ").toLowerCase().replace(/̇/g, "");

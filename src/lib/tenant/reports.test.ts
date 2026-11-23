@@ -172,9 +172,10 @@ describe("reports (live partner API)", () => {
     const r = await getReport(testPrisma, user, { range, label: "July 2026" });
 
     // Isolate the calls that page the payment ROWS (pageSize 500) from the settlement roll-up's
-    // aggregate-only pageSize-1 probe. The live KPI fan-out inside getDashboardStats now shares
-    // the same pager (./partner-payments) and so issues an identical 1..3 pass of its own, which
-    // is why this asserts the pages COVERED rather than the raw call count.
+    // aggregate-only pageSize-1 probe. This asserts the pages COVERED rather than the raw call
+    // count, because the subject here is that every page of a multi-page partner is walked — not
+    // how many consumers walk it. (Only one does now: getReport reuses getCompanyAnalytics'
+    // `paymentsByAccount` instead of paging a second time.)
     const pagedCalls = vi
       .mocked(fetchPartnerStats)
       .mock.calls.map((c) => c[0] as { page?: number; pageSize?: number })
@@ -276,15 +277,16 @@ describe("reports (live partner API)", () => {
 
     const r = await getReport(db, user, { range, label: "July 2026" });
 
-    // Only one ACCOUNT is ever fetched, not two: the single page of payment rows is requested once
-    // per consumer — this report, and the getCompanyAnalytics fan-out inside getDashboardStats,
-    // which dedups on its own (see company-analytics.test.ts) and now shares the same pager — so
-    // two calls, not the four an undeduped pair of accounts would make.
+    // Only one ACCOUNT is ever fetched, not two, AND its single page of payment rows is fetched
+    // exactly ONCE for the whole report: getReport no longer runs a fan-out of its own, it reads
+    // the payments out of the `paymentsByAccount` map that getCompanyAnalytics already built. So
+    // one call — not the two the duplicated fan-out used to make, and not the four an undeduped
+    // pair of accounts would make.
     const pagedCalls = vi
       .mocked(fetchPartnerStats)
       .mock.calls.map((call) => call[0] as { page?: number; pageSize?: number })
       .filter((a) => a.page !== undefined && a.pageSize === 500);
-    expect(pagedCalls).toHaveLength(2);
+    expect(pagedCalls).toHaveLength(1);
 
     // Every account is still a row (shape preserved) — the loser shows 0, not hidden, and the
     // totals across both rows reflect ONE partner's figures, not two.
