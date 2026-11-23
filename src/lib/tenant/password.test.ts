@@ -1,15 +1,17 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, su } from "@/test/fixtures";
 import { changeOwnPassword, InvalidCurrentPasswordError } from "./password";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import type { SessionUser } from "@/lib/auth/guards";
 
 async function seedUser() {
   const ts = `pwd-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-  const c = await testPrisma.company.create({ data: { name: "PwdCo", slug: ts } });
+  const team = await makeTeam({ name: "PwdTeam" });
+  const c = { id: team.companyId };
   const passwordHash = await hashPassword("oldpass123");
   const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${ts}@a.com`, passwordHash, name: "U", role: "MEMBER" },
+    data: { companyId: team.companyId, teamId: team.id, email: `u-${ts}@a.com`, passwordHash, name: "U", role: "MEMBER" },
   });
   return { c, u };
 }
@@ -20,7 +22,7 @@ describe("changeOwnPassword", () => {
 
   it("rejects an incorrect current password and leaves the hash untouched", async () => {
     const { c, u } = await seedUser();
-    const actor: SessionUser = { id: u.id, companyId: c.id, role: "MEMBER" };
+    const actor: SessionUser = su(u);
     await expect(
       changeOwnPassword(testPrisma, actor, { currentPassword: "wrongpass", newPassword: "newpass123" }),
     ).rejects.toThrow(InvalidCurrentPasswordError);
@@ -30,7 +32,7 @@ describe("changeOwnPassword", () => {
 
   it("rotates the password when the current password is correct", async () => {
     const { c, u } = await seedUser();
-    const actor: SessionUser = { id: u.id, companyId: c.id, role: "MEMBER" };
+    const actor: SessionUser = su(u);
     await changeOwnPassword(testPrisma, actor, { currentPassword: "oldpass123", newPassword: "newpass123" });
     const updated = await testPrisma.user.findUniqueOrThrow({ where: { id: u.id } });
     expect(await verifyPassword("newpass123", updated.passwordHash)).toBe(true);
@@ -40,7 +42,7 @@ describe("changeOwnPassword", () => {
   it("works for a PARTNER_VIEWER changing their own password (their only allowed write)", async () => {
     const { c, u } = await seedUser();
     await testPrisma.user.update({ where: { id: u.id }, data: { role: "PARTNER_VIEWER" } });
-    const actor: SessionUser = { id: u.id, companyId: c.id, role: "PARTNER_VIEWER", accountId: null };
+    const actor: SessionUser = { id: u.id, companyId: c.id, teamId: null, role: "PARTNER_VIEWER", accountId: null };
     await changeOwnPassword(testPrisma, actor, { currentPassword: "oldpass123", newPassword: "partnernew123" });
     const updated = await testPrisma.user.findUniqueOrThrow({ where: { id: u.id } });
     expect(await verifyPassword("partnernew123", updated.passwordHash)).toBe(true);

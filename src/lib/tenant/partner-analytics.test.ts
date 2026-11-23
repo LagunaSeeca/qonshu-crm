@@ -1,16 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import { getAccountAnalytics, listAccountPayments } from "./partner-analytics";
-import { fetchPartnerStats } from "@/lib/partner-api/client";
+import { fetchPartnerStats, fetchPartners } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
-import { NotFoundError } from "@/lib/auth/guards";
+import { NotFoundError, ForbiddenError } from "@/lib/auth/guards";
 import type { SessionUser } from "@/lib/auth/guards";
 
 // Single-account analytics is now LIVE-only: every KPI/breakdown comes straight from the
 // external Partner API for the request's range, nothing persisted or cached. Mock the client
-// module so these tests never hit the network.
-vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn() }));
+// module so these tests never hit the network. `fetchPartners` is the global partner-LIST call
+// behind the opportunistic auto-link that getAccountAnalytics performs on an unlinked account; it
+// defaults to an empty list (= no match, nothing linked) and is set per test where the link
+// matters.
+vi.mock("@/lib/partner-api/client", () => ({ fetchPartnerStats: vi.fn(), fetchPartners: vi.fn() }));
 
 const KEY_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const SHARED_API_KEY = "test-shared-partner-api-key";
@@ -18,22 +22,23 @@ const range = { from: new Date("2026-06-01T00:00:00Z"), to: new Date("2026-06-30
 
 // "Configured" now means only a partner NAME — the account goes live off the shared
 // PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
-async function seed(slug: string, opts?: { configured?: boolean }) {
-  const c = await testPrisma.company.create({ data: { name: "A", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "MEMBER" },
-  });
+async function seed(slug: string, opts?: { configured?: boolean; role?: "MEMBER" | "COMPANY_ADMIN" }) {
+  const team = await makeTeam({ name: slug });
+  const c = { id: team.companyId };
+  const u = await makeUser(opts?.role ?? "MEMBER", team);
   const configured = opts?.configured ?? true;
   const acc = await testPrisma.account.create({
     data: {
       companyId: c.id,
+      teamId: team.id,
+      buildingKey: buildingKey("P"),
       name: "P",
       accountManagerId: u.id,
-      ...(configured ? { externalPartnerKey: `${slug}-partner` } : {}),
+      ...(configured ? confirmedPartnerLink(`${slug}-partner`) : {}),
     },
   });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "MEMBER" };
-  return { c, acc, user };
+  const user: SessionUser = su(u);
+  return { c, team, acc, user };
 }
 
 describe("partner analytics (live)", () => {
@@ -47,6 +52,8 @@ describe("partner analytics (live)", () => {
     process.env.PARTNER_API_KEY_SECRET = KEY_SECRET;
     process.env.PARTNER_API_KEY = SHARED_API_KEY;
     vi.mocked(fetchPartnerStats).mockReset();
+    vi.mocked(fetchPartners).mockReset();
+    vi.mocked(fetchPartners).mockResolvedValue({ partners: [] });
   });
   afterEach(() => {
     if (savedSecret === undefined) delete process.env.PARTNER_API_KEY_SECRET;
@@ -85,7 +92,7 @@ describe("partner analytics (live)", () => {
       const a = await getAccountAnalytics(testPrisma, user, acc.id, range);
 
       expect(a.status).toBe("ok");
-      expect(a.kpis.activeUsers).toBe(9);
+      expect(a.kpis.activeUsers).toBe(6); // logged_in_users, not active_users (9)
       expect(a.kpis.totalUsers).toBe(12);
       expect(a.kpis.totalDebt).toBe(456.7); // from total_debt
       expect(a.kpis.paymentsCount).toBe(4);
@@ -119,8 +126,31 @@ describe("partner analytics (live)", () => {
           dateFrom: "2026-06-01",
           dateTo: "2026-06-30",
           page: 1,
-          pageSize: 1,
+          pageSize: 500,
         }),
+      );
+    });
+
+    it("uniquePayingUsers counts DISTINCT online (CARD) payers in the requested range; no identities in the DTO", async () => {
+      const { acc, user } = await seed("pa-uniq");
+      vi.mocked(fetchPartnerStats).mockResolvedValue(
+        makePartnerStats({
+          logged_in_users: 5,
+          payments: [
+            makePartnerPayment({ id: "a1", user_id: "u1", user_name: "Alice Secret", method: "CARD" }),
+            makePartnerPayment({ id: "a2", user_id: "u1", user_name: "Alice Secret", method: "CARD" }),
+            makePartnerPayment({ id: "b1", user_id: "u2", user_name: "Bob Secret", method: "CARD" }),
+            makePartnerPayment({ id: "c1", user_id: "u3", user_name: "Cash Secret", method: "CASH" }),
+            makePartnerPayment({ id: "m1", user_id: "u4", user_name: "Manual Secret", method: "MANUAL" }),
+          ],
+        }),
+      );
+      const a = await getAccountAnalytics(testPrisma, user, acc.id, range);
+      expect(a.kpis.uniquePayingUsers).toBe(2);
+      expect(a.kpis.activeUsers).toBe(5);
+      expect(JSON.stringify(a)).not.toMatch(/Secret|u1|u2/);
+      expect(fetchPartnerStats).toHaveBeenCalledWith(
+        expect.objectContaining({ dateFrom: "2026-06-01", dateTo: "2026-06-30" }),
       );
     });
 
@@ -155,13 +185,18 @@ describe("partner analytics (live)", () => {
     });
 
     it("status 'unavailable' when the stored key fails to decrypt (tampered ciphertext), without calling the API", async () => {
-      const { c, user } = await seed("pa-tamper", { configured: false });
+      const { c, team, user } = await seed("pa-tamper", { configured: false });
       const acc = await testPrisma.account.create({
         data: {
           companyId: c.id,
+          teamId: team.id,
+          buildingKey: buildingKey("Tampered"),
           name: "Tampered",
           accountManagerId: user.id,
-          externalPartnerKey: "tampered-partner",
+          // CONFIRMED: this test is about a decrypt failure, and the approval gate is checked
+          // BEFORE the decrypt, so a pending link would short-circuit to "not-configured" and
+          // this would stop testing decryption at all.
+          ...confirmedPartnerLink("tampered-partner"),
           externalApiKeyEnc: "not-a-valid-ciphertext",
         },
       });
@@ -176,11 +211,60 @@ describe("partner analytics (live)", () => {
       await expect(getAccountAnalytics(testPrisma, other.user, acc.id, range)).rejects.toThrow(NotFoundError);
       expect(fetchPartnerStats).not.toHaveBeenCalled();
     });
+
+    // THIS READ IS NOW A PURE READ, FOR EVERY ROLE.
+    //
+    // It used to end in tryAutoLink, a WRITE hiding inside a read: it set
+    // Account.externalPartnerKey — the single field that decides which external complex's debt,
+    // payments and unit-level owner names/phones an account can read, over a namespace shared by
+    // every account on the platform — and stamped a PartnerLinkAudit row, plus a full upstream
+    // GET /partners fan-out on every refresh. /api/accounts/[id]/analytics carries no assertRole
+    // and /analytics is partner-allowed, so the least-privileged role in the system performed the
+    // most privileged write in it just by loading its own page.
+    //
+    // A role check was the first fix; removing the mechanism is the real one (security review
+    // finding F1). The two tests below pin that: neither a PARTNER_VIEWER nor the account's own
+    // manager causes any write or any upstream call.
+    it("a PARTNER_VIEWER's own analytics read writes no link, no audit row, and never asks upstream", async () => {
+      const { team, acc } = await seed("pa-partner-link", { configured: false });
+      // Upstream DOES hold a complex matching this account's building — the exact state in which
+      // the opportunistic link fires for anyone else.
+      vi.mocked(fetchPartners).mockResolvedValue({ partners: [{ name: "P", type: "RESIDENTIAL" }] });
+      const rep = await makeUser("PARTNER_VIEWER", team, { accountId: acc.id });
+
+      const a = await getAccountAnalytics(testPrisma, su(rep), acc.id, range);
+
+      const row = await testPrisma.account.findUniqueOrThrow({ where: { id: acc.id } });
+      expect(row.externalPartnerKey, "link written by a partner read").toBeNull();
+      expect(await testPrisma.partnerLinkAudit.count(), "audit rows").toBe(0);
+      expect(fetchPartners, "upstream partner-list fan-out").not.toHaveBeenCalled();
+      expect(a.status).toBe("not-configured");
+    });
+
+    // INVERTED (security review finding F1). This used to assert that the account's own manager
+    // DID get the opportunistic link, audited as a system action — i.e. that opening a tab granted
+    // a complex purely because its name matched something upstream. That is the hole. The manager
+    // is now treated exactly like the partner above: nothing is written, nothing is asked, and an
+    // unlinked account stays unlinked until an admin acts on /partner-links.
+    it("the account's own manager gets no link either — the read writes nothing at all", async () => {
+      const { acc, user } = await seed("pa-autolink-member", { configured: false });
+      vi.mocked(fetchPartners).mockResolvedValue({ partners: [{ name: "P", type: "RESIDENTIAL" }] });
+      vi.mocked(fetchPartnerStats).mockResolvedValue(makePartnerStats({ partner: "P" }));
+
+      const a = await getAccountAnalytics(testPrisma, user, acc.id, range);
+
+      expect(a.status).toBe("not-configured");
+      const row = await testPrisma.account.findUniqueOrThrow({ where: { id: acc.id } });
+      expect(row.externalPartnerKey, "link written by a read").toBeNull();
+      expect(await testPrisma.partnerLinkAudit.count(), "audit rows").toBe(0);
+      expect(fetchPartners, "upstream partner-list fan-out").not.toHaveBeenCalled();
+      expect(fetchPartnerStats, "upstream stats call").not.toHaveBeenCalled();
+    });
   });
 
   describe("listAccountPayments", () => {
     it("passes through page/pageSize and maps rows + pagination from the live response", async () => {
-      const { acc, user } = await seed("pa-pg");
+      const { acc, user } = await seed("pa-pg", { role: "COMPANY_ADMIN" });
       vi.mocked(fetchPartnerStats).mockResolvedValue(
         makePartnerStats({
           payments: [
@@ -205,9 +289,15 @@ describe("partner analytics (live)", () => {
       expect(fetchPartnerStats).toHaveBeenCalledWith(expect.objectContaining({ page: 2, pageSize: 10 }));
     });
 
+    it("a MEMBER is refused payment detail outright (ForbiddenError) and the API is never called", async () => {
+      const { acc, user } = await seed("pa-pg-member"); // role MEMBER
+      await expect(listAccountPayments(testPrisma, user, acc.id, { ...range })).rejects.toBeInstanceOf(ForbiddenError);
+      expect(fetchPartnerStats).not.toHaveBeenCalled();
+    });
+
     it("returns an empty not-configured page for a cross-tenant account without calling the API", async () => {
-      const { acc } = await seed("pa-pg-x1");
-      const other = await seed("pa-pg-x2");
+      const { acc } = await seed("pa-pg-x1", { role: "COMPANY_ADMIN" });
+      const other = await seed("pa-pg-x2", { role: "COMPANY_ADMIN" });
 
       const res = await listAccountPayments(testPrisma, other.user, acc.id, { ...range });
 
@@ -218,7 +308,7 @@ describe("partner analytics (live)", () => {
     });
 
     it("maps upstream failure statuses the same way as getAccountAnalytics", async () => {
-      const { acc, user } = await seed("pa-pg-fail");
+      const { acc, user } = await seed("pa-pg-fail", { role: "COMPANY_ADMIN" });
       vi.mocked(fetchPartnerStats).mockRejectedValue(new UnknownPartnerError());
 
       const res = await listAccountPayments(testPrisma, user, acc.id, { ...range });

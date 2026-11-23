@@ -3,11 +3,10 @@ import Link from "next/link";
 import { ListTodo, CalendarCheck, MessageSquare, Calendar as CalendarIcon, CheckCircle2 } from "lucide-react";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
-import { getTenantContext } from "@/lib/tenant/context";
 import { getMyWork } from "@/lib/tenant/work";
 import { listLeads } from "@/lib/tenant/leads";
 import { listAccounts } from "@/lib/tenant/accounts";
-import { listUsers } from "@/lib/tenant/users";
+import { loadOwnerOptions, loadTeams } from "../_lib/pickers";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/PageHeader";
@@ -34,12 +33,12 @@ export default async function WorkPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
-  const ctx = getTenantContext(user);
-  const [{ tasks, meetings }, leads, accounts, members] = await Promise.all([
+  const teams = await loadTeams(user);
+  const [{ tasks, meetings }, leads, accounts, assignable] = await Promise.all([
     getMyWork(prisma, user),
     listLeads(prisma, user),
     listAccounts(prisma, user),
-    listUsers(prisma, ctx),
+    loadOwnerOptions(user, teams),
   ]);
 
   return (
@@ -51,7 +50,12 @@ export default async function WorkPage() {
           <AddTask
             leads={leads.map((l) => ({ id: l.id, title: l.title }))}
             accounts={accounts.map((a) => ({ id: a.id, name: a.name }))}
-            members={members.map((m) => ({ id: m.id, name: m.name, email: m.email }))}
+            members={assignable.map((m) => ({
+              id: m.id,
+              // The owner sees several teams, so a bare name can be ambiguous: add the team.
+              name: user.role === "SUPER_ADMIN" && m.teamName ? `${m.name} (${m.teamName})` : m.name,
+              email: m.name,
+            }))}
           />
         }
       />

@@ -9,6 +9,7 @@ import { SidebarDrawer } from "@/components/SidebarDrawer";
 interface AppShellProps {
   role: Role;
   companyName?: string | null;
+  teamName?: string | null;
   userName?: string;
   userEmail?: string;
   children: React.ReactNode;
@@ -17,19 +18,19 @@ interface AppShellProps {
 // Client wrapper that owns the mobile-drawer open state shared between the Topbar's
 // hamburger button and the Sidebar drawer — both are siblings under the (app) layout,
 // which is a server component and can't hold state itself.
-export function AppShell({ role, companyName, userName, userEmail, children }: AppShellProps) {
+export function AppShell({ role, companyName, teamName, userName, userEmail, children }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
       {/* Desktop sidebar (>= lg) */}
       <div className="hidden lg:flex">
-        <Sidebar role={role} companyName={companyName} />
+        <Sidebar role={role} companyName={companyName} teamName={teamName} />
       </div>
 
       {/* Mobile sidebar drawer (< lg) */}
       <SidebarDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)}>
-        <Sidebar role={role} companyName={companyName} onNavigate={() => setDrawerOpen(false)} />
+        <Sidebar role={role} companyName={companyName} teamName={teamName} onNavigate={() => setDrawerOpen(false)} />
       </SidebarDrawer>
 
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">

@@ -19,10 +19,15 @@ export async function GET(req: NextRequest) {
   } catch (e) { return errorResponse(e); }
 }
 
+// `companyName` is REQUIRED and trimmed: it is the BUILDING name, which is what a lead claims
+// (one building, one record, org-wide). A blank or whitespace-only name would normalize to the
+// empty claim key — a single claim shared by every unnamed building in the company — so it is
+// rejected here as a 400 rather than reaching createLead.
 const Create = z.object({
   title: z.string().min(1), contactName: z.string().min(1), stageId: z.string().min(1),
+  companyName: z.string().trim().min(1),
   email: z.string().email().optional().or(z.literal("")), phone: z.string().optional(),
-  companyName: z.string().optional(), source: z.string().optional(),
+  source: z.string().optional(),
   priority: z.enum(["LOW","MEDIUM","HIGH"]).optional(),
   ownerId: z.string().optional(), expectedCloseDate: z.string().datetime().optional(),
 });

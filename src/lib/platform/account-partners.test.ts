@@ -6,21 +6,31 @@ import { ForbiddenError, type SessionUser } from "@/lib/auth/guards";
 vi.mock("@/lib/partner-api/client", () => ({ fetchPartners: vi.fn() }));
 
 import { fetchPartners } from "@/lib/partner-api/client";
-import { listAllAccountsForPartnerAssignment, setAccountPartner } from "./account-partners";
-import { findAllowlistEntryByName } from "./partner-allowlist";
+import { listAllAccountsForPartnerAssignment, setAccountPartner, PartnerNameHeldError } from "./account-partners";
 import { listTakenPartnerKeys } from "@/lib/tenant/accounts";
+import { makeTeam, makeUser, su as toSession, buildingKey } from "@/test/fixtures";
 
-const su: SessionUser = { id: "su", companyId: null, role: "SUPER_ADMIN" };
+async function superAdmin(): Promise<SessionUser> {
+  return toSession(await makeUser("SUPER_ADMIN"));
+}
 
 async function seedAccount(slug: string, accountName: string, partnerKey: string | null) {
-  const c = await testPrisma.company.create({ data: { name: `Co ${slug}`, slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
+  const team = await makeTeam({ name: `Team ${slug}` });
+  const c = { id: team.companyId };
+  const company = await testPrisma.company.update({ where: { id: c.id }, data: { name: `Co ${slug}` } });
+  const u = await makeUser("COMPANY_ADMIN", team);
   const acc = await testPrisma.account.create({
-    data: { companyId: c.id, name: accountName, accountManagerId: u.id, externalPartnerKey: partnerKey },
+    data: {
+      companyId: c.id, teamId: team.id, buildingKey: buildingKey(accountName),
+      name: accountName, accountManagerId: u.id,
+      // A seeded key here means a CONFIRMED link. These tests are about the owner's
+      // assignment surface; the PENDING state has its own suite
+      // (src/lib/tenant/partner-link-approval.test.ts), and
+      // listAllAccountsForPartnerAssignment deliberately reports a pending key as no key.
+      ...(partnerKey ? { externalPartnerKey: partnerKey, partnerLinkConfirmedAt: new Date() } : {}),
+    },
   });
-  return { c, u, acc };
+  return { c: company, team, u, acc };
 }
 
 describe("listAllAccountsForPartnerAssignment", () => {
@@ -32,7 +42,7 @@ describe("listAllAccountsForPartnerAssignment", () => {
     const a = await seedAccount(`zz-${ts}`, "Zulu Acct", "Komplex B");
     const b = await seedAccount(`aa-${ts}`, "Alpha Acct", null);
 
-    const rows = await listAllAccountsForPartnerAssignment(testPrisma, su);
+    const rows = await listAllAccountsForPartnerAssignment(testPrisma, await superAdmin());
     expect(rows.map((r) => r.id).sort()).toEqual([a.acc.id, b.acc.id].sort());
     const withKey = rows.find((r) => r.id === a.acc.id)!;
     expect(withKey.externalPartnerKey).toBe("Komplex B");
@@ -42,9 +52,9 @@ describe("listAllAccountsForPartnerAssignment", () => {
 
   it("is forbidden for a COMPANY_ADMIN — it is a cross-tenant read", async () => {
     const ts = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const { c, u } = await seedAccount(`ca-${ts}`, "Acct", null);
+    const { u } = await seedAccount(`ca-${ts}`, "Acct", null);
     await expect(
-      listAllAccountsForPartnerAssignment(testPrisma, { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" }),
+      listAllAccountsForPartnerAssignment(testPrisma, toSession(u)),
     ).rejects.toThrow(ForbiddenError);
   });
 });
@@ -59,7 +69,11 @@ describe("listTakenPartnerKeys", () => {
     await seedAccount(`t3-${ts}`, "Three", null);
 
     const taken = await listTakenPartnerKeys(testPrisma);
-    expect(taken).toEqual(new Set(["Komplex B", "Sabah.City"]));
+    // NORMALIZED, not the stored spelling. The two link states do not store the same string — a
+    // pending link holds the normalized building name while a confirmed one holds the upstream's
+    // display spelling — so a raw-string set would call "Komplex B" unclaimed while an account
+    // already had "komplex b" pending. Callers normalize the candidate before testing membership.
+    expect(taken).toEqual(new Set(["komplex b", "sabah.city"]));
   });
 
   it("is empty when nothing is linked", async () => {
@@ -69,12 +83,11 @@ describe("listTakenPartnerKeys", () => {
   });
 });
 
-// setAccountPartner writes THREE things that must agree: the link, the audit row that says who
-// wrote it (../tenant/partner-link-audit.ts), and the allowlist grant that says who is entitled to
-// it (./partner-allowlist.ts). Separately, each of the last two could fail with the link already
-// persisted — leaving exactly the "link with no audit row" / "link with no grant" states the two
-// modules exist to prevent.
-describe("setAccountPartner — link, grant and audit are one unit", () => {
+// setAccountPartner writes TWO things that must agree: the link and the audit row that says who
+// wrote it (../tenant/partner-link-audit.ts). Separately, a failing audit insert would leave the
+// link already persisted — exactly the "link with no audit row" state that module exists to
+// prevent. (The third leg, a PartnerAllowlist grant, is gone with the allowlist itself.)
+describe("setAccountPartner — link and audit are one unit", () => {
   let savedApiKey: string | undefined;
   let savedBaseUrl: string | undefined;
 
@@ -93,29 +106,42 @@ describe("setAccountPartner — link, grant and audit are one unit", () => {
   });
   afterAll(() => testPrisma.$disconnect());
 
-  it("records the matching grant when a SUPER_ADMIN assigns an UNGRANTED complex", async () => {
+  // CHANGED ON PURPOSE: this was "records the matching grant when a SUPER_ADMIN assigns an
+  // UNGRANTED complex". There is no allowlist to grant into any more, so the contract is now
+  // link + a durable audit row naming the actor, the account and the complex.
+  it("links the complex and writes a PartnerLinkAudit row attributed to the acting super admin", async () => {
     const ts = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const { c, acc } = await seedAccount(`grant-auto-${ts}`, "Acct", null);
+    const { c, acc } = await seedAccount(`assign-${ts}`, "Acct", null);
+    const admin = await makeUser("SUPER_ADMIN");
 
-    await setAccountPartner(testPrisma, su, acc.id, "Komplex B");
+    const out = await setAccountPartner(testPrisma, toSession(admin), acc.id, "Komplex B");
 
-    // Every live link now has a grant behind it, so the allowlist card is a complete inventory
-    // and grantPartnerToCompany can see this complex is spoken for.
-    const entry = await findAllowlistEntryByName(testPrisma, "Komplex B");
-    expect(entry?.companyId).toBe(c.id);
-    expect(entry?.partnerName).toBe("Komplex B");
-    expect(entry?.createdById).toBe(su.id);
+    expect(out.externalPartnerKey).toBe("Komplex B");
+    const audit = await testPrisma.partnerLinkAudit.findMany({ where: { accountId: acc.id } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({
+      action: "assign", partnerName: "Komplex B", accountName: "Acct",
+      companyId: c.id, actorId: admin.id, actorEmail: admin.email,
+    });
   });
 
-  it("does not duplicate a grant the account's own company already holds", async () => {
+  it("refuses a name whose building another LEAD is already working (PartnerNameHeldError)", async () => {
     const ts = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const { c, acc } = await seedAccount(`grant-dup-${ts}`, "Acct", null);
-    await testPrisma.partnerAllowlist.create({
-      data: { companyId: c.id, partnerName: "Komplex B", normalizedName: "komplex b" },
+    const { acc } = await seedAccount(`held-${ts}`, "Acct", null);
+    const rival = await makeTeam({ name: `rival-${ts}` });
+    const rivalUser = await makeUser("MEMBER", rival);
+    const stage = await testPrisma.stage.create({ data: { companyId: rival.companyId, teamId: rival.id, name: "New", order: 0 } });
+    await testPrisma.lead.create({
+      data: {
+        companyId: rival.companyId, teamId: rival.id, buildingKey: buildingKey("Komplex B"),
+        title: "t", contactName: "c", companyName: "Komplex B", stageId: stage.id, ownerId: rivalUser.id,
+      },
     });
-
-    await setAccountPartner(testPrisma, su, acc.id, "Komplex B");
-    expect(await testPrisma.partnerAllowlist.count()).toBe(1);
+    // Holder lives in a DIFFERENT company: findNameHolder is unscoped by design for the platform path.
+    await expect(setAccountPartner(testPrisma, await superAdmin(), acc.id, "Komplex B"))
+      .rejects.toThrow(PartnerNameHeldError);
+    expect((await testPrisma.account.findUnique({ where: { id: acc.id } }))?.externalPartnerKey).toBeNull();
+    expect(await testPrisma.partnerLinkAudit.count()).toBe(0);
   });
 
   it("names the complex in the CLEAR audit row — after the clear the column is the only other trace", async () => {
@@ -124,11 +150,11 @@ describe("setAccountPartner — link, grant and audit are one unit", () => {
     // clear row doesn't name it, nothing anywhere records what this account was reading.
     const { acc } = await seedAccount(`clear-name-${ts}`, "Acct", "Komplex B");
 
-    await setAccountPartner(testPrisma, su, acc.id, null);
+    await setAccountPartner(testPrisma, await superAdmin(), acc.id, null);
 
-    const [audit] = await testPrisma.accountActivity.findMany({ where: { accountId: acc.id } });
-    expect(audit.outcome).toBe("partner_link:clear");
-    expect(audit.body).toContain("Komplex B");
+    const [audit] = await testPrisma.partnerLinkAudit.findMany({ where: { accountId: acc.id } });
+    expect(audit.action).toBe("clear");
+    expect(audit.partnerName).toBe("Komplex B");
   });
 
   // A failing audit insert used to leave the link already written and return 500.
@@ -139,8 +165,8 @@ describe("setAccountPartner — link, grant and audit are one unit", () => {
         return (fn: (tx: PrismaClient) => Promise<unknown>) =>
           target.$transaction((tx) => fn(new Proxy(tx as PrismaClient, {
             get(txTarget, txProp, txReceiver) {
-              if (txProp !== "accountActivity") return Reflect.get(txTarget, txProp, txReceiver);
-              return new Proxy(txTarget.accountActivity, {
+              if (txProp !== "partnerLinkAudit") return Reflect.get(txTarget, txProp, txReceiver);
+              return new Proxy(txTarget.partnerLinkAudit, {
                 get(aTarget, aProp, aReceiver) {
                   if (aProp !== "create") return Reflect.get(aTarget, aProp, aReceiver);
                   return async () => { throw new Error("audit down"); };
@@ -152,27 +178,26 @@ describe("setAccountPartner — link, grant and audit are one unit", () => {
     }) as typeof testPrisma;
   }
 
-  it("rolls the ASSIGN back when the audit write fails — no link, and no grant either", async () => {
+  it("rolls the ASSIGN back when the audit write fails — no link", async () => {
     const ts = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const { acc } = await seedAccount(`atomic-assign-${ts}`, "Acct", null);
 
-    await expect(setAccountPartner(auditFailsOn(testPrisma), su, acc.id, "Komplex B"))
+    await expect(setAccountPartner(auditFailsOn(testPrisma), await superAdmin(), acc.id, "Komplex B"))
       .rejects.toThrow("audit down");
 
     const row = await testPrisma.account.findUnique({ where: { id: acc.id } });
     expect(row?.externalPartnerKey).toBeNull();
-    expect(await testPrisma.partnerAllowlist.count()).toBe(0);
   });
 
   it("rolls the CLEAR back when the audit write fails — the link is still there to clear again", async () => {
     const ts = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const { acc } = await seedAccount(`atomic-clear-${ts}`, "Acct", "Komplex B");
 
-    await expect(setAccountPartner(auditFailsOn(testPrisma), su, acc.id, null))
+    await expect(setAccountPartner(auditFailsOn(testPrisma), await superAdmin(), acc.id, null))
       .rejects.toThrow("audit down");
 
     const row = await testPrisma.account.findUnique({ where: { id: acc.id } });
     expect(row?.externalPartnerKey).toBe("Komplex B");
-    expect(await testPrisma.accountActivity.count()).toBe(0);
+    expect(await testPrisma.partnerLinkAudit.count()).toBe(0);
   });
 });

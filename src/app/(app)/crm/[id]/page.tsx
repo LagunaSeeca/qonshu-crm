@@ -1,13 +1,13 @@
 import { redirect, notFound } from "next/navigation";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
-import { getTenantContext } from "@/lib/tenant/context";
+import { isAdmin } from "@/lib/auth/guards";
 import { getLead } from "@/lib/tenant/leads";
 import { listStages } from "@/lib/tenant/stages";
 import { listActivities } from "@/lib/tenant/activities";
 import { listTasks } from "@/lib/tenant/tasks";
 import { listAttachments } from "@/lib/tenant/attachments";
-import { listUsers } from "@/lib/tenant/users";
+import { loadOwnerOptions, loadTeams } from "../../_lib/pickers";
 import { LeadDetail } from "./LeadDetail";
 
 export default async function LeadDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -15,18 +15,28 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   if (!user) redirect("/login");
 
   const { id } = await params;
-  const ctx = getTenantContext(user);
 
   const lead = await getLead(prisma, user, id);
   if (!lead) notFound();
 
-  const [stages, activities, tasks, attachments, members] = await Promise.all([
-    listStages(prisma, ctx),
+  const admin = isAdmin(user);
+  const teams = await loadTeams(user);
+  const [stages, activities, tasks, attachments, owners] = await Promise.all([
+    // The LEAD's own team pipeline: the only stages it may move between, and what makes the stage
+    // picker correct for the owner (who has no team of their own).
+    listStages(prisma, { companyId: lead.companyId, teamId: lead.teamId }),
     listActivities(prisma, user, id),
     listTasks(prisma, user, id),
     listAttachments(prisma, user, id),
-    listUsers(prisma, ctx),
+    // Only an admin can reassign, so only an admin needs the picker list.
+    admin ? loadOwnerOptions(user, teams) : Promise.resolve([]),
   ]);
+  // Activity authors can be anyone who touched the lead (including people the viewer cannot assign
+  // to), so their names are looked up directly rather than taken from the picker list.
+  const authorIds = [...new Set(activities.map((a) => a.authorId).filter((x): x is string => !!x))];
+  const authors = authorIds.length
+    ? await prisma.user.findMany({ where: { id: { in: authorIds } }, select: { id: true, name: true, email: true } })
+    : [];
 
   return (
     <LeadDetail
@@ -40,6 +50,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         priority: lead.priority,
         stageId: lead.stageId,
         lostReason: lead.lostReason ?? null,
+        ownerId: lead.ownerId,
       }}
       stages={stages.map((s) => ({ id: s.id, name: s.name, type: s.type }))}
       activities={activities.map((a) => ({
@@ -62,7 +73,10 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         size: att.size,
         mime: att.mime,
       }))}
-      members={members.map((m) => ({ id: m.id, name: m.name }))}
+      members={authors.map((m) => ({ id: m.id, name: m.name ?? m.email }))}
+      owners={owners}
+      isAdmin={admin}
+      groupOwners={user.role === "SUPER_ADMIN"}
     />
   );
 }

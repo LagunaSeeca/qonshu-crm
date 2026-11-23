@@ -1,10 +1,11 @@
 import type { PrismaClient, Account } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
-import { NotFoundError } from "@/lib/auth/guards";
-import { getAccount } from "./accounts";
+import { NotFoundError, can } from "@/lib/auth/guards";
+import { getAccount, listAccounts } from "./accounts";
 import { getDashboardStats, type DashboardStats } from "./dashboard";
 import { listCompanySettlements } from "./settlements";
-import { fetchPartnerStats } from "@/lib/partner-api/client";
+import { fetchAllPayments, type AllPayments } from "./partner-payments";
+import { getCompanyAnalytics } from "./company-analytics";
 import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
 import {
   InvalidApiKeyError,
@@ -12,8 +13,6 @@ import {
   PartnerApiUnavailableError,
 } from "@/lib/partner-api/errors";
 import type {
-  PartnerPayment,
-  PartnerStatsResponse,
   PaymentMethod,
   PaymentCategory,
 } from "@/lib/partner-api/schema";
@@ -30,9 +29,12 @@ export type PartnerRow = {
   accountName: string;
   paymentsCount: number; // LIVE — Partner API total_payments_count for the range
   paymentsAmount: number; // LIVE — Partner API total_payments_amount for the range
-  collected: number; // Settlement ledger (DB) — not sourceable from the Partner API
-  transferred: number; // Settlement ledger (DB) — not sourceable from the Partner API
-  owed: number; // Settlement ledger (DB) — not sourceable from the Partner API
+  // Settlement figures (live card takings + the company's own transfer ledger). PRESENT ONLY when
+  // the caller can("view_settlements"); for a MEMBER the keys are absent from the row entirely —
+  // not 0 — so they are absent from the JSON, the CSV and the RSC props. Same rule as `payments`.
+  collected?: number;
+  transferred?: number;
+  owed?: number;
 };
 
 // One row per individual payment, flattened across every configured account (paginated live).
@@ -70,18 +72,12 @@ export type Report = {
   accountName?: string;
   kpis: DashboardStats;
   partnerRows: PartnerRow[];
-  payments: PaymentRow[];
+  // Row-level payment detail (payer name, amount, method). PRESENT ONLY when the caller
+  // can("view_payment_detail"); for a MEMBER the key is absent from the object entirely, so it is
+  // absent from the JSON, the CSV and the RSC props. Never `[]` — absent means "not permitted".
+  payments?: PaymentRow[];
   accountStatuses: AccountReportStatus[];
 };
-
-// The Partner API caps page_size at 500. We cap the number of pages we will chase per account so
-// a pathological partner (hundreds of thousands of payments) can't blow up memory / the CSV or
-// hammer the upstream — 20 pages × 500 = up to 10,000 payment rows of detail per account. The
-// aggregate paymentsCount/paymentsAmount always reflect the FULL range (they come from the
-// summary totals, not the fetched pages), so the cap only ever truncates the row-level detail,
-// and we flag the account "partial" when it does.
-const PAGE_SIZE = 500;
-const MAX_PAGES = 20;
 
 // Map a per-account failure to a stable, secret-free reason.
 function skipReason(err: unknown): AccountReportReason {
@@ -91,51 +87,18 @@ function skipReason(err: unknown): AccountReportReason {
   return "error";
 }
 
-type AccountPayments = {
-  summary: PartnerStatsResponse;
-  payments: PartnerPayment[];
-  partial: boolean;
-};
-
-// Fetch EVERY payment for one account across the range. Page 1 (any error here rejects and the
-// account is skipped) yields the authoritative summary totals plus payments_page_count; the
-// remaining pages are fetched in parallel with Promise.allSettled so one bad page degrades the
-// detail to "partial" instead of losing the account. Pages beyond MAX_PAGES are intentionally
-// dropped and also mark the result partial.
-async function fetchAllPayments(params: {
-  baseUrl?: string;
-  apiKey: string;
-  partner: string;
-  dateFrom: string;
-  dateTo: string;
-}): Promise<AccountPayments> {
-  const first = await fetchPartnerStats({ ...params, page: 1, pageSize: PAGE_SIZE });
-  const totalPages = Math.max(1, Math.floor(first.payments_page_count || 1));
-  const cappedPages = Math.min(totalPages, MAX_PAGES);
-  const payments: PartnerPayment[] = [...first.payments];
-  let partial = totalPages > MAX_PAGES;
-
-  if (cappedPages > 1) {
-    const rest = await Promise.allSettled(
-      Array.from({ length: cappedPages - 1 }, (_, i) =>
-        fetchPartnerStats({ ...params, page: i + 2, pageSize: PAGE_SIZE }),
-      ),
-    );
-    for (const r of rest) {
-      if (r.status === "fulfilled") payments.push(...r.value.payments);
-      else partial = true;
-    }
-  }
-
-  return { summary: first, payments, partial };
-}
-
 export async function getReport(
   db: PrismaClient,
   user: SessionUser,
   opts: { range: { from: Date; to: Date }; label: string; accountId?: string },
 ): Promise<Report> {
-  const companyId = user.companyId!;
+  // Decided once, here in the service: the server page calls getReport directly, so a route-level
+  // gate would not protect the RSC props. Payment rows are never even assembled for a member.
+  const withDetail = can(user, "view_payment_detail");
+  // Same reasoning for the cash figures: listCompanySettlements asserts view_settlements, which a
+  // MEMBER does not hold, so calling it unconditionally made a member's whole report throw rather
+  // than render the general statistics they may see. Skipped, not merely hidden.
+  const withSettlements = can(user, "view_settlements");
   const scope: "ALL" | "PARTNER" = opts.accountId ? "PARTNER" : "ALL";
 
   // Access scoping is unchanged: PARTNER goes through the getAccount chokepoint (foreign id →
@@ -153,18 +116,27 @@ export async function getReport(
     // src/lib/platform/overview.ts. `id` breaks ties: equal updatedAt values would otherwise
     // hand the win to a different account run to run, moving rows between "counted" and
     // "duplicate partner" in the export for no reason.
-    accounts = await db.account.findMany({
-      where: { companyId }, orderBy: [{ updatedAt: "desc" }, { id: "asc" }],
-    });
+    // Scoped (member = managed accounts, team admin = team) and ordered updatedAt desc, id asc.
+    accounts = await listAccounts(db, user);
   }
 
   // The Partner API takes plain YYYY-MM-DD bounds.
   const dateFrom = opts.range.from.toISOString().slice(0, 10);
   const dateTo = opts.range.to.toISOString().slice(0, 10);
 
+  // ONE live fan-out for the whole report. getDashboardStats would otherwise run
+  // getCompanyAnalytics itself, and the row-level pass below used to page every partner a SECOND
+  // time for the identical partner+range — ~40 upstream requests per account per render. The
+  // analytics call keeps the per-account results (`includePayments`) and both consumers read them.
+  const analytics = await getCompanyAnalytics(db, user, opts.range, { includePayments: true });
   const [kpis, settlements] = await Promise.all([
-    getDashboardStats(db, user, opts.range),
-    listCompanySettlements(db, user),
+    getDashboardStats(db, user, opts.range, { analytics }),
+    // The settlement figures must cover the REPORTED range, not the current month: called without
+    // a period, listCompanySettlements defaults to currentSettlementPeriod(), which put this
+    // month's Collected/Transferred/Owed next to (say) Q1's payment columns in one unlabelled row.
+    withSettlements
+      ? listCompanySettlements(db, user, { from: opts.range.from, to: opts.range.to })
+      : null,
   ]);
 
   // Resolve credentials for every account up front, synchronously. An account with no partner
@@ -202,16 +174,31 @@ export async function getReport(
     resolved.push({ account: a, creds });
   }
 
-  const settled = await Promise.allSettled(
-    resolved.map(({ creds }) =>
-      fetchAllPayments({
-        baseUrl: creds.baseUrl,
-        apiKey: creds.apiKey,
-        partner: creds.partner,
-        dateFrom,
-        dateTo,
-      }),
-    ),
+  // Reuse the analytics fan-out's result for this account when it has one — same partner, same
+  // range, same pager, so the rows are identical and the request is pure duplication. The
+  // fallback stays for an account the analytics scope did not cover (a PARTNER scope report on an
+  // account outside that caller's company-wide read), and keeps allSettled's shape so the loop
+  // below — including per-error reasons and `partial` — is unchanged.
+  const cached = analytics.paymentsByAccount;
+  const settled: PromiseSettledResult<AllPayments>[] = await Promise.all(
+    resolved.map(async ({ account, creds }): Promise<PromiseSettledResult<AllPayments>> => {
+      const hit = cached?.get(account.id);
+      if (hit) return hit;
+      try {
+        return {
+          status: "fulfilled",
+          value: await fetchAllPayments({
+            baseUrl: creds.baseUrl,
+            apiKey: creds.apiKey,
+            partner: creds.partner,
+            dateFrom,
+            dateTo,
+          }),
+        };
+      } catch (reason) {
+        return { status: "rejected", reason };
+      }
+    }),
   );
 
   const liveByAccount = new Map<string, { count: number; amount: number }>();
@@ -239,6 +226,7 @@ export async function getReport(
       status: partial ? "partial" : "ok",
       reason: partial ? "partial" : undefined,
     });
+    if (!withDetail) return;
     for (const p of rows) {
       payments.push({
         accountId: a.id,
@@ -257,7 +245,7 @@ export async function getReport(
   // Partner rows preserve the existing per-account shape/order (every account is a row, even the
   // skipped ones). Live payment figures merge in where available; skipped/errored accounts show 0
   // and are explained by accountStatuses / the CSV "Skipped accounts" section — never faked.
-  const settlementByAccount = new Map(settlements.rows.map((r) => [r.accountId, r]));
+  const settlementByAccount = new Map((settlements?.rows ?? []).map((r) => [r.accountId, r]));
   const partnerRows: PartnerRow[] = accounts.map((a) => {
     const live = liveByAccount.get(a.id);
     const s = settlementByAccount.get(a.id);
@@ -266,13 +254,22 @@ export async function getReport(
       accountName: a.name,
       paymentsCount: live?.count ?? 0,
       paymentsAmount: live?.amount ?? 0,
-      collected: s?.collected ?? 0,
-      transferred: s?.transferred ?? 0,
-      owed: s?.owed ?? 0,
+      // Absent (not 0) for a caller without view_settlements — see PartnerRow.
+      ...(settlements
+        ? { collected: s?.collected ?? 0, transferred: s?.transferred ?? 0, owed: s?.owed ?? 0 }
+        : {}),
     };
   });
 
-  return { label: opts.label, scope, accountName, kpis, partnerRows, payments, accountStatuses: statuses };
+  return {
+    label: opts.label,
+    scope,
+    accountName,
+    kpis,
+    partnerRows,
+    ...(withDetail ? { payments } : {}),
+    accountStatuses: statuses,
+  };
 }
 
 function esc(v: string | number): string {
@@ -293,6 +290,10 @@ const REASON_LABEL: Record<AccountReportReason, string> = {
 
 export function toCsv(report: Report): string {
   const k = report.kpis;
+  // A report assembled for a caller without view_settlements carries no cash figures at all, so
+  // the export drops those rows/columns rather than printing blanks — an empty Collected cell
+  // reads as "collected nothing", which is a different (and false) statement.
+  const withSettlements = k.finance.collected !== undefined;
   const lines: string[] = [
     `Report,${esc(report.label)}`,
     `Scope,${esc(report.scope)}`,
@@ -305,27 +306,48 @@ export function toCsv(report: Report): string {
     `Overdue tasks,${esc(k.activity.overdueTasks)}`,
     `Partner accounts,${esc(k.partners.accounts)}`,
     `App users,${esc(k.partners.appUsers)}`,
+    `Active on app,${esc(k.partners.activeAppUsers)}`,
+    `Unique paying users,${esc(k.partners.uniquePayingUsers)}`,
     `Users engaged,${esc(k.partners.engagedUsers)}`,
     `Payments amount,${esc(k.partners.paymentsAmount)}`,
     `App installs,${esc(k.partners.appInstalls)}`,
     `Installs iOS,${esc(k.partners.installsIos)}`,
     `Installs Android,${esc(k.partners.installsAndroid)}`,
-    `Collected,${esc(k.finance.collected)}`,
-    `Transferred,${esc(k.finance.transferred)}`,
-    `Owed,${esc(k.finance.owed)}`,
+    ...(withSettlements
+      ? [
+          `Collected,${esc(k.finance.collected!)}`,
+          `Transferred,${esc(k.finance.transferred!)}`,
+          `Owed,${esc(k.finance.owed!)}`,
+        ]
+      : []),
     `Service fees outstanding,${esc(k.finance.serviceFeesOutstanding)}`,
     "",
-    "Partner,Payments,Payments Amount,Collected,Transferred,Owed",
+    withSettlements
+      ? "Partner,Payments,Payments Amount,Collected,Transferred,Owed"
+      : "Partner,Payments,Payments Amount",
     ...report.partnerRows.map((r) =>
-      [r.accountName, r.paymentsCount, r.paymentsAmount, r.collected, r.transferred, r.owed].map(esc).join(","),
-    ),
-    "",
-    "Payments",
-    "Account,Payment ID,User ID,User Name,Date,Amount,Method,Category",
-    ...report.payments.map((p) =>
-      [p.accountName, p.id, p.userId, p.userName, p.date, p.amount, p.method, p.category].map(esc).join(","),
+      [
+        r.accountName,
+        r.paymentsCount,
+        r.paymentsAmount,
+        ...(withSettlements ? [r.collected!, r.transferred!, r.owed!] : []),
+      ]
+        .map(esc)
+        .join(","),
     ),
   ];
+
+  // Payments section only exists when the report carries it (view_payment_detail holders).
+  if (report.payments) {
+    lines.push(
+      "",
+      "Payments",
+      "Account,Payment ID,User ID,User Name,Date,Amount,Method,Category",
+      ...report.payments.map((p) =>
+        [p.accountName, p.id, p.userId, p.userName, p.date, p.amount, p.method, p.category].map(esc).join(","),
+      ),
+    );
+  }
 
   // Report which accounts are missing/incomplete so the export never silently drops a partner.
   const flagged = report.accountStatuses.filter((s) => s.status !== "ok");

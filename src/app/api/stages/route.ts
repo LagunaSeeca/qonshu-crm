@@ -3,16 +3,21 @@ import { z } from "zod";
 import { prisma } from "@/db/client";
 import { getSessionUser } from "@/lib/auth/session";
 import { assertRole } from "@/lib/auth/guards";
-import { getTenantContext } from "@/lib/tenant/context";
 import { listStages, createStage } from "@/lib/tenant/stages";
+import { stageScopeFromRequest } from "./scope";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
 
-export async function GET() {
+// GET now takes `?teamId=` (see stageScopeFromRequest): a team admin or member always reads
+// their own team's pipeline, a SUPER_ADMIN reads any team's with `?teamId=<id>` or the org
+// default template with a bare `?teamId=`. Stages used to be company-wide, so this route
+// returned one list for everyone.
+export async function GET(req: NextRequest) {
   try {
     const user = await getSessionUser();
     if (!user) throw new UnauthorizedError();
     assertRole(user, ["COMPANY_ADMIN", "MEMBER"]);
-    return NextResponse.json(await listStages(prisma, getTenantContext(user)));
+    const scope = await stageScopeFromRequest(prisma, req, user);
+    return NextResponse.json(await listStages(prisma, scope));
   } catch (e) { return errorResponse(e); }
 }
 
@@ -22,7 +27,8 @@ export async function POST(req: NextRequest) {
     const user = await getSessionUser();
     if (!user) throw new UnauthorizedError();
     assertRole(user, ["COMPANY_ADMIN"]);
+    const scope = await stageScopeFromRequest(prisma, req, user);
     const data = Body.parse(await req.json());
-    return NextResponse.json(await createStage(prisma, getTenantContext(user), data), { status: 201 });
+    return NextResponse.json(await createStage(prisma, scope, data), { status: 201 });
   } catch (e) { return errorResponse(e); }
 }

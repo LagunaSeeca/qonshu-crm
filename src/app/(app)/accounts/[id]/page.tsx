@@ -1,13 +1,13 @@
 import { redirect, notFound } from "next/navigation";
 import { getSessionUser } from "@/lib/auth/session";
 import { prisma } from "@/db/client";
-import { getTenantContext } from "@/lib/tenant/context";
-import { getAccount } from "@/lib/tenant/accounts";
+import { can, isAdmin } from "@/lib/auth/guards";
+import { getAccount, listPartnerLogins } from "@/lib/tenant/accounts";
 import { listAccountActivities } from "@/lib/tenant/account-activities";
 import { listAccountTasks } from "@/lib/tenant/account-tasks";
 import { listAsks } from "@/lib/tenant/account-asks";
 import { listAccountAttachments } from "@/lib/tenant/account-attachments";
-import { listUsers } from "@/lib/tenant/users";
+import { loadOwnerOptions, loadTeams } from "../../_lib/pickers";
 import { AccountDetail } from "./AccountDetail";
 
 export default async function AccountDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -15,18 +15,27 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
   if (!user) redirect("/login");
 
   const { id } = await params;
-  const ctx = getTenantContext(user);
 
   const account = await getAccount(prisma, user, id);
   if (!account) notFound();
 
-  const [activities, tasks, asks, attachments, members] = await Promise.all([
+  const admin = isAdmin(user);
+  const teams = await loadTeams(user);
+  const [activities, tasks, asks, attachments, owners, partnerLogins] = await Promise.all([
     listAccountActivities(prisma, user, id),
     listAccountTasks(prisma, user, id),
     listAsks(prisma, user, id),
     listAccountAttachments(prisma, user, id),
-    listUsers(prisma, ctx),
+    // Only an admin can reassign, so only an admin needs the picker list.
+    admin ? loadOwnerOptions(user, teams) : Promise.resolve([]),
+    listPartnerLogins(prisma, user, id),
   ]);
+  // The manager (and activity authors) can be someone the viewer cannot assign to — a deactivated
+  // user, say — so names are looked up directly rather than taken from the picker list.
+  const nameIds = [...new Set([account.accountManagerId, ...activities.map((a) => a.authorId)].filter((x): x is string => !!x))];
+  const people = nameIds.length
+    ? await prisma.user.findMany({ where: { id: { in: nameIds } }, select: { id: true, name: true, email: true } })
+    : [];
 
   return (
     <AccountDetail
@@ -40,9 +49,14 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
         primaryContactName: account.primaryContactName ?? null,
         primaryContactEmail: account.primaryContactEmail ?? null,
         primaryContactPhone: account.primaryContactPhone ?? null,
-        externalPartnerKey: account.externalPartnerKey ?? null,
+        externalPartnerKey: account.partnerLinkConfirmedAt ? account.externalPartnerKey : null,
+        partnerLinkPending:
+          account.externalPartnerKey !== null && account.partnerLinkConfirmedAt === null,
       }}
-      members={members.map((m) => ({ id: m.id, name: m.name }))}
+      members={people.map((m) => ({ id: m.id, name: m.name ?? m.email }))}
+      owners={owners}
+      groupOwners={user.role === "SUPER_ADMIN"}
+      partnerLogins={partnerLogins}
       activities={activities.map((a) => ({
         id: a.id,
         kind: a.kind,
@@ -71,7 +85,11 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
         size: att.size,
         mime: att.mime,
       }))}
-      isAdmin={user.role === "COMPANY_ADMIN"}
+      isAdmin={admin}
+      canViewSettlements={can(user, "view_settlements")}
+      canWriteSettlements={can(user, "write_settlements")}
+      canSeePayments={can(user, "view_payment_detail")}
+      canManagePartnerAccess={admin}
     />
   );
 }

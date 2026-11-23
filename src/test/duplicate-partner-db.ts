@@ -14,6 +14,12 @@ import { testPrisma } from "./db";
 //
 // Everything except `account.findMany` passes straight through, methods bound to the real
 // delegate, so the surrounding query (groupBy counts, companies, leads) is genuinely the DB's.
+//
+// THE PHANTOM IS A CONFIRMED LINK, so `partnerLinkConfirmedAt` is injected alongside the key. A
+// link is now two columns (see src/lib/partner-api/credentials.ts): a key with no stamp is a
+// PENDING link that resolves to nothing, and a phantom of that shape would be skipped upstream of
+// the dedup as "not_configured" — making this helper quietly stop testing the thing it exists for.
+// The row it stands in for is a pre-constraint DUPLICATE that really did serve data.
 export function dbWithPhantomPartnerKey(accountId: string, partnerName: string): typeof testPrisma {
   return new Proxy(testPrisma, {
     get(target, prop, receiver) {
@@ -27,7 +33,11 @@ export function dbWithPhantomPartnerKey(accountId: string, partnerName: string):
           }
           return async (args: Parameters<typeof delegate.findMany>[0]) => {
             const rows = (await delegate.findMany(args)) as Account[];
-            return rows.map((r) => (r.id === accountId ? { ...r, externalPartnerKey: partnerName } : r));
+            return rows.map((r) =>
+              r.id === accountId
+                ? { ...r, externalPartnerKey: partnerName, partnerLinkConfirmedAt: r.partnerLinkConfirmedAt ?? new Date() }
+                : r,
+            );
           };
         },
       });

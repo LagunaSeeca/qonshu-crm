@@ -22,7 +22,7 @@ export default function Login() {
       setLoading(false);
     } else {
       // Hard navigation (not router.push): each role's landing is resolved by a server-side
-      // layout redirect (partner -> /analytics, super-admin -> /platform). A soft client
+      // layout redirect (partner -> /analytics; the owner now lands in this same app). A soft client
       // navigation that hits redirect() in the shared (app) layout lands the URL but renders
       // a blank tree — the bug behind "partner view is just blank". A full document load
       // follows the redirect correctly for every role.

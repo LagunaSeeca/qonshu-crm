@@ -36,6 +36,8 @@ import { Settlement } from "./Settlement";
 import { ServiceFees } from "./ServiceFees";
 import { Objects } from "./Objects";
 import { AccountFields } from "./AccountFields";
+import { PartnerAccess, type PartnerLogin } from "./PartnerAccess";
+import { OwnerSelectItems } from "@/components/OwnerSelectItems";
 
 type Activity = { id: string; kind: string; body: string; outcome: string | null; occurredAt: string; authorId: string | null };
 type Task = { id: string; title: string; dueDate: string | null; done: boolean };
@@ -53,7 +55,11 @@ type Account = {
   primaryContactName: string | null;
   primaryContactEmail: string | null;
   primaryContactPhone: string | null;
+  // The CONFIRMED partner link, shown read-only (the namespace is global, so only the owner
+  // may change it).
   externalPartnerKey: string | null;
+  // A link is recorded but not yet confirmed by the owner, so it grants nothing.
+  partnerLinkPending: boolean;
 };
 
 type Props = {
@@ -64,6 +70,20 @@ type Props = {
   asks: Ask[];
   attachments: Attachment[];
   isAdmin?: boolean;
+  /** `view_settlements`: without it the Settlement tab can only 403, so it is not rendered. */
+  canViewSettlements?: boolean;
+  /** `write_settlements`: add/edit/delete settlement entries. */
+  canWriteSettlements?: boolean;
+  /** `view_payment_detail`: without it the Analytics tab can only 403, so it is not rendered. */
+  canSeePayments?: boolean;
+  /** Admin-only: minting/revoking partner logins. */
+  canManagePartnerAccess?: boolean;
+  /** People the viewer may reassign the account to. Only used when `isAdmin`. */
+  owners?: { id: string; name: string; teamId: string | null; teamName: string | null }[];
+  /** The owner sees several teams, so the manager picker groups people by team. */
+  groupOwners?: boolean;
+  /** The building's representative logins (the "Partner access" card). */
+  partnerLogins?: PartnerLogin[];
 };
 
 const ACTIVITY_KINDS = ["NOTE", "CALL", "MEETING", "EMAIL"] as const;
@@ -105,7 +125,7 @@ function isOverdue(dueDate: string | null, done: boolean) {
 
 type TabKey = "activity" | "tasks" | "asks" | "files" | "settlement" | "serviceFees" | "objects" | "analytics";
 
-export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false }: Props) {
+export function AccountDetail({ account, members, activities, tasks, asks, attachments, isAdmin = false, canViewSettlements = true, canWriteSettlements = false, canSeePayments = true, canManagePartnerAccess = false, owners = [], groupOwners = false, partnerLogins = [] }: Props) {
   const router = useRouter();
 
   // Account fields
@@ -130,7 +150,8 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
         website: website || null,
         industry: industry || null,
         status,
-        accountManagerId: accountManagerId || undefined,
+        // Only admins may reassign; a manager's save must not carry an owner field at all.
+        accountManagerId: isAdmin ? accountManagerId || undefined : undefined,
         primaryContactName: primaryContactName || null,
         primaryContactEmail: primaryContactEmail || null,
         primaryContactPhone: primaryContactPhone || null,
@@ -138,7 +159,10 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
     });
     setSaving(false);
     if (!res.ok) {
-      toast.error("Failed to save. Please try again.");
+      // 409 building_claimed: another salesperson already registered that building. Show the
+      // server's message as-is; the form keeps the typed name so it can be edited and resubmitted.
+      const body = await res.json().catch(() => ({}));
+      toast.error(res.status === 409 && body?.message ? body.message : "Failed to save. Please try again.");
       return;
     }
     toast.success("Account saved.");
@@ -270,9 +294,10 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
   const [activeTab, setActiveTab] = useState<TabKey>("activity");
 
   const memberMap = Object.fromEntries(members.map((m) => [m.id, m.name]));
-  const managerItems = Object.fromEntries(members.map((m) => [m.id, m.name]));
+  // Names for the read-only view come from `members`; the admin picker lists `owners`.
+  const managerItems = Object.fromEntries([...members, ...owners].map((m) => [m.id, m.name]));
 
-  const tabs: { key: TabKey; label: string; disabled?: boolean }[] = [
+  const allTabs: { key: TabKey; label: string; disabled?: boolean }[] = [
     { key: "activity", label: "Activity" },
     { key: "tasks", label: "Tasks" },
     { key: "asks", label: "Asks" },
@@ -282,6 +307,9 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
     { key: "objects", label: "Objects" },
     { key: "analytics", label: "Analytics" },
   ];
+  const tabs = allTabs.filter(
+    (t) => (t.key !== "settlement" || canViewSettlements) && (t.key !== "analytics" || canSeePayments),
+  );
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -304,7 +332,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
           <CardContent className="pt-4">
             <form onSubmit={handleSave} className="space-y-4">
               <div className="space-y-1.5">
-                <Label htmlFor="accName">Name <span className="text-destructive">*</span></Label>
+                <Label htmlFor="accName">Building name <span className="text-destructive">*</span></Label>
                 <Input id="accName" value={name} onChange={(e) => setName(e.target.value)} required />
               </div>
 
@@ -321,19 +349,27 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
               {/* Read-only by design. The external partner namespace is shared across every
                   company on the platform, so re-pointing this account at another name would pull
                   another tenant's debt, payments and unit-level owner names/phones in here.
-                  Assigning/clearing is SUPER_ADMIN-only (Platform Admin -> Partner links), and
+                  Assigning/clearing is SUPER_ADMIN-only (Partner links), and
                   PATCH /api/accounts/[id] no longer accepts the field at all. */}
               <div className="space-y-1.5">
                 <Label>Analytics partner link</Label>
                 <div className="rounded-lg border border-input bg-muted/40 px-2.5 py-2 text-sm">
-                  {account.externalPartnerKey ? (
+                  {/* A PENDING link is reported as pending, never as a link. The key exists in the
+                      row the moment the building is named, but it authorizes nothing until the
+                      an admin confirms it — printing it as "linked" here is what would make someone
+                      believe the Analytics tab is merely broken. */}
+                  {account.partnerLinkPending ? (
+                    <span className="text-muted-foreground">
+                      Awaiting owner confirmation — no partner data yet
+                    </span>
+                  ) : account.externalPartnerKey ? (
                     <span className="font-medium">{account.externalPartnerKey}</span>
                   ) : (
                     <span className="text-muted-foreground">Not linked yet</span>
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Managed by a platform admin — this link decides which partner&apos;s app users,
+                  Confirmed by the owner — this link decides which partner&apos;s app users,
                   payments &amp; debt sync into this account.
                 </p>
               </div>
@@ -354,16 +390,20 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
 
               <div className="space-y-1.5">
                 <Label>Account Manager</Label>
-                <Select items={managerItems} value={accountManagerId} onValueChange={(val) => { if (val) setAccountManagerId(val); }}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Select manager…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {members.map((m) => (
-                      <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {isAdmin ? (
+                  <Select items={managerItems} value={accountManagerId} onValueChange={(val) => { if (val) setAccountManagerId(val); }}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select manager…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <OwnerSelectItems owners={owners} grouped={groupOwners} />
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="rounded-lg border border-input bg-muted/40 px-2.5 py-2 text-sm">
+                    {managerItems[accountManagerId] ?? <span className="text-muted-foreground">—</span>}
+                  </div>
+                )}
               </div>
 
               <Separator />
@@ -398,6 +438,8 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
         </Card>
 
         <AccountFields accountId={account.id} isAdmin={isAdmin} />
+
+        {canManagePartnerAccess && <PartnerAccess accountId={account.id} logins={partnerLogins} />}
         </div>
 
         {/* RIGHT: Manual tabs — all panels stay in DOM */}
@@ -729,9 +771,11 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
           </div>
 
           {/* Settlement panel */}
-          <div hidden={activeTab !== "settlement"}>
-            <Settlement accountId={account.id} isAdmin={isAdmin} />
-          </div>
+          {canViewSettlements && (
+            <div hidden={activeTab !== "settlement"}>
+              <Settlement accountId={account.id} canWrite={canWriteSettlements} />
+            </div>
+          )}
 
           {/* Service fees panel */}
           <div hidden={activeTab !== "serviceFees"}>
@@ -744,9 +788,11 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
           </div>
 
           {/* Analytics panel */}
-          <div hidden={activeTab !== "analytics"}>
-            <Analytics accountId={account.id} isAdmin={isAdmin} />
-          </div>
+          {canSeePayments && (
+            <div hidden={activeTab !== "analytics"}>
+              <Analytics accountId={account.id} isAdmin={isAdmin} />
+            </div>
+          )}
         </div>
       </div>
     </div>

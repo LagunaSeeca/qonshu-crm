@@ -13,13 +13,16 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     const user = await getSessionUser(); if (!user) throw new UnauthorizedError();
     const account = await getAccount(prisma, user, (await params).id);
     if (!account) return NextResponse.json({ error: "not_found" }, { status: 404 });
-    return NextResponse.json(maskAccount(account));
+    return NextResponse.json(maskAccount(account, user));
   } catch (e) { return errorResponse(e); }
 }
 const Patch = z.object({
   name: z.string().min(1).optional(), website: z.string().nullable().optional(),
   industry: z.string().nullable().optional(), status: z.enum(["ACTIVE","AT_RISK","CHURNED"]).optional(),
-  accountManagerId: z.string().optional(),
+  // min(1): an empty string is falsy, so updateAccount skips the reassignment branch, but `...data`
+  // still writes accountManagerId: "" and Postgres answers with an FK violation that surfaces as
+  // an unmapped 500. "Don't change the manager" is expressed by omitting the field.
+  accountManagerId: z.string().min(1).optional(),
   primaryContactName: z.string().nullable().optional(), primaryContactEmail: z.string().email().nullable().optional(),
   primaryContactPhone: z.string().nullable().optional(),
   // NO `externalPartnerKey` HERE, ON PURPOSE. The external partner namespace is GLOBAL (one
@@ -35,7 +38,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const d = Patch.parse(await req.json());
     const id = (await params).id;
     const account: Account = await updateAccount(prisma, user, id, d);
-    return NextResponse.json(maskAccount(account));
+    return NextResponse.json(maskAccount(account, user));
   } catch (e) { return errorResponse(e); }
 }
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {

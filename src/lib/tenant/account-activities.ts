@@ -5,28 +5,24 @@ import { getAccount } from "./accounts";
 import { isPartnerLinkOutcome } from "./partner-link-audit";
 
 export async function addAccountActivity(db: PrismaClient, user: SessionUser, accountId: string, args: { kind: AccountActivityKind; body: string; outcome?: string; occurredAt?: Date }): Promise<AccountActivity> {
-  // `partner_link:*` is the audit trail for who pointed this account at which external complex
-  // (./partner-link-audit.ts). This is the tenant-facing writer — free-text outcome, caller-chosen
-  // occurredAt — so without this the company being audited could plant rows indistinguishable
-  // from the platform admin's. The prefix is reserved to recordPartnerLinkChange.
+  // `partner_link:*` marked the partner-link audit trail while it lived in this table. The trail
+  // now has its own durable table (./partner-link-audit.ts), but the HISTORICAL rows are still
+  // here and this is the tenant-facing writer — free-text outcome, caller-chosen occurredAt — so
+  // the prefix stays reserved rather than letting a tenant plant rows indistinguishable from them.
   if (isPartnerLinkOutcome(args.outcome)) throw new ForbiddenError("reserved outcome prefix");
   const account = await getAccount(db, user, accountId);
   if (!account) throw new NotFoundError("account not in scope");
-  return db.accountActivity.create({ data: { companyId: user.companyId!, accountId, authorId: user.id, kind: args.kind, body: args.body, outcome: args.outcome, occurredAt: args.occurredAt ?? new Date() } });
+  return db.accountActivity.create({ data: { companyId: account.companyId, accountId, authorId: user.id, kind: args.kind, body: args.body, outcome: args.outcome, occurredAt: args.occurredAt ?? new Date() } });
 }
 
+// ONE PATH, SCOPED. The unscoped SUPER_ADMIN branch that used to sit here existed for exactly one
+// reason: the partner-link audit trail was written into this table, and a super admin (companyId
+// null) could not read the half of it that they themselves wrote. The trail has moved to
+// PartnerLinkAudit, which is read on the platform side, so the special case was dead weight — and
+// an unscoped `findUnique` + company-wide read is not something to leave lying in a tenant module.
+// getAccount is now the only account resolver here, for every role.
 export async function listAccountActivities(db: PrismaClient, user: SessionUser, accountId: string): Promise<AccountActivity[]> {
-  // A SUPER_ADMIN has companyId: null, so the tenant-scoped path below throws for them — which
-  // left the partner-link audit trail unreadable by the one role that writes half of it. Resolve
-  // the account UNSCOPED and read that account's own company's rows: the same sanctioned
-  // cross-tenant read as src/lib/platform/overview.ts, and read-only — addAccountActivity above
-  // stays COMPANY_ADMIN/MEMBER, so a platform admin can never write a tenant's timeline.
-  if (user.role === "SUPER_ADMIN") {
-    const owner = await db.account.findUnique({ where: { id: accountId }, select: { companyId: true } });
-    if (!owner) return [];
-    return db.accountActivity.findMany({ where: { companyId: owner.companyId, accountId }, orderBy: { occurredAt: "desc" } });
-  }
   const account = await getAccount(db, user, accountId);
   if (!account) return [];
-  return db.accountActivity.findMany({ where: { companyId: user.companyId!, accountId }, orderBy: { occurredAt: "desc" } });
+  return db.accountActivity.findMany({ where: { companyId: account.companyId, accountId }, orderBy: { occurredAt: "desc" } });
 }

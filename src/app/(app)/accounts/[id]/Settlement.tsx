@@ -25,6 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatMoney } from "@/lib/money";
 
 type EntryType = "COLLECTED" | "TRANSFER";
 type EntryMethod = "CASH" | "BANK_TRANSFER" | "MANUAL";
@@ -52,12 +53,10 @@ type SettlementData = {
 
 type Props = {
   accountId: string;
-  isAdmin?: boolean;
+  /** Whether the viewer holds `write_settlements` (add/edit/delete entries). */
+  canWrite?: boolean;
   initialData?: SettlementData;
 };
-
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 const TYPE_LABELS: Record<string, string> = { COLLECTED: "Collected", TRANSFER: "Transfer" };
 const METHOD_LABELS: Record<string, string> = { CASH: "Cash", BANK_TRANSFER: "Bank account", MANUAL: "Manual" };
@@ -77,7 +76,7 @@ function TypeBadge({ type }: { type: EntryType }) {
   );
 }
 
-export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
+export function Settlement({ accountId, canWrite = false, initialData }: Props) {
   const router = useRouter();
 
   const [data, setData] = useState<SettlementData | null>(initialData ?? null);
@@ -178,19 +177,19 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
             <ArrowDownCircle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(data?.collected ?? 0)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(data?.collected ?? 0)}</div>
             <div className="mt-3 space-y-1 text-xs text-muted-foreground">
               <div className="flex items-center justify-between">
                 <span>Cash</span>
-                <span className="tabular-nums">{money(data?.collectedByMethod?.CASH ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.collectedByMethod?.CASH ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Bank account</span>
-                <span className="tabular-nums">{money(data?.collectedByMethod?.BANK_TRANSFER ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.collectedByMethod?.BANK_TRANSFER ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Manual</span>
-                <span className="tabular-nums">{money(data?.collectedByMethod?.MANUAL ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.collectedByMethod?.MANUAL ?? 0)}</span>
               </div>
             </div>
           </CardContent>
@@ -201,19 +200,19 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
             <ArrowUpCircle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(data?.transferred ?? 0)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(data?.transferred ?? 0)}</div>
             <div className="mt-3 space-y-1 text-xs text-muted-foreground">
               <div className="flex items-center justify-between">
                 <span>Bank transfer</span>
-                <span className="tabular-nums">{money(data?.transferredByMethod?.BANK_TRANSFER ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.transferredByMethod?.BANK_TRANSFER ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Cash</span>
-                <span className="tabular-nums">{money(data?.transferredByMethod?.CASH ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.transferredByMethod?.CASH ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span>Manual</span>
-                <span className="tabular-nums">{money(data?.transferredByMethod?.MANUAL ?? 0)}</span>
+                <span className="tabular-nums">{formatMoney(data?.transferredByMethod?.MANUAL ?? 0)}</span>
               </div>
             </div>
           </CardContent>
@@ -224,14 +223,14 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
             <Landmark className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold tabular-nums text-foreground">{money(data?.owed ?? 0)}</div>
+            <div className="text-2xl font-bold tabular-nums text-foreground">{formatMoney(data?.owed ?? 0)}</div>
           </CardContent>
         </Card>
       </div>
       )}
 
       {/* Add entry (admin only) */}
-      {isAdmin && (
+      {canWrite && (
         <Card>
           <CardHeader className="border-b border-border pb-4">
             <CardTitle className="text-base font-semibold">Add Entry</CardTitle>
@@ -334,7 +333,7 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
                       <TableHead className="font-semibold text-foreground">Method</TableHead>
                       <TableHead className="text-right font-semibold text-foreground">Amount</TableHead>
                       <TableHead className="font-semibold text-foreground">Note</TableHead>
-                      {isAdmin && <TableHead className="w-10" />}
+                      {canWrite && <TableHead className="w-10" />}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -355,9 +354,9 @@ export function Settlement({ accountId, isAdmin = false, initialData }: Props) {
                                 ? "Manual"
                                 : "—"}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums font-medium">{money(entry.amount)}</TableCell>
+                        <TableCell className="text-right tabular-nums font-medium">{formatMoney(entry.amount)}</TableCell>
                         <TableCell className="text-foreground">{entry.note ?? "—"}</TableCell>
-                        {isAdmin && (
+                        {canWrite && (
                           <TableCell>
                             <Button
                               type="button"

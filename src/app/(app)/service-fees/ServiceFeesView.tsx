@@ -14,6 +14,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { formatMoney } from "@/lib/money";
 
 export type ServiceFeeRow = { accountId: string; accountName: string; billed: number; paid: number; outstanding: number };
 export type ServiceFeeSummary = {
@@ -24,9 +25,6 @@ export type ServiceFeeSummary = {
 // Partners can't open account detail (/accounts/[id] bounces them back), so for them the row
 // name is plain text instead of a dead link that would blank on click.
 type Props = { initialData: ServiceFeeSummary; isPartner?: boolean };
-
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 export function ServiceFeesView({ initialData, isPartner = false }: Props) {
   const [data, setData] = useState<ServiceFeeSummary>(initialData);
@@ -65,7 +63,7 @@ export function ServiceFeesView({ initialData, isPartner = false }: Props) {
             <ReceiptText className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(totals.billed)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(totals.billed)}</div>
           </CardContent>
         </Card>
         <Card size="sm">
@@ -74,7 +72,7 @@ export function ServiceFeesView({ initialData, isPartner = false }: Props) {
             <CheckCircle2 className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(totals.paid)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(totals.paid)}</div>
           </CardContent>
         </Card>
         <Card size="sm">
@@ -83,7 +81,7 @@ export function ServiceFeesView({ initialData, isPartner = false }: Props) {
             <Circle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold tabular-nums text-foreground">{money(totals.outstanding)}</div>
+            <div className="text-2xl font-bold tabular-nums text-foreground">{formatMoney(totals.outstanding)}</div>
           </CardContent>
         </Card>
       </div>
@@ -136,9 +134,9 @@ export function ServiceFeesView({ initialData, isPartner = false }: Props) {
                       </Link>
                     )}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{money(r.billed)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(r.paid)}</TableCell>
-                  <TableCell className="text-right tabular-nums font-medium">{money(r.outstanding)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatMoney(r.billed)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatMoney(r.paid)}</TableCell>
+                  <TableCell className="text-right tabular-nums font-medium">{formatMoney(r.outstanding)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

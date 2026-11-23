@@ -3,7 +3,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { mkdtempSync } from "fs";
 import { testPrisma, resetDb } from "@/test/db";
-import { seedDefaultStages, listStages } from "./stages";
+import { makeTeam, makeUser, su } from "@/test/fixtures";
+import { seedTeamStages, listStages } from "./stages";
 import { createLead } from "./leads";
 import { addAttachment, listAttachments, getAttachmentForDownload } from "./attachments";
 import type { SessionUser } from "@/lib/auth/guards";
@@ -11,12 +12,13 @@ import type { SessionUser } from "@/lib/auth/guards";
 beforeAll(() => { process.env.UPLOADS_DIR = mkdtempSync(join(tmpdir(), "qonshu-up-")); });
 
 async function lead() {
-  const c = await testPrisma.company.create({ data: { name: "A", slug: "a-at" } });
-  await seedDefaultStages(testPrisma, c.id);
-  const stage = (await listStages(testPrisma, { companyId: c.id }))[0];
-  const u = await testPrisma.user.create({ data: { companyId: c.id, email: "u@a.com", passwordHash: "x", name: "U", role: "MEMBER" } });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "MEMBER" };
-  return { user, l: await createLead(testPrisma, user, { title: "D", contactName: "C", stageId: stage.id }) };
+  const team = await makeTeam();
+  const c = { id: team.companyId };
+  await seedTeamStages(testPrisma, c.id, team.id);
+  const stage = (await listStages(testPrisma, { companyId: c.id, teamId: team.id }))[0];
+  const u = await makeUser("MEMBER", team);
+  const user: SessionUser = su(u);
+  return { user, l: await createLead(testPrisma, user, { title: "D", contactName: "C", stageId: stage.id, companyName: "Bldg" }) };
 }
 
 describe("attachments", () => {
@@ -43,9 +45,8 @@ describe("attachments", () => {
     const A = await lead();
     const bytes = Buffer.from("secret");
     const att = await addAttachment(testPrisma, A.user, A.l.id, { filename: "s.txt", mime: "text/plain", bytes });
-    const c2 = await testPrisma.company.create({ data: { name: "B", slug: "b-at2" } });
-    const u2 = await testPrisma.user.create({ data: { companyId: c2.id, email: "u2@b.com", passwordHash: "x", name: "U2", role: "MEMBER" } });
-    const other = { id: u2.id, companyId: c2.id, role: "MEMBER" as const };
+    const u2 = await makeUser("MEMBER", await makeTeam());
+    const other = su(u2);
     expect(await getAttachmentForDownload(testPrisma, other, att.id)).toBeNull();
   });
 });

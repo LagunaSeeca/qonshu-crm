@@ -15,9 +15,9 @@ const ACTIVITY_KINDS = ["NOTE", "CALL", "MEETING", "EMAIL"] as const satisfies r
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getSessionUser(); if (!user) throw new UnauthorizedError();
-    // SUPER_ADMIN reads only (listAccountActivities resolves the account cross-tenant for them):
-    // the partner-link audit rows live in this timeline and the platform admin who writes them
-    // must be able to read them back. They stay OUT of POST below.
+    // assertRole admits a SUPER_ADMIN wherever COMPANY_ADMIN is listed (listAccountActivities
+    // resolves the account cross-tenant for them). It matters here: the partner-link audit rows
+    // live in this timeline and the platform admin who writes them must be able to read them back.
     assertRole(user, ["COMPANY_ADMIN", "MEMBER", "SUPER_ADMIN"]);
     return NextResponse.json(await listAccountActivities(prisma, user, (await params).id));
   } catch (e) { return errorResponse(e); }
@@ -31,6 +31,8 @@ const Body = z.object({ kind: z.enum(ACTIVITY_KINDS), body: z.string().min(1), o
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getSessionUser(); if (!user) throw new UnauthorizedError();
+    // A SUPER_ADMIN passes this too (assertRole: "a super admin can do everything an admin can"),
+    // so the owner may log activities. The `partner_link:` refusal in Body applies to them as well.
     assertRole(user, ["COMPANY_ADMIN", "MEMBER"]);
     const d = Body.parse(await req.json());
     const act = await addAccountActivity(prisma, user, (await params).id, { ...d, occurredAt: d.occurredAt ? new Date(d.occurredAt) : undefined });

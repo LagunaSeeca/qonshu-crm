@@ -14,17 +14,32 @@ import {
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { OwnerSelectItems } from "@/components/OwnerSelectItems";
 import {
   Select,
   SelectContent,
-  SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 
-type Member = { id: string; name: string | null; email: string };
+type Owner = { id: string; name: string; teamId: string | null; teamName: string | null };
 
-export function AccountCreate({ members, isAdmin = false }: { members: Member[]; isAdmin?: boolean }) {
+type Props = {
+  /** People the viewer may assign the account to (listAssignableUsers). Unused for a MEMBER. */
+  owners?: Owner[];
+  currentUserId: string;
+  role: string;
+  /** Admin-only: a MEMBER minting a partner login is refused by the server. */
+  canGrantPartnerAccess?: boolean;
+};
+
+export function AccountCreate({ owners = [], currentUserId, role, canGrantPartnerAccess = false }: Props) {
+  const isSuper = role === "SUPER_ADMIN";
+  // A member always manages what they create — no picker at all (the server ignores a supplied one).
+  const showManagerPicker = role !== "MEMBER";
+  // Default to the CURRENT user, never owners[0]: that is usually the admin, and under owner-only
+  // visibility a member's own new account would vanish from their view. The owner has no default.
+  const defaultManager = isSuper ? "" : currentUserId;
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -32,14 +47,14 @@ export function AccountCreate({ members, isAdmin = false }: { members: Member[];
   const [industry, setIndustry] = useState("");
   const [primaryContactName, setPrimaryContactName] = useState("");
   const [primaryContactEmail, setPrimaryContactEmail] = useState("");
-  const [accountManagerId, setAccountManagerId] = useState(members[0]?.id ?? "");
+  const [accountManagerId, setAccountManagerId] = useState(defaultManager);
   const [showPartnerLogin, setShowPartnerLogin] = useState(false);
   const [partnerName, setPartnerName] = useState("");
   const [partnerEmail, setPartnerEmail] = useState("");
   const [partnerPassword, setPartnerPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const managerItems = Object.fromEntries(members.map((m) => [m.id, m.name ?? m.email]));
+  const managerItems = Object.fromEntries(owners.map((m) => [m.id, m.name]));
 
   function reset() {
     setName("");
@@ -47,7 +62,7 @@ export function AccountCreate({ members, isAdmin = false }: { members: Member[];
     setIndustry("");
     setPrimaryContactName("");
     setPrimaryContactEmail("");
-    setAccountManagerId(members[0]?.id ?? "");
+    setAccountManagerId(defaultManager);
     setShowPartnerLogin(false);
     setPartnerName("");
     setPartnerEmail("");
@@ -63,6 +78,10 @@ export function AccountCreate({ members, isAdmin = false }: { members: Member[];
       toast.error("Partner login password must be at least 8 characters");
       return;
     }
+    if (showManagerPicker && !accountManagerId) {
+      toast.error("Choose who manages this account");
+      return;
+    }
     setLoading(true);
     try {
       const r = await fetch("/api/accounts", {
@@ -74,8 +93,8 @@ export function AccountCreate({ members, isAdmin = false }: { members: Member[];
           industry: industry || undefined,
           primaryContactName: primaryContactName || undefined,
           primaryContactEmail: primaryContactEmail || undefined,
-          accountManagerId: accountManagerId || undefined,
-          partnerLogin: showPartnerLogin && partnerLoginFilled
+          accountManagerId: showManagerPicker ? accountManagerId : undefined,
+          partnerLogin: canGrantPartnerAccess && showPartnerLogin && partnerLoginFilled
             ? { name: partnerName || name, email: partnerEmail, password: partnerPassword }
             : undefined,
         }),
@@ -87,7 +106,10 @@ export function AccountCreate({ members, isAdmin = false }: { members: Member[];
         setOpen(false);
         router.refresh();
       } else if (r.status === 409) {
-        toast.error("That login email is already in use");
+        // building_claimed: another salesperson already registered this building. Show the
+        // server's message verbatim and keep the dialog open so the name can be edited.
+        const body = await r.json().catch(() => ({}));
+        toast.error(body?.error === "building_claimed" && body?.message ? body.message : (body?.message ?? "That login email is already in use"));
       } else {
         const body = await r.json().catch(() => ({}));
         toast.error(body?.error ?? "Failed to create account");
@@ -109,11 +131,11 @@ export function AccountCreate({ members, isAdmin = false }: { members: Member[];
         <form onSubmit={submit} id="account-create-form" className="space-y-4 pt-2">
           <div className="space-y-1.5">
             <Label htmlFor="ac-name">
-              Name <span className="text-destructive">*</span>
+              Building name <span className="text-destructive">*</span>
             </Label>
             <Input
               id="ac-name"
-              placeholder="Account name"
+              placeholder="Residential complex / building"
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
@@ -137,18 +159,13 @@ export function AccountCreate({ members, isAdmin = false }: { members: Member[];
               onChange={(e) => setIndustry(e.target.value)}
             />
           </div>
-          {/* Read-only by design. The external partner namespace is shared across every
-              company on the platform, so choosing a partner here would let one tenant pull
-              another's debt, payments and unit-level owner names/phones — assignment is
-              SUPER_ADMIN-only now (Platform Admin -> Partner links). A new account auto-links
-              itself ONLY when its name matches a complex a platform admin has granted to THIS
-              company on the allowlist — the name alone carries no authority, since it is free
-              text this form supplies. */}
+          {/* Read-only by design. The external partner namespace is global, so choosing a partner
+              here would let one team pull another's debt, payments and unit-level owner
+              names/phones — assignment is SUPER_ADMIN-only (Partner links). */}
           <div className="space-y-1.5">
             <Label>Analytics partner link</Label>
             <p className="rounded-lg border border-input bg-muted/40 px-2.5 py-2 text-sm text-muted-foreground">
-              Not linked yet — linked automatically only if this company has been granted a
-              matching complex; otherwise a platform admin assigns it.
+              Not linked yet — the owner links the external partner after the account exists.
             </p>
           </div>
           <div className="space-y-1.5">
@@ -170,20 +187,23 @@ export function AccountCreate({ members, isAdmin = false }: { members: Member[];
               onChange={(e) => setPrimaryContactEmail(e.target.value)}
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="ac-manager">Account manager</Label>
-            <Select items={managerItems} value={accountManagerId} onValueChange={(v) => { if (v !== null) setAccountManagerId(v); }}>
-              <SelectTrigger id="ac-manager">
-                <SelectValue placeholder="Select manager" />
-              </SelectTrigger>
-              <SelectContent>
-                {members.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>{m.name ?? m.email}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {showManagerPicker && (
+            <div className="space-y-1.5">
+              <Label htmlFor="ac-manager">
+                Account manager {isSuper && <span className="text-destructive">*</span>}
+              </Label>
+              <Select items={managerItems} value={accountManagerId} onValueChange={(v) => { if (v !== null) setAccountManagerId(v); }}>
+                <SelectTrigger id="ac-manager">
+                  <SelectValue placeholder={isSuper ? "Choose a manager" : "Select manager"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <OwnerSelectItems owners={owners} grouped={isSuper} />
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
+          {canGrantPartnerAccess && (
           <div className="border-t border-border pt-3">
             <button
               type="button"
@@ -237,6 +257,7 @@ export function AccountCreate({ members, isAdmin = false }: { members: Member[];
               </div>
             )}
           </div>
+          )}
         </form>
         <DialogFooter className="pt-2">
           <Button variant="outline" type="button" onClick={() => setOpen(false)} disabled={loading}>

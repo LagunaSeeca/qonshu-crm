@@ -151,24 +151,31 @@ function Column({ stage, leads }: { stage: Stage; leads: Lead[] }) {
 export function moveResultToast(
   targetStage: Pick<Stage, "type"> | undefined,
   autoConverted: boolean,
+  reason?: string,
 ): { variant: "success" | "warning"; message: string } | null {
   if (targetStage?.type !== "WON") return null;
-  return autoConverted
-    ? { variant: "success", message: "Lead marked Won — account created." }
-    : {
-        variant: "warning",
-        message: 'Lead marked Won, but the account could not be created automatically. Use "Convert to Account" to retry.',
-      };
+  if (autoConverted) return { variant: "success", message: "Lead marked Won — account created." };
+  // `building_claimed`: the building is already held by someone else, so retrying as-is will fail
+  // too — point at fixing the building name first. Anything else is a generic failure.
+  return {
+    variant: "warning",
+    message:
+      reason === "building_claimed"
+        ? 'Lead marked Won, but no account was created: another salesperson already has this building. Fix the building name, then use "Convert to Account".'
+        : 'Lead marked Won, but the account could not be created automatically. Use "Convert to Account" to retry.',
+  };
 }
 
 interface BoardProps {
   stages: Stage[];
   leads: Lead[];
   isAdmin?: boolean;
+  /** Where the "Stages" link goes; the owner passes one carrying the chosen `?teamId=`. */
+  stagesHref?: string;
   searchQuery?: string;
 }
 
-export function Board({ stages, leads, isAdmin, searchQuery }: BoardProps) {
+export function Board({ stages, leads, isAdmin, stagesHref = "/crm/stages", searchQuery }: BoardProps) {
   const router = useRouter();
   const [search, setSearch] = React.useState(searchQuery ?? "");
   // Require ~8px of pointer movement before a drag activates, so a plain click on a
@@ -200,10 +207,11 @@ export function Board({ stages, leads, isAdmin, searchQuery }: BoardProps) {
     }
     // Body is `{ lead, autoConverted }` — see moveResultToast above for why this matters for
     // Won moves specifically.
-    const { autoConverted } = (await res.json()) as { autoConverted: boolean };
+    const { autoConverted, reason } = (await res.json()) as { autoConverted: boolean; reason?: string };
     const outcome = moveResultToast(
       stages.find((s) => s.id === toStageId),
       autoConverted,
+      reason,
     );
     if (outcome?.variant === "success") toast.success(outcome.message);
     else if (outcome?.variant === "warning") toast.warning(outcome.message);
@@ -243,7 +251,7 @@ export function Board({ stages, leads, isAdmin, searchQuery }: BoardProps) {
         <div className="ml-auto flex items-center gap-2">
           {isAdmin && (
             <Link
-              href="/crm/stages"
+              href={stagesHref}
               className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "text-muted-foreground")}
             >
               <Settings2 className="h-4 w-4 mr-1.5" />
@@ -274,7 +282,7 @@ export function Board({ stages, leads, isAdmin, searchQuery }: BoardProps) {
             <div className="flex-1 flex flex-col items-center justify-center py-16 text-center">
               <p className="text-muted-foreground text-sm mb-3">No stages configured yet.</p>
               {isAdmin && (
-                <Link href="/crm/stages" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+                <Link href={stagesHref} className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
                   Configure stages
                 </Link>
               )}

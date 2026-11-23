@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Landmark, ArrowDownCircle, ArrowUpCircle } from "lucide-react";
 import { getSessionUser } from "@/lib/auth/session";
+import { can } from "@/lib/auth/guards";
 import { prisma } from "@/db/client";
 import { listCompanySettlements } from "@/lib/tenant/settlements";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,13 +16,14 @@ import {
 } from "@/components/ui/table";
 import { AddSettlementEntry } from "./AddSettlementEntry";
 import { PageHeader } from "@/components/PageHeader";
-
-const money = (n: number) =>
-  n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+import { formatMoney } from "@/lib/money";
 
 export default async function SettlementsPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
+
+  // A MEMBER can reach this by bookmark/history/KPI link; bounce instead of letting the guard throw a 500.
+  if (!can(user, "view_settlements")) redirect("/dashboard");
 
   const { totals, rows } = await listCompanySettlements(prisma, user);
 
@@ -31,7 +33,7 @@ export default async function SettlementsPage() {
         title="Settlements"
         subtitle="Company-wide bank-balance and cash-transfer registry"
         action={
-          user.role === "COMPANY_ADMIN" && (
+          can(user, "write_settlements") && (
             <AddSettlementEntry accounts={rows.map((r) => ({ id: r.accountId, name: r.accountName }))} />
           )
         }
@@ -45,7 +47,7 @@ export default async function SettlementsPage() {
             <ArrowDownCircle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(totals.collected)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(totals.collected)}</div>
           </CardContent>
         </Card>
         <Card size="sm">
@@ -54,7 +56,7 @@ export default async function SettlementsPage() {
             <ArrowUpCircle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold tabular-nums">{money(totals.transferred)}</div>
+            <div className="text-xl font-bold tabular-nums">{formatMoney(totals.transferred)}</div>
           </CardContent>
         </Card>
         <Card size="sm">
@@ -63,7 +65,7 @@ export default async function SettlementsPage() {
             <Landmark className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold tabular-nums text-foreground">{money(totals.owed)}</div>
+            <div className="text-2xl font-bold tabular-nums text-foreground">{formatMoney(totals.owed)}</div>
           </CardContent>
         </Card>
       </div>
@@ -103,9 +105,9 @@ export default async function SettlementsPage() {
                       </Link>
                     )}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{money(r.collected)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(r.transferred)}</TableCell>
-                  <TableCell className="text-right tabular-nums font-medium">{money(r.owed)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatMoney(r.collected)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatMoney(r.transferred)}</TableCell>
+                  <TableCell className="text-right tabular-nums font-medium">{formatMoney(r.owed)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

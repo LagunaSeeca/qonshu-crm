@@ -5,7 +5,7 @@ import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
 import { dbWithPhantomPartnerKey } from "@/test/duplicate-partner-db";
-import type { SessionUser } from "@/lib/auth/guards";
+import { makeTeam, makeUser, su, uniq, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 
 // Reports are a LIVE read of the external Partner API (paginated payments), so the client is
 // mocked here — a real network call would make these tests flaky and slow. The DB is still used
@@ -18,21 +18,31 @@ const SHARED_API_KEY = "test-shared-partner-api-key";
 
 // "Configured" now means only a partner NAME — the account goes live off the shared
 // PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
-async function setup(slug: string, opts?: { configured?: boolean; partnerKey?: string }) {
-  const c = await testPrisma.company.create({ data: { name: "A", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
-  const acc = await testPrisma.account.create({
+// Accounts need a teamId + buildingKey; both follow the manager so the row is consistent with the
+// team wiring. `partnerKey` omitted = a not-linked account; supplied = a CONFIRMED link, which
+// is what these fan-outs are about (a PENDING link is skipped as not_configured — see
+// ./partner-link-approval.test.ts).
+async function makeAccount(managerId: string, name: string, partnerKey?: string) {
+  const m = await testPrisma.user.findUniqueOrThrow({ where: { id: managerId } });
+  return testPrisma.account.create({
     data: {
-      companyId: c.id,
-      name: "Partner, Inc",
-      accountManagerId: u.id,
-      ...(opts?.configured ? { externalPartnerKey: opts.partnerKey ?? `${slug}-p1` } : {}),
+      companyId: m.companyId!, teamId: m.teamId!, buildingKey: buildingKey(`${name}-${uniq()}`),
+      name, accountManagerId: managerId,
+      ...(partnerKey ? confirmedPartnerLink(partnerKey) : {}),
     },
   });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
-  return { c, u, acc, user };
+}
+
+async function mkAdmin() {
+  const team = await makeTeam();
+  const u = await makeUser("COMPANY_ADMIN", team);
+  return { team, u, user: su(u) };
+}
+
+async function setup(slug: string, opts?: { configured?: boolean; partnerKey?: string }) {
+  const { team, u, user } = await mkAdmin();
+  const acc = await makeAccount(u.id, "Partner, Inc", opts?.configured ? (opts.partnerKey ?? `${slug}-p1`) : undefined);
+  return { c: { id: team.companyId }, u, acc, user };
 }
 
 describe("reports (live partner API)", () => {
@@ -77,7 +87,7 @@ describe("reports (live partner API)", () => {
     expect(r.partnerRows.length).toBe(1);
     expect(r.partnerRows[0].paymentsCount).toBe(2);
     expect(r.partnerRows[0].paymentsAmount).toBe(300);
-    expect(r.payments.length).toBe(2);
+    expect(r.payments!.length).toBe(2);
     expect(r.accountStatuses[0].status).toBe("ok");
 
     const csv = toCsv(r);
@@ -91,6 +101,58 @@ describe("reports (live partner API)", () => {
     expect(fetchPartnerStats).toHaveBeenCalledWith(
       expect.objectContaining({ partner: "r1-p1", dateFrom: "2026-07-01", dateTo: "2026-07-31" }),
     );
+  });
+
+  it("a MEMBER's report carries no payment rows and no payer identity in JSON or CSV, but keeps aggregates", async () => {
+    const team = await makeTeam();
+    const memberRow = await makeUser("MEMBER", team);
+    await makeAccount(memberRow.id, "Partner, Inc", "rmem-p1");
+    const payments = [
+      makePartnerPayment({ id: "pay-A", user_id: "uid-alice", user_name: "Alice Leaky", amount: 100, method: "CARD" }),
+      makePartnerPayment({ id: "pay-B", user_id: "uid-bob", user_name: "Bob Leaky", amount: 200, method: "CARD" }),
+      makePartnerPayment({ id: "pay-C", user_id: "uid-alice", user_name: "Alice Leaky", amount: 50, method: "CARD" }),
+    ];
+    vi.mocked(fetchPartnerStats).mockResolvedValue(
+      makePartnerStats({
+        partner: "rmem-p1", total_payments_count: 3, total_payments_amount: 350, logged_in_users: 7,
+        payments, payments_total_count: 3,
+      }),
+    );
+
+    const member = await getReport(testPrisma, su(memberRow), { range, label: "July 2026" });
+    expect("payments" in member).toBe(false);
+    expect(member.partnerRows[0].paymentsCount).toBe(3);
+    expect(member.partnerRows[0].paymentsAmount).toBe(350);
+    expect(member.kpis.partners.activeAppUsers).toBe(7);
+    expect(member.kpis.partners.uniquePayingUsers).toBe(2);
+
+    const json = JSON.stringify(member);
+    const csv = toCsv(member);
+    for (const leak of ["Alice Leaky", "Bob Leaky", "uid-alice", "uid-bob", "pay-A", "pay-B"]) {
+      expect(json, `json leaks ${leak}`).not.toContain(leak);
+      expect(csv, `csv leaks ${leak}`).not.toContain(leak);
+    }
+    expect(csv).not.toContain("Payment ID");
+    expect(csv).toContain("Unique paying users,2");
+
+    // Cash is settlement data, which view_settlements withholds from a MEMBER: the keys are
+    // absent from the rows and the KPIs (never 0, which would read as a real balance), and the
+    // export drops the columns rather than printing blanks.
+    expect("collected" in member.partnerRows[0]).toBe(false);
+    expect(member.kpis.finance.collected).toBeUndefined();
+    expect(member.kpis.finance.owed).toBeUndefined();
+    expect(csv).not.toContain("Collected");
+    expect(csv).not.toContain("Owed");
+  });
+
+  it("admins and super admins still get payment rows", async () => {
+    const { user } = await setup("radm", { configured: true, partnerKey: "radm-p1" });
+    vi.mocked(fetchPartnerStats).mockResolvedValue(
+      makePartnerStats({ partner: "radm-p1", payments: [makePartnerPayment({ id: "pay-X" })], payments_total_count: 1 }),
+    );
+    const r = await getReport(testPrisma, user, { range, label: "July 2026" });
+    expect(r.payments!.map((p) => p.id)).toEqual(["pay-X"]);
+    expect(toCsv(r)).toContain("pay-X");
   });
 
   it("pages through all payment pages and flattens them, using summary totals for the aggregate", async () => {
@@ -109,17 +171,18 @@ describe("reports (live partner API)", () => {
 
     const r = await getReport(testPrisma, user, { range, label: "July 2026" });
 
-    // Isolate the report's own paginated calls (page-less calls come from the live KPI/analytics
-    // fan-out inside getDashboardStats). Report pagination = page 1 + the 2 remaining pages, all
-    // at the 500 max page size.
+    // Isolate the calls that page the payment ROWS (pageSize 500) from the settlement roll-up's
+    // aggregate-only pageSize-1 probe. This asserts the pages COVERED rather than the raw call
+    // count, because the subject here is that every page of a multi-page partner is walked — not
+    // how many consumers walk it. (Only one does now: getReport reuses getCompanyAnalytics'
+    // `paymentsByAccount` instead of paging a second time.)
     const pagedCalls = vi
       .mocked(fetchPartnerStats)
       .mock.calls.map((c) => c[0] as { page?: number; pageSize?: number })
-      .filter((a) => a.page !== undefined);
-    expect(pagedCalls.map((a) => a.page).sort()).toEqual([1, 2, 3]);
-    expect(pagedCalls.every((a) => a.pageSize === 500)).toBe(true);
+      .filter((a) => a.page !== undefined && a.pageSize === 500);
+    expect([...new Set(pagedCalls.map((a) => a.page))].sort()).toEqual([1, 2, 3]);
     // flattened detail = one row per page
-    expect(r.payments.map((p) => p.id).sort()).toEqual(["p-1", "p-2", "p-3"]);
+    expect(r.payments!.map((p) => p.id).sort()).toEqual(["p-1", "p-2", "p-3"]);
     // aggregate comes from the summary totals (not the page count)
     expect(r.partnerRows[0].paymentsCount).toBe(3);
     expect(r.partnerRows[0].paymentsAmount).toBe(600);
@@ -147,25 +210,13 @@ describe("reports (live partner API)", () => {
     // aggregate still authoritative; only page 1's detail survived
     expect(r.partnerRows[0].paymentsCount).toBe(2);
     expect(r.partnerRows[0].paymentsAmount).toBe(250);
-    expect(r.payments.map((p) => p.id)).toEqual(["p-1"]);
+    expect(r.payments!.map((p) => p.id)).toEqual(["p-1"]);
     expect(toCsv(r)).toContain("Skipped accounts");
   });
 
   it("skips unconfigured accounts and isolates per-error reasons; one bad account never fails the export", async () => {
-    const c = await testPrisma.company.create({ data: { name: "Co", slug: "rmix" } });
-    const u = await testPrisma.user.create({
-      data: { companyId: c.id, email: "u-rmix@a.com", passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-    });
-    const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
-    const mk = (name: string, partnerKey?: string) =>
-      testPrisma.account.create({
-        data: {
-          companyId: c.id,
-          name,
-          accountManagerId: u.id,
-          ...(partnerKey ? { externalPartnerKey: partnerKey } : {}),
-        },
-      });
+    const { u, user } = await mkAdmin();
+    const mk = (name: string, partnerKey?: string) => makeAccount(u.id, name, partnerKey);
     const ok = await mk("OK", "rmix-ok");
     const badKey = await mk("Bad Key", "rmix-badkey");
     const unknown = await mk("Unknown", "rmix-unknown");
@@ -206,18 +257,10 @@ describe("reports (live partner API)", () => {
   // src/test/duplicate-partner-db.ts. Same dedup approach as company-analytics.ts / overview.ts.
   it("counts a partner ONCE when two accounts hold the same externalPartnerKey", async () => {
     const slug = `r-dupe-${Date.now()}-${Math.random()}`;
-    const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-    const u = await testPrisma.user.create({
-      data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-    });
-    const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const { u, user } = await mkAdmin();
     const partnerKey = `${slug}-shared`;
-    await testPrisma.account.create({
-      data: { companyId: c.id, name: "Account A", accountManagerId: u.id, externalPartnerKey: partnerKey },
-    });
-    const b = await testPrisma.account.create({
-      data: { companyId: c.id, name: "Account B", accountManagerId: u.id },
-    });
+    await makeAccount(u.id, "Account A", partnerKey);
+    const b = await makeAccount(u.id, "Account B");
     const db = dbWithPhantomPartnerKey(b.id, partnerKey);
 
     vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner, page }) =>
@@ -234,13 +277,15 @@ describe("reports (live partner API)", () => {
 
     const r = await getReport(db, user, { range, label: "July 2026" });
 
-    // Isolate this report's own paginated calls from the page-less calls made by
-    // getDashboardStats' internal getCompanyAnalytics fan-out (which already dedups on its own —
-    // see company-analytics.test.ts). Only one account should ever be fetched, not two.
+    // Only one ACCOUNT is ever fetched, not two, AND its single page of payment rows is fetched
+    // exactly ONCE for the whole report: getReport no longer runs a fan-out of its own, it reads
+    // the payments out of the `paymentsByAccount` map that getCompanyAnalytics already built. So
+    // one call — not the two the duplicated fan-out used to make, and not the four an undeduped
+    // pair of accounts would make.
     const pagedCalls = vi
       .mocked(fetchPartnerStats)
-      .mock.calls.map((call) => call[0] as { page?: number })
-      .filter((a) => a.page !== undefined);
+      .mock.calls.map((call) => call[0] as { page?: number; pageSize?: number })
+      .filter((a) => a.page !== undefined && a.pageSize === 500);
     expect(pagedCalls).toHaveLength(1);
 
     // Every account is still a row (shape preserved) — the loser shows 0, not hidden, and the
@@ -268,4 +313,20 @@ describe("reports (live partner API)", () => {
     ).rejects.toThrow();
   });
 
+  it("ALL scope only reports accounts in the caller's scope (own team; never a sibling team's)", async () => {
+    const { team, u, user } = await mkAdmin();
+    const sibling = await makeTeam({ companyId: team.companyId });
+    const siblingAdmin = await makeUser("COMPANY_ADMIN", sibling);
+    const mine = await makeAccount(u.id, "Mine", "rscope-mine");
+    const foreign = await makeAccount(siblingAdmin.id, "Foreign", "rscope-foreign");
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) =>
+      makePartnerStats({ partner, total_payments_count: 1, total_payments_amount: 5 }),
+    );
+
+    const r = await getReport(testPrisma, user, { range, label: "x" });
+    const ids = r.accountStatuses.map((s) => s.accountId);
+    expect(ids).toContain(mine.id);
+    expect(ids).not.toContain(foreign.id);
+    expect(fetchPartnerStats).not.toHaveBeenCalledWith(expect.objectContaining({ partner: "rscope-foreign" }));
+  });
 });

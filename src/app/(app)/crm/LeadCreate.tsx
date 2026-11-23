@@ -14,6 +14,7 @@ import {
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { OwnerSelectItems } from "@/components/OwnerSelectItems";
 import {
   Select,
   SelectContent,
@@ -23,35 +24,65 @@ import {
 } from "@/components/ui/select";
 
 type Stage = { id: string; name: string };
-type Member = { id: string; name: string };
+type Owner = { id: string; name: string; teamId: string | null; teamName: string | null };
 
 const PRIORITY_LABELS: Record<string, string> = { LOW: "Low", MEDIUM: "Medium", HIGH: "High" };
 
-export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?: Member[] }) {
+type Props = {
+  /** The pipeline to pick a stage from (the viewer's own team). Ignored for the owner, who uses `stagesByTeam`. */
+  stages: Stage[];
+  /** SUPER_ADMIN only: every team's pipeline, so the stage picker can follow the chosen owner's team. */
+  stagesByTeam?: Record<string, Stage[]>;
+  /** People the viewer may assign to (listAssignableUsers). Unused for a MEMBER, who owns what they create. */
+  owners?: Owner[];
+  currentUserId: string;
+  role: string;
+};
+
+export function LeadCreate({ stages, stagesByTeam, owners = [], currentUserId, role }: Props) {
   const router = useRouter();
+  const isSuper = role === "SUPER_ADMIN";
+  // A member always owns what they create — no picker at all (the server ignores a supplied owner).
+  const showOwnerPicker = role !== "MEMBER";
+  // Default to the CURRENT user, never owners[0]: that is usually the admin, and under owner-only
+  // visibility a member's own new lead would vanish from their view. The owner has no default.
+  const defaultOwner = isSuper ? "" : currentUserId;
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
+  const [buildingName, setBuildingName] = useState("");
   const [contactName, setContactName] = useState("");
   const [phone, setPhone] = useState("");
-  const [stageId, setStageId] = useState(stages[0]?.id ?? "");
-  const [ownerId, setOwnerId] = useState(members[0]?.id ?? "");
+  const [stageChoice, setStageChoice] = useState("");
+  const [ownerId, setOwnerId] = useState(defaultOwner);
   const [priority, setPriority] = useState("MEDIUM");
   const [loading, setLoading] = useState(false);
 
-  const ownerItems = Object.fromEntries(members.map((m) => [m.id, m.name]));
-  const stageItems = Object.fromEntries(stages.map((s) => [s.id, s.name]));
+  const ownerTeamId = owners.find((o) => o.id === ownerId)?.teamId ?? null;
+  const stageList: Stage[] = isSuper ? (ownerTeamId ? (stagesByTeam?.[ownerTeamId] ?? []) : []) : stages;
+  // The chosen stage only counts while it is still in the list (the owner changing team swaps the list).
+  const stageId = stageList.some((s) => s.id === stageChoice) ? stageChoice : (stageList[0]?.id ?? "");
+
+  const ownerItems = Object.fromEntries(owners.map((m) => [m.id, m.name]));
+  const stageItems = Object.fromEntries(stageList.map((s) => [s.id, s.name]));
 
   function reset() {
     setTitle("");
+    setBuildingName("");
     setContactName("");
     setPhone("");
-    setStageId(stages[0]?.id ?? "");
-    setOwnerId(members[0]?.id ?? "");
+    setStageChoice("");
+    setOwnerId(defaultOwner);
     setPriority("MEDIUM");
   }
 
+  const needsOwner = showOwnerPicker && !ownerId;
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (needsOwner) {
+      toast.error("Choose who owns this lead");
+      return;
+    }
     setLoading(true);
     try {
       const r = await fetch("/api/leads", {
@@ -59,10 +90,13 @@ export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           title,
+          // The building name is the building's identity (what a lead claims, and what the partner
+          // match runs on), which is why it is posted as `companyName`.
+          companyName: buildingName,
           contactName,
           phone: phone || undefined,
           stageId,
-          ownerId: ownerId || undefined,
+          ownerId: showOwnerPicker ? ownerId : undefined,
           priority,
         }),
       });
@@ -73,7 +107,10 @@ export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?
         router.refresh();
       } else {
         const body = await r.json().catch(() => ({}));
-        toast.error(body?.error ?? "Failed to create lead");
+        // 409 building_claimed: someone else already registered this building. The server's
+        // message names who; show it verbatim and keep the dialog open so the name can be fixed.
+        if (r.status === 409 && body?.message) toast.error(body.message);
+        else toast.error(body?.error ?? "Failed to create lead");
       }
     } catch {
       toast.error("Failed to create lead");
@@ -103,6 +140,18 @@ export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?
             />
           </div>
           <div className="space-y-1.5">
+            <Label htmlFor="lc-building">
+              Building name <span className="text-destructive">*</span>
+            </Label>
+            <Input
+              id="lc-building"
+              placeholder="Residential complex / building"
+              value={buildingName}
+              onChange={(e) => setBuildingName(e.target.value)}
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
             <Label htmlFor="lc-contact">
               Contact name <span className="text-destructive">*</span>
             </Label>
@@ -124,28 +173,30 @@ export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?
               onChange={(e) => setPhone(e.target.value)}
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="lc-owner">Person in charge</Label>
-            <Select items={ownerItems} value={ownerId} onValueChange={(v) => { if (v !== null) setOwnerId(v); }}>
-              <SelectTrigger id="lc-owner">
-                <SelectValue placeholder="Assign to me" />
-              </SelectTrigger>
-              <SelectContent>
-                {members.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {showOwnerPicker && (
+            <div className="space-y-1.5">
+              <Label htmlFor="lc-owner">
+                Person in charge {isSuper && <span className="text-destructive">*</span>}
+              </Label>
+              <Select items={ownerItems} value={ownerId} onValueChange={(v) => { if (v !== null) setOwnerId(v); }}>
+                <SelectTrigger id="lc-owner">
+                  <SelectValue placeholder={isSuper ? "Choose an owner" : "Assign to me"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <OwnerSelectItems owners={owners} grouped={isSuper} />
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="lc-stage">Stage</Label>
-              <Select items={stageItems} value={stageId} onValueChange={(v) => { if (v !== null) setStageId(v); }}>
+              <Select items={stageItems} value={stageId} onValueChange={(v) => { if (v !== null) setStageChoice(v); }}>
                 <SelectTrigger id="lc-stage">
-                  <SelectValue placeholder="Select stage" />
+                  <SelectValue placeholder={isSuper && !ownerId ? "Choose an owner first" : "Select stage"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {stages.map((s) => (
+                  {stageList.map((s) => (
                     <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                   ))}
                 </SelectContent>
@@ -170,7 +221,7 @@ export function LeadCreate({ stages, members = [] }: { stages: Stage[]; members?
           <Button variant="outline" type="button" onClick={() => setOpen(false)} disabled={loading}>
             Cancel
           </Button>
-          <Button type="submit" form="lead-create-form" disabled={loading}>
+          <Button type="submit" form="lead-create-form" disabled={loading || !stageId}>
             {loading ? "Creating…" : "Create lead"}
           </Button>
         </DialogFooter>

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import type { SessionUser } from "@/lib/auth/guards";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import type { PartnerListResponse } from "@/lib/partner-api/schema";
@@ -23,10 +24,10 @@ import { GET } from "./route";
 // SUPER_ADMIN is the ONLY role allowed here: the partner namespace is shared across every
 // tenant, so this list names other companies' complexes and linking to one exposes that
 // partner's debt/payments/unit owners.
-const SUPER: SessionUser = { id: "su", companyId: null, role: "SUPER_ADMIN" };
-const ADMIN: SessionUser = { id: "u1", companyId: "co1", role: "COMPANY_ADMIN" };
-const MEMBER: SessionUser = { id: "u2", companyId: "co1", role: "MEMBER" };
-const PARTNER_VIEWER: SessionUser = { id: "u3", companyId: "co1", role: "PARTNER_VIEWER", accountId: "acc1" };
+const SUPER: SessionUser = { id: "su", companyId: null, teamId: null, role: "SUPER_ADMIN" };
+const ADMIN: SessionUser = { id: "u1", companyId: "co1", teamId: "t1", role: "COMPANY_ADMIN" };
+const MEMBER: SessionUser = { id: "u2", companyId: "co1", teamId: "t1", role: "MEMBER" };
+const PARTNER_VIEWER: SessionUser = { id: "u3", companyId: "co1", teamId: null, role: "PARTNER_VIEWER", accountId: "acc1" };
 
 function rawList(): PartnerListResponse {
   return {
@@ -39,12 +40,13 @@ function rawList(): PartnerListResponse {
 
 // Seeds an account (in its own company) already holding `partnerKey`.
 async function seedClaim(partnerKey: string, slug: string) {
-  const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
+  const team = await makeTeam({ name: slug });
+  const u = await makeUser("COMPANY_ADMIN", team);
   return testPrisma.account.create({
-    data: { companyId: c.id, name: "Claimer", accountManagerId: u.id, externalPartnerKey: partnerKey },
+    data: {
+      companyId: team.companyId, teamId: team.id, buildingKey: buildingKey("Claimer"),
+      name: "Claimer", accountManagerId: u.id, externalPartnerKey: partnerKey,
+    },
   });
 }
 
@@ -142,9 +144,28 @@ describe("GET /api/partners — SUPER_ADMIN-only list of UNCLAIMED partners", ()
     expect(body.partners).toEqual([]);
   });
 
-  it("keeps partners whose name merely resembles a claim (exact match only)", async () => {
+  // INVERTED ON PURPOSE (security review finding F1). This used to assert that a claim matched
+  // EXACTLY, so a claim on "komplex b" left the upstream's "Komplex B" offered as assignable.
+  // The two link states no longer store the same string — a PENDING link holds the normalized
+  // building name, a confirmed one the upstream's display spelling — so an exact-match filter
+  // would offer a complex that is already claimed, and the assign would then be refused as held.
+  // The filter compares normalizeBuildingName on both sides, which is the same identity the
+  // building claim itself uses.
+  it("excludes a partner whose name normalizes onto a claim held in another spelling", async () => {
     mockUser = SUPER;
-    await seedClaim("komplex b", `case-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await seedClaim("komplex  b", `case-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    vi.mocked(fetchPartners).mockResolvedValue(rawList());
+
+    const res = await GET();
+    const body = await res.json();
+    expect(body.partners.map((p: { name: string }) => p.name)).toEqual(["Sabah.City"]);
+  });
+
+  // The flip side: normalization collapses case and whitespace, and nothing else. A genuinely
+  // different name is still offered.
+  it("keeps a partner whose name merely RESEMBLES a claim without normalizing onto it", async () => {
+    mockUser = SUPER;
+    await seedClaim("Komplex BB", `near-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     vi.mocked(fetchPartners).mockResolvedValue(rawList());
 
     const res = await GET();

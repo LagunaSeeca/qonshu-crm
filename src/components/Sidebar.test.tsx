@@ -3,26 +3,42 @@ import { render, screen } from "@testing-library/react";
 import { Sidebar } from "./Sidebar";
 
 describe("Sidebar", () => {
-  it("shows Users link for company admin only", () => {
+  it("shows Users link for admins only", () => {
     const { rerender } = render(<Sidebar role="MEMBER" />);
     expect(screen.queryByText("Users")).toBeNull();
     rerender(<Sidebar role="COMPANY_ADMIN" />);
     expect(screen.getByText("Users")).toBeInTheDocument();
   });
 
-  it("shows Companies link for SUPER_ADMIN", () => {
+  it("shows Teams and Partner links for SUPER_ADMIN, and Users too", () => {
     render(<Sidebar role="SUPER_ADMIN" />);
-    expect(screen.getByText("Companies")).toBeInTheDocument();
-  });
-
-  it("SUPER_ADMIN does NOT see Users link", () => {
-    render(<Sidebar role="SUPER_ADMIN" />);
-    expect(screen.queryByText("Users")).toBeNull();
-  });
-
-  it("COMPANY_ADMIN does NOT see Companies link", () => {
-    render(<Sidebar role="COMPANY_ADMIN" />);
+    expect(screen.getByText("Teams")).toBeInTheDocument();
+    expect(screen.getByText("Partner links")).toBeInTheDocument();
+    expect(screen.getByText("Users")).toBeInTheDocument();
     expect(screen.queryByText("Companies")).toBeNull();
+  });
+
+  // CHANGED (security review finding F1): a team admin confirms the pending partner links their
+  // own team staked, so the page — and this nav entry — is theirs too. Teams stays owner-only, and
+  // so does the direct-assign card on that page, which the page itself decides.
+  it("COMPANY_ADMIN sees Users and Partner links, but not Teams", () => {
+    render(<Sidebar role="COMPANY_ADMIN" />);
+    expect(screen.getByText("Users")).toBeInTheDocument();
+    expect(screen.getByText("Partner links")).toBeInTheDocument();
+    expect(screen.queryByText("Teams")).toBeNull();
+  });
+
+  it("MEMBER sees neither Users nor Partner links — approving is an admin act", () => {
+    render(<Sidebar role="MEMBER" />);
+    expect(screen.queryByText("Users")).toBeNull();
+    expect(screen.queryByText("Partner links")).toBeNull();
+  });
+
+  it("labels COMPANY_ADMIN as Team Admin and shows the team name in the footer", () => {
+    render(<Sidebar role="COMPANY_ADMIN" companyName="Acme Co" teamName="Baku Sales" />);
+    expect(screen.getByText("Team Admin")).toBeInTheDocument();
+    expect(screen.getByText("Baku Sales")).toBeInTheDocument();
+    expect(screen.queryByText("Acme Co")).toBeNull();
   });
 
   it("PARTNER_VIEWER sees only Analytics, Settlements, Service fees", () => {

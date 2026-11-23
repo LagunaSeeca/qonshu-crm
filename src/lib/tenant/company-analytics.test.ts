@@ -3,9 +3,9 @@ import { testPrisma, resetDb } from "@/test/db";
 import { getCompanyAnalytics } from "./company-analytics";
 import { fetchPartnerStats } from "@/lib/partner-api/client";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
-import { makePartnerStats } from "@/test/partner-stats-fixture";
+import { makePartnerStats, makePartnerPayment } from "@/test/partner-stats-fixture";
 import { dbWithPhantomPartnerKey } from "@/test/duplicate-partner-db";
-import type { SessionUser } from "@/lib/auth/guards";
+import { makeTeam, makeUser, su, uniq, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 
 // Company analytics is now a LIVE fan-out: never reads persisted payment/debt tables, just
 // calls the external Partner API once per configured account and aggregates in memory. So the
@@ -18,19 +18,29 @@ const SHARED_API_KEY = "test-shared-partner-api-key";
 
 // "Configured" now means only a partner NAME — the account goes live off the shared
 // PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
-async function makeConfiguredAccount(companyId: string, managerId: string, name: string, partnerKey: string) {
+// Accounts need a teamId + buildingKey; both follow the manager so the row is consistent with the
+// team wiring. `partnerKey` omitted = a not-linked account; supplied = a CONFIRMED link, which
+// is what these fan-outs are about (a PENDING link is skipped as not_configured — see
+// ./partner-link-approval.test.ts).
+async function makeAccount(managerId: string, name: string, partnerKey?: string) {
+  const m = await testPrisma.user.findUniqueOrThrow({ where: { id: managerId } });
   return testPrisma.account.create({
-    data: { companyId, name, accountManagerId: managerId, externalPartnerKey: partnerKey },
+    data: {
+      companyId: m.companyId!, teamId: m.teamId!, buildingKey: buildingKey(`${name}-${uniq()}`),
+      name, accountManagerId: managerId,
+      ...(partnerKey ? confirmedPartnerLink(partnerKey) : {}),
+    },
   });
 }
 
-async function makeCompanyAndAdmin(slug: string) {
-  const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
-  return { c, u, user };
+async function makeConfiguredAccount(_companyId: string, managerId: string, name: string, partnerKey: string) {
+  return makeAccount(managerId, name, partnerKey);
+}
+
+async function makeCompanyAndAdmin(_slug: string) {
+  const team = await makeTeam();
+  const u = await makeUser("COMPANY_ADMIN", team);
+  return { c: { id: team.companyId }, team, u, user: su(u) };
 }
 
 describe("company analytics (live fan-out)", () => {
@@ -53,6 +63,37 @@ describe("company analytics (live fan-out)", () => {
   });
   afterAll(() => testPrisma.$disconnect());
 
+  it("uniquePayingUsers = distinct CARD payers per account in the range, summed; member sees count only", async () => {
+    const team = await makeTeam();
+    const m = await makeUser("MEMBER", team);
+    await makeAccount(m.id, "Acc One", "uniq-p1");
+    await makeAccount(m.id, "Acc Two", "uniq-p2");
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) =>
+      makePartnerStats({
+        partner,
+        logged_in_users: 3,
+        payments:
+          partner === "uniq-p1"
+            ? [
+                makePartnerPayment({ id: "1", user_id: "u1", user_name: "Zed Hidden", method: "CARD" }),
+                makePartnerPayment({ id: "2", user_id: "u1", user_name: "Zed Hidden", method: "CARD" }),
+                makePartnerPayment({ id: "3", user_id: "u2", user_name: "Yan Hidden", method: "CASH" }),
+              ]
+            : [makePartnerPayment({ id: "4", user_id: "u1", user_name: "Xi Hidden", method: "CARD" })],
+      }),
+    );
+    const a = await getCompanyAnalytics(testPrisma, su(m), range);
+    // u1 in partner 1 and u1 in partner 2 are different people (ids are per-partner): 1 + 1.
+    expect(a.totals.uniquePayingUsers).toBe(2);
+    expect(a.totals.activeUsers).toBe(6);
+    expect(a.totals.uniquePayingUsersPartial).toBe(false);
+    expect(JSON.stringify(a)).not.toContain("Hidden");
+    // date-filtered, not lifetime: the range is forwarded to the live API.
+    expect(fetchPartnerStats).toHaveBeenCalledWith(
+      expect.objectContaining({ dateFrom: "2026-07-01", dateTo: "2026-07-31" }),
+    );
+  });
+
   // Defence in depth for a duplicate that predates @@unique([externalPartnerKey]): every figure
   // here is a plain SUM, so two accounts on one complex would double the whole page. A real
   // duplicate row is uninsertable now, so the second claim is injected at the query boundary —
@@ -62,9 +103,7 @@ describe("company analytics (live fan-out)", () => {
     const { c, u, user } = await makeCompanyAndAdmin(slug);
     const partnerKey = `${slug}-shared`;
     await makeConfiguredAccount(c.id, u.id, "Account A", partnerKey);
-    const b = await testPrisma.account.create({
-      data: { companyId: c.id, name: "Account B", accountManagerId: u.id },
-    });
+    const b = await makeAccount(u.id, "Account B");
     const db = dbWithPhantomPartnerKey(b.id, partnerKey); // same partner, second claim
 
     vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) =>
@@ -90,9 +129,7 @@ describe("company analytics (live fan-out)", () => {
     const { c, u, user } = await makeCompanyAndAdmin(slug);
     const acc1 = await makeConfiguredAccount(c.id, u.id, "Partner One", `${slug}-p1`);
     const acc2 = await makeConfiguredAccount(c.id, u.id, "Partner Two", `${slug}-p2`);
-    const acc3 = await testPrisma.account.create({
-      data: { companyId: c.id, name: "Not Linked", accountManagerId: u.id }, // no partner key/API key
-    });
+    const acc3 = await makeAccount(u.id, "Not Linked"); // no partner key/API key
 
     vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) => {
       if (partner === `${slug}-p1`) {
@@ -150,7 +187,7 @@ describe("company analytics (live fan-out)", () => {
 
     expect(a.totals.accounts).toBe(2);
     expect(a.totals.appUsers).toBe(11);
-    expect(a.totals.activeUsers).toBe(9);
+    expect(a.totals.activeUsers).toBe(4); // = logged_in_users, NOT active_users (8+1)
     expect(a.totals.engagedUsers).toBe(7);
     expect(a.totals.totalDebt).toBe(45);
     expect(a.totals.installs).toBe(5);
@@ -294,5 +331,31 @@ describe("company analytics (live fan-out)", () => {
     expect(a.byMethod.every((m) => m.amount === 0)).toBe(true);
     expect(a.byCategory.every((cc) => cc.amount === 0)).toBe(true);
     expect(fetchPartnerStats).not.toHaveBeenCalled();
+  });
+
+  it("scopes the fan-out: member = managed accounts only, team admin = own team only", async () => {
+    const slug = `ca-scope-${Date.now()}-${Math.random()}`;
+    const { team, u: admin, user: adminUser } = await makeCompanyAndAdmin(slug);
+    const member = await makeUser("MEMBER", team);
+    const otherMember = await makeUser("MEMBER", team);
+    const sibling = await makeTeam({ companyId: team.companyId });
+    const siblingAdmin = await makeUser("COMPANY_ADMIN", sibling);
+    const mine = await makeAccount(member.id, "Mine", `${slug}-mine`);
+    const theirs = await makeAccount(otherMember.id, "Theirs", `${slug}-theirs`);
+    const foreign = await makeAccount(siblingAdmin.id, "Foreign", `${slug}-foreign`);
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) => makePartnerStats({ partner, total_payments_amount: 10 }));
+
+    const m = await getCompanyAnalytics(testPrisma, su(member), range);
+    expect(m.partners.map((p) => p.accountId)).toEqual([mine.id]);
+
+    vi.mocked(fetchPartnerStats).mockClear();
+    const a = await getCompanyAnalytics(testPrisma, adminUser, range);
+    expect(a.partners.map((p) => p.accountId).sort()).toEqual([mine.id, theirs.id].sort());
+    expect(fetchPartnerStats).not.toHaveBeenCalledWith(expect.objectContaining({ partner: `${slug}-foreign` }));
+
+    // single-account filter cannot reach out of scope either
+    await expect(getCompanyAnalytics(testPrisma, su(member), range, { accountId: theirs.id })).rejects.toThrow();
+    await expect(getCompanyAnalytics(testPrisma, adminUser, range, { accountId: foreign.id })).rejects.toThrow();
+    void admin;
   });
 });

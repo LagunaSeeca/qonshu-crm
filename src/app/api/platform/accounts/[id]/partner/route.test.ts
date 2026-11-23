@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import type { SessionUser } from "@/lib/auth/guards";
 import { InvalidApiKeyError } from "@/lib/partner-api/errors";
 import type { PartnerListResponse } from "@/lib/partner-api/schema";
@@ -17,7 +18,8 @@ vi.mock("@/lib/partner-api/client", () => ({ fetchPartners: vi.fn() }));
 import { fetchPartners } from "@/lib/partner-api/client";
 import { PATCH } from "./route";
 
-const SUPER: SessionUser = { id: "su", companyId: null, role: "SUPER_ADMIN" };
+// A real SUPER_ADMIN row (created in beforeEach, after resetDb) so the audit row can resolve the actor email.
+let SUPER: SessionUser;
 
 function patchReq(id: string, body: unknown) {
   return new NextRequest(`http://localhost/api/platform/accounts/${id}/partner`, {
@@ -40,24 +42,18 @@ function liveList(): PartnerListResponse {
   };
 }
 
-async function seedCompanyWithAccount(slug: string, opts?: { partnerKey?: string }) {
-  const c = await testPrisma.company.create({ data: { name: `Co ${slug}`, slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
+async function seedCompanyWithAccount(slug: string, opts?: { partnerKey?: string; role?: "COMPANY_ADMIN" | "MEMBER" }) {
+  const team = await makeTeam({ name: slug });
+  const c = await testPrisma.company.update({ where: { id: team.companyId }, data: { name: `Co ${slug}` } });
+  const u = await makeUser(opts?.role ?? "COMPANY_ADMIN", team);
   const acc = await testPrisma.account.create({
     data: {
-      companyId: c.id, name: `Acct ${slug}`, accountManagerId: u.id,
+      companyId: c.id, teamId: team.id, buildingKey: buildingKey(`Acct ${slug}`),
+      name: `Acct ${slug}`, accountManagerId: u.id,
       externalPartnerKey: opts?.partnerKey ?? null,
     },
   });
-  return { c, u, acc };
-}
-
-async function grant(companyId: string, partnerName: string) {
-  return testPrisma.partnerAllowlist.create({
-    data: { companyId, partnerName, normalizedName: partnerName.trim().toLowerCase() },
-  });
+  return { c, u, team, acc };
 }
 
 describe("PATCH /api/platform/accounts/[id]/partner — SUPER_ADMIN-only partner assignment", () => {
@@ -71,6 +67,7 @@ describe("PATCH /api/platform/accounts/[id]/partner — SUPER_ADMIN-only partner
     savedBaseUrl = process.env.PARTNER_API_BASE_URL;
     process.env.PARTNER_API_KEY = "sk_live_global";
     process.env.PARTNER_API_BASE_URL = "https://partner.example.com";
+    SUPER = su(await makeUser("SUPER_ADMIN"));
     mockUser = SUPER;
     ts = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     vi.mocked(fetchPartners).mockReset();
@@ -110,8 +107,8 @@ describe("PATCH /api/platform/accounts/[id]/partner — SUPER_ADMIN-only partner
   });
 
   it("403s a COMPANY_ADMIN and leaves the row untouched", async () => {
-    const { c, u, acc } = await seedCompanyWithAccount(`forbid-${ts}`);
-    mockUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const { u, acc } = await seedCompanyWithAccount(`forbid-${ts}`);
+    mockUser = su(u);
 
     const res = await call(acc.id, { externalPartnerKey: "Komplex B" });
     expect(res.status).toBe(403);
@@ -124,8 +121,8 @@ describe("PATCH /api/platform/accounts/[id]/partner — SUPER_ADMIN-only partner
   // 400 — a reply only a real, reachable route produces. 403 is the only answer they may get,
   // whatever they send.
   it("403s a non-super-admin BEFORE parsing the body — a bad body must not turn 403 into 400", async () => {
-    const { c, u, acc } = await seedCompanyWithAccount(`forbid-order-${ts}`);
-    mockUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const { u, acc } = await seedCompanyWithAccount(`forbid-order-${ts}`);
+    mockUser = su(u);
 
     for (const body of [{}, { externalPartnerKey: 42 }, { nonsense: true }]) {
       const res = await call(acc.id, body);
@@ -138,8 +135,8 @@ describe("PATCH /api/platform/accounts/[id]/partner — SUPER_ADMIN-only partner
   });
 
   it("403s a MEMBER even when clearing", async () => {
-    const { c, u, acc } = await seedCompanyWithAccount(`forbid-member-${ts}`, { partnerKey: "Komplex B" });
-    mockUser = { id: u.id, companyId: c.id, role: "MEMBER" };
+    const { u, acc } = await seedCompanyWithAccount(`forbid-member-${ts}`, { partnerKey: "Komplex B", role: "MEMBER" });
+    mockUser = su(u);
 
     const res = await call(acc.id, { externalPartnerKey: null });
     expect(res.status).toBe(403);
@@ -155,13 +152,20 @@ describe("PATCH /api/platform/accounts/[id]/partner — SUPER_ADMIN-only partner
     expect(res.status).toBe(401);
   });
 
-  it("409s a partner already claimed by another account — even in a different company", async () => {
-    await seedCompanyWithAccount(`holder-${ts}`, { partnerKey: "Komplex B" });
+  // CHANGED ON PURPOSE (teams refactor): the error code is now "partner_name_held", not
+  // "partner_already_claimed". setAccountPartner runs the building-claim check (findNameHolder)
+  // BEFORE the global-link check (isPartnerKeyTaken), and an account holding the link is itself a
+  // holder of the building (its externalPartnerKey normalizes to the same key), so the earlier,
+  // richer 409 always wins and names the holding record. Still 409, still nothing persisted.
+  it("409s a partner already held by another account — even in a different company", async () => {
+    const holder = await seedCompanyWithAccount(`holder-${ts}`, { partnerKey: "Komplex B" });
     const { acc } = await seedCompanyWithAccount(`taker-${ts}`);
 
     const res = await call(acc.id, { externalPartnerKey: "Komplex B" });
     expect(res.status).toBe(409);
-    expect((await res.json()).error).toBe("partner_already_claimed");
+    const body = await res.json();
+    expect(body.error).toBe("partner_name_held");
+    expect(body.holder).toEqual({ kind: "account", id: holder.acc.id });
     const row = await testPrisma.account.findUnique({ where: { id: acc.id } });
     expect(row?.externalPartnerKey).toBeNull();
   });
@@ -217,57 +221,64 @@ describe("PATCH /api/platform/accounts/[id]/partner — SUPER_ADMIN-only partner
     expect(res.status).toBe(404);
   });
 
-  it("409s a complex the allowlist grants to a DIFFERENT company — a super admin may not silently contradict a grant", async () => {
-    const owner = await seedCompanyWithAccount(`grant-owner-${ts}`);
-    await grant(owner.c.id, "Komplex B");
-    const { acc } = await seedCompanyWithAccount(`grant-outsider-${ts}`);
+  // REPLACES the three PartnerAllowlist tests (409 partner_allowlist_mismatch / allowed for the
+  // granting company / allowed when ungranted): the allowlist is dropped and the SUPER_ADMIN is
+  // the sole authority, constrained only by the building claim below.
+  it("409s a name whose BUILDING another lead is working, naming the lead as holder", async () => {
+    const rival = await seedCompanyWithAccount(`lead-holder-${ts}`);
+    const stage = await testPrisma.stage.create({
+      data: { companyId: rival.c.id, teamId: rival.team.id, name: "New", order: 0 },
+    });
+    const lead = await testPrisma.lead.create({
+      data: {
+        companyId: rival.c.id, teamId: rival.team.id, buildingKey: buildingKey("Komplex B"),
+        title: "t", contactName: "c", companyName: "Komplex B", stageId: stage.id, ownerId: rival.u.id,
+      },
+    });
+    const { acc } = await seedCompanyWithAccount(`lead-taker-${ts}`);
 
     const res = await call(acc.id, { externalPartnerKey: "Komplex B" });
     expect(res.status).toBe(409);
-    expect((await res.json()).error).toBe("partner_allowlist_mismatch");
+    const body = await res.json();
+    expect(body.error).toBe("partner_name_held");
+    expect(body.holder).toEqual({ kind: "lead", id: lead.id });
     const row = await testPrisma.account.findUnique({ where: { id: acc.id } });
     expect(row?.externalPartnerKey).toBeNull();
+    expect(await testPrisma.partnerLinkAudit.count()).toBe(0);
   });
 
-  it("allows the assignment when the grant belongs to the account's OWN company", async () => {
-    const { c, acc } = await seedCompanyWithAccount(`grant-own-${ts}`);
-    await grant(c.id, "Komplex B");
-
-    const res = await call(acc.id, { externalPartnerKey: "Komplex B" });
-    expect(res.status).toBe(200);
-    const row = await testPrisma.account.findUnique({ where: { id: acc.id } });
-    expect(row?.externalPartnerKey).toBe("Komplex B");
-  });
-
-  it("still allows a complex nobody has been granted — a SUPER_ADMIN remains the authority", async () => {
+  it("allows a live complex nothing else claims — a SUPER_ADMIN remains the authority", async () => {
     const { acc } = await seedCompanyWithAccount(`grant-none-${ts}`);
     const res = await call(acc.id, { externalPartnerKey: "Komplex B" });
     expect(res.status).toBe(200);
   });
 
-  it("writes an audit row on assign AND on clear, attributed to the acting super admin", async () => {
+  // CHANGED ON PURPOSE: the trail is in PartnerLinkAudit now (durable, survives the account), not
+  // AccountActivity rows with a "partner_link:*" outcome.
+  it("writes a PartnerLinkAudit row on assign AND on clear, attributed to the acting super admin", async () => {
     const { c, acc } = await seedCompanyWithAccount(`audit-${ts}`);
 
     expect((await call(acc.id, { externalPartnerKey: "Komplex B" })).status).toBe(200);
     expect((await call(acc.id, { externalPartnerKey: null })).status).toBe(200);
 
-    const audit = await testPrisma.accountActivity.findMany({
+    const audit = await testPrisma.partnerLinkAudit.findMany({
       where: { accountId: acc.id }, orderBy: { createdAt: "asc" },
     });
-    expect(audit.map((a) => a.outcome)).toEqual(["partner_link:assign", "partner_link:clear"]);
+    expect(audit.map((a) => a.action)).toEqual(["assign", "clear"]);
     // BOTH rows name the complex. The clear row especially: the column is null afterwards, so for
-    // a link with no prior assign row its message is the only surviving record of what was unlinked.
-    expect(audit[0].body).toContain("Komplex B");
-    expect(audit[1].body).toContain("Komplex B");
-    expect(audit.every((a) => a.authorId === SUPER.id)).toBe(true);
+    // a link with no prior assign row it is the only surviving record of what was unlinked.
+    expect(audit.every((a) => a.partnerName === "Komplex B")).toBe(true);
+    expect(audit.every((a) => a.actorId === SUPER.id)).toBe(true);
     // Filed under the ACCOUNT's company, not the (company-less) super admin's.
     expect(audit.every((a) => a.companyId === c.id)).toBe(true);
+    // Nothing is written to the tenant-visible timeline any more.
+    expect(await testPrisma.accountActivity.count({ where: { accountId: acc.id } })).toBe(0);
   });
 
   it("does not write a clear audit row when there was nothing linked", async () => {
     const { acc } = await seedCompanyWithAccount(`audit-noop-${ts}`);
     expect((await call(acc.id, { externalPartnerKey: null })).status).toBe(200);
-    expect(await testPrisma.accountActivity.count({ where: { accountId: acc.id } })).toBe(0);
+    expect(await testPrisma.partnerLinkAudit.count({ where: { accountId: acc.id } })).toBe(0);
   });
 
   it("400s a body that omits externalPartnerKey — clearing must be stated explicitly", async () => {

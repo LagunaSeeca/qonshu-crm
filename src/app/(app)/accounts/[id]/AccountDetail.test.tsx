@@ -4,7 +4,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: () => {}, refresh:
 import { AccountDetail } from "./AccountDetail";
 
 const base = {
-  account: { id: "a1", name: "Partner Co", status: "ACTIVE", website: "", industry: "SaaS", accountManagerId: "u", primaryContactName: "Jane", primaryContactEmail: "", primaryContactPhone: "", externalPartnerKey: null },
+  account: { id: "a1", name: "Partner Co", status: "ACTIVE", website: "", industry: "SaaS", accountManagerId: "u", primaryContactName: "Jane", primaryContactEmail: "", primaryContactPhone: "", externalPartnerKey: null, partnerLinkPending: false },
   members: [{ id: "u", name: "M1" }],
   activities: [{ id: "ac1", kind: "MEETING", body: "kickoff call", outcome: null, occurredAt: new Date().toISOString(), authorId: "u" }],
   tasks: [{ id: "t1", title: "send deck", dueDate: null, done: false }],
@@ -40,7 +40,7 @@ describe("AccountDetail", () => {
     render(<AccountDetail {...base} account={{ ...base.account, externalPartnerKey: "Komplex B" }} />);
     expect(screen.getByText("Analytics partner link")).toBeInTheDocument();
     expect(screen.getByText("Komplex B")).toBeInTheDocument();
-    expect(screen.getByText(/managed by a platform admin/i)).toBeInTheDocument();
+    expect(screen.getByText(/confirmed by the owner/i)).toBeInTheDocument();
     // The name must not be inside any form control a company user could change.
     const editable = screen
       .queryAllByRole("textbox")
@@ -52,6 +52,20 @@ describe("AccountDetail", () => {
   it("shows a clear 'not linked yet' state when the account has no partner", () => {
     render(<AccountDetail {...base} />);
     expect(screen.getByText("Not linked yet")).toBeInTheDocument();
+  });
+
+  // A PENDING link must not read as a link. The key is in the row from the moment the building is
+  // named, but it authorizes nothing until an admin confirms it on /partner-links — showing the
+  // complex name here would make an empty Analytics tab look like a bug instead of a gate.
+  it("reports a PENDING link as awaiting confirmation, and never prints the proposed complex", () => {
+    render(
+      <AccountDetail
+        {...base}
+        account={{ ...base.account, externalPartnerKey: null, partnerLinkPending: true }}
+      />,
+    );
+    expect(screen.getByText(/awaiting owner confirmation/i)).toBeInTheDocument();
+    expect(screen.queryByText("Not linked yet")).not.toBeInTheDocument();
   });
 
   it("never calls the SUPER_ADMIN-only /api/partners endpoint", () => {

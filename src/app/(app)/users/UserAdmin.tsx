@@ -24,18 +24,19 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { UserPlus, Loader2, Users } from "lucide-react";
 
-type Row = { id: string; email: string; name: string; role: string; status: string };
+type Row = { id: string; email: string; name: string; role: string; status: string; teamName?: string | null };
+type Team = { id: string; name: string };
 type Account = { id: string; name: string };
 
 const ROLE_LABELS: Record<string, string> = {
   MEMBER: "Member",
-  COMPANY_ADMIN: "Company Admin",
+  COMPANY_ADMIN: "Team Admin",
   PARTNER_VIEWER: "Partner (read-only)",
 };
 
 function roleBadge(role: string) {
-  if (role === "COMPANY_ADMIN") return <Badge variant="default">{role}</Badge>;
-  return <Badge variant="secondary">{role}</Badge>;
+  if (role === "COMPANY_ADMIN") return <Badge variant="default">{ROLE_LABELS[role] ?? role}</Badge>;
+  return <Badge variant="secondary">{ROLE_LABELS[role] ?? role}</Badge>;
 }
 
 function statusBadge(status: string) {
@@ -43,7 +44,15 @@ function statusBadge(status: string) {
   return <Badge variant="outline" className="text-muted-foreground">Inactive</Badge>;
 }
 
-export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts?: Account[] }) {
+type Props = {
+  initial: Row[];
+  accounts?: Account[];
+  /** The owner: may also create Team Admins, must choose a team, and sees a Team column. */
+  isSuper?: boolean;
+  teams?: Team[];
+};
+
+export function UserAdmin({ initial, accounts = [], isSuper = false, teams = [] }: Props) {
   const [rows, setRows] = useState(initial);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -51,6 +60,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("MEMBER");
   const [accountId, setAccountId] = useState("");
+  const [teamId, setTeamId] = useState("");
   const [creating, setCreating] = useState(false);
   const [toggling, setToggling] = useState<string | null>(null);
 
@@ -60,15 +70,21 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
     setPassword("");
     setRole("MEMBER");
     setAccountId("");
+    setTeamId("");
   }
+
+  // A partner login belongs to a building, not a team; every other role needs a team picked by the owner.
+  const needsTeam = isSuper && role !== "PARTNER_VIEWER";
 
   async function createUser() {
     setCreating(true);
     try {
-      const body: { name: string; email: string; password: string; role: string; accountId?: string } = {
+      const body: { name: string; email: string; password: string; role: string; accountId?: string; teamId?: string } = {
         name, email, password, role,
       };
       if (role === "PARTNER_VIEWER") body.accountId = accountId;
+      // A team admin's own team is implied by the server; only the owner names one.
+      else if (needsTeam) body.teamId = teamId;
       const r = await fetch("/api/users", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -76,7 +92,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
       });
       if (r.ok) {
         const created = await r.json();
-        setRows((rs) => [...rs, { id: created.id, email: created.email, name: created.name ?? "", role: created.role, status: created.status }]);
+        setRows((rs) => [...rs, { id: created.id, email: created.email, name: created.name ?? "", role: created.role, status: created.status, teamName: teams.find((t) => t.id === created.teamId)?.name ?? null }]);
         resetForm();
         setOpen(false);
         toast.success("User created — share the email/password with them directly");
@@ -117,7 +133,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
     <div className="space-y-6">
       <PageHeader
         title="Users"
-        subtitle="Manage team members and their access"
+        subtitle={isSuper ? "Manage team admins, members and building representatives" : "Manage your team's members and building representatives"}
         action={
           <Button onClick={() => setOpen(true)}>
             <UserPlus className="mr-2 h-4 w-4" />
@@ -140,6 +156,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
               <TableHead>Name</TableHead>
               <TableHead>Email</TableHead>
               <TableHead>Role</TableHead>
+              {isSuper && <TableHead>Team</TableHead>}
               <TableHead>Status</TableHead>
               <TableHead className="w-[120px]"></TableHead>
             </TableRow>
@@ -150,6 +167,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
                 <TableCell className="font-medium">{u.name || "—"}</TableCell>
                 <TableCell className="text-muted-foreground">{u.email}</TableCell>
                 <TableCell>{roleBadge(u.role)}</TableCell>
+                {isSuper && <TableCell className="text-muted-foreground">{u.teamName ?? "—"}</TableCell>}
                 <TableCell>{statusBadge(u.status)}</TableCell>
                 <TableCell>
                   <Button
@@ -213,6 +231,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
                 onValueChange={(v) => {
                   setRole(v ?? "MEMBER");
                   setAccountId("");
+                  setTeamId("");
                 }}
               >
                 <SelectTrigger id="new-user-role">
@@ -220,16 +239,39 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="MEMBER">Member</SelectItem>
-                  <SelectItem value="COMPANY_ADMIN">Company Admin</SelectItem>
+                  {isSuper && <SelectItem value="COMPANY_ADMIN">Team Admin</SelectItem>}
                   <SelectItem value="PARTNER_VIEWER">Partner (read-only)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+            {needsTeam && (
+              <div className="space-y-1.5">
+                <Label htmlFor="new-user-team">Team <span aria-hidden="true">*</span></Label>
+                {teams.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No teams yet — create one first.</p>
+                ) : (
+                  <Select
+                    items={Object.fromEntries(teams.map((t) => [t.id, t.name]))}
+                    value={teamId}
+                    onValueChange={(v) => setTeamId(v ?? "")}
+                  >
+                    <SelectTrigger id="new-user-team">
+                      <SelectValue placeholder="Select a team" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {teams.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            )}
             {role === "PARTNER_VIEWER" && (
               <div className="space-y-1.5">
-                <Label htmlFor="new-user-account">Partner account <span aria-hidden="true">*</span></Label>
+                <Label htmlFor="new-user-account">Building <span aria-hidden="true">*</span></Label>
                 {accounts.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No accounts to assign yet — create one first.</p>
+                  <p className="text-sm text-muted-foreground">No buildings to assign yet — create an account first.</p>
                 ) : (
                   <Select
                     items={Object.fromEntries(accounts.map((a) => [a.id, a.name]))}
@@ -255,7 +297,7 @@ export function UserAdmin({ initial, accounts = [] }: { initial: Row[]; accounts
             </Button>
             <Button
               onClick={createUser}
-              disabled={creating || !name || !email || password.length < 8 || (role === "PARTNER_VIEWER" && !accountId)}
+              disabled={creating || !name || !email || password.length < 8 || (role === "PARTNER_VIEWER" && !accountId) || (needsTeam && !teamId)}
             >
               {creating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Create user

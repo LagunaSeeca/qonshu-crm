@@ -11,6 +11,10 @@ function account(overrides: Partial<Account>): Account {
     id: "acc_1",
     companyId: "co_1",
     externalPartnerKey: null,
+    // CONFIRMED BY DEFAULT, so each test below says only the thing it is about. A key with no
+    // stamp is a PENDING link and resolves to null whatever else is set — which is the gate, and
+    // has its own tests at the end of this describe rather than being folded into every other one.
+    partnerLinkConfirmedAt: new Date("2026-01-01T00:00:00Z"),
     externalApiKeyEnc: null,
     externalApiKeyLast4: null,
     ...overrides,
@@ -74,6 +78,32 @@ describe("resolvePartnerCredentials", () => {
   it("treats an empty-string PARTNER_API_KEY the same as unset (still not configured)", () => {
     process.env.PARTNER_API_KEY = "";
     const a = account({ externalPartnerKey: "acme" });
+
+    expect(resolvePartnerCredentials(a)).toBeNull();
+  });
+
+  // THE ENTITLEMENT GATE (security review finding F1). Naming a building records a link; it does
+  // not grant the complex. Until an admin confirms it, this resolver must answer exactly as it
+  // does for an unlinked account — otherwise a plain MEMBER reads a complex Qonshu may have no
+  // contract with, which is what the finding proved at runtime.
+  it("returns null (not configured) for a PENDING link, however complete the rest of the config is", () => {
+    process.env.PARTNER_API_KEY = "shared-env-key";
+    process.env.PARTNER_API_BASE_URL = "https://partner.example.com";
+    const a = account({ externalPartnerKey: "acme", partnerLinkConfirmedAt: null });
+
+    expect(resolvePartnerCredentials(a)).toBeNull();
+  });
+
+  // The per-account override key is a DORMANT future path, but it must not become a way around
+  // the gate: a pending link with an override resolves to nothing either. (The gate is checked
+  // BEFORE the decrypt, so a pending link cannot even throw its way to a different status.)
+  it("a pending link is not rescued by a per-account override key", () => {
+    delete process.env.PARTNER_API_KEY;
+    const a = account({
+      externalPartnerKey: "acme",
+      partnerLinkConfirmedAt: null,
+      externalApiKeyEnc: encryptSecret("override-key"),
+    });
 
     expect(resolvePartnerCredentials(a)).toBeNull();
   });

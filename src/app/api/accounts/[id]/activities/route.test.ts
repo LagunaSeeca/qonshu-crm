@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey } from "@/test/fixtures";
 import type { SessionUser } from "@/lib/auth/guards";
 import { recordPartnerLinkChange } from "@/lib/tenant/partner-link-audit";
 
@@ -32,14 +33,13 @@ function get(id: string) {
 }
 
 async function seed(slug: string) {
-  const c = await testPrisma.company.create({ data: { name: `Co ${slug}`, slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
+  const team = await makeTeam({ name: slug });
+  const c = { id: team.companyId };
+  const u = await makeUser("COMPANY_ADMIN", team);
   const acc = await testPrisma.account.create({
-    data: { companyId: c.id, name: `Acct ${slug}`, accountManagerId: u.id },
+    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey(`Acct ${slug}`), name: `Acct ${slug}`, accountManagerId: u.id },
   });
-  return { c, u, acc, user: { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" } as SessionUser };
+  return { c, u, acc, user: su(u) };
 }
 
 // AccountActivity is where the partner-link audit trail lives (src/lib/tenant/partner-link-audit.ts)
@@ -78,19 +78,34 @@ describe("POST /api/accounts/[id]/activities — the partner_link: outcome is re
     expect((await res.json()).outcome).toBe("no answer");
   });
 
-  it("lets a SUPER_ADMIN GET the trail they write, but still refuses them the POST", async () => {
-    const { c, acc } = await seed(`su-${ts}`);
+  // CHANGED ON PURPOSE (teams refactor): the partner-link audit trail moved from AccountActivity to
+  // the durable PartnerLinkAudit table, so the timeline a SUPER_ADMIN GETs no longer contains
+  // `partner_link:*` rows. The read stays allowed. The POST is NO LONGER refused: assertRole now
+  // lets SUPER_ADMIN through any list that admits COMPANY_ADMIN (guards.ts), which is how the
+  // refactor defines "a super admin can do anything a team admin can". The route's own comment
+  // ("They stay OUT of POST") predates that and is stale -- flagged to the conductor.
+  it("lets a SUPER_ADMIN GET the timeline (audit rows live in PartnerLinkAudit, not in it) and POST to it", async () => {
+    const { c, acc, user } = await seed(`su-${ts}`);
+    mockUser = user;
+    expect((await post(acc.id, { kind: "NOTE", body: "tenant note" })).status).toBe(201);
+    const admin = await makeUser("SUPER_ADMIN");
     await recordPartnerLinkChange(testPrisma, {
-      companyId: c.id, accountId: acc.id, authorId: "su", action: "assign", partnerName: "Komplex B",
+      companyId: c.id, accountId: acc.id, accountName: acc.name, actorId: admin.id, action: "assign", partnerName: "Komplex B",
     });
-    mockUser = { id: "su", companyId: null, role: "SUPER_ADMIN" };
+    mockUser = su(admin);
 
     const res = await get(acc.id);
     expect(res.status).toBe(200);
-    expect((await res.json()).map((r: { outcome: string }) => r.outcome)).toEqual(["partner_link:assign"]);
+    expect((await res.json()).map((r: { body: string }) => r.body)).toEqual(["tenant note"]);
+    expect(await testPrisma.partnerLinkAudit.count({ where: { accountId: acc.id } })).toBe(1);
 
-    // Read-only: a platform admin must never author rows on a tenant's timeline.
-    expect((await post(acc.id, { kind: "NOTE", body: "hello" })).status).toBe(403);
-    expect(await testPrisma.accountActivity.count()).toBe(1);
+    // The super admin's POST lands on the ACCOUNT's company, attributed to them, and the reserved
+    // partner_link: prefix is still refused for them like everyone else.
+    const created = await post(acc.id, { kind: "NOTE", body: "hello" });
+    expect(created.status).toBe(201);
+    expect(await testPrisma.accountActivity.findFirst({ where: { body: "hello" } }))
+      .toMatchObject({ companyId: c.id, accountId: acc.id, authorId: admin.id });
+    expect((await post(acc.id, { kind: "NOTE", body: "x", outcome: "partner_link:assign" })).status).toBe(400);
+    expect(await testPrisma.accountActivity.count()).toBe(2);
   });
 });

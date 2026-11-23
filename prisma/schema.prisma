@@ -34,8 +34,8 @@ model Company {
   name                String
   slug                String              @unique
   status              CompanyStatus       @default(ACTIVE)
-  shareAllLeads       Boolean             @default(true)
   createdAt           DateTime            @default(now())
+  teams               Team[]
   users               User[]
   invitations         Invitation[]
   stages              Stage[]
@@ -53,13 +53,37 @@ model Company {
   accountFieldValues  AccountFieldValue[]
   serviceFees         ServiceFee[]
   installSnapshots    PlatformInstallSnapshot[]
-  partnerAllowlist    PartnerAllowlist[]
+}
+
+// A sales team inside the one org (Qonshu). Each team has one COMPANY_ADMIN ("Team Admin" in the
+// UI) plus MEMBERs, and owns its own Lead/Account book, its own Stage pipeline and its own
+// AccountFieldDef set. Teams are the isolation boundary that Company used to be: a MEMBER sees
+// only their OWN rows, a team admin sees their whole team, a SUPER_ADMIN sees everything.
+model Team {
+  id        String   @id @default(cuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime @default(now())
+  users     User[]
+  stages    Stage[]
+  leads     Lead[]
+  accounts  Account[]
+  fieldDefs AccountFieldDef[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
 }
 
 model User {
   id           String     @id @default(cuid())
   companyId    String?
   company      Company?   @relation(fields: [companyId], references: [id])
+  // Null for SUPER_ADMIN (sees every team) and for PARTNER_VIEWER (scoped to one Account via
+  // accountId, never to a team). Required in practice for COMPANY_ADMIN and MEMBER, but kept
+  // nullable because the column cannot be NOT NULL while those two roles exist alongside them.
+  teamId       String?
+  team         Team?      @relation(fields: [teamId], references: [id], onDelete: SetNull)
   email        String     @unique
   passwordHash String
   name         String
@@ -67,12 +91,14 @@ model User {
   status       UserStatus @default(ACTIVE)
   createdAt    DateTime   @default(now())
   ownedLeads   Lead[]     @relation("LeadOwner")
+  managedAccounts Account[] @relation("AccountManager")
   accountId    String?
   account      Account?   @relation(fields: [accountId], references: [id])
   createdInstallSnapshots PlatformInstallSnapshot[]
 
   @@index([companyId])
   @@index([accountId])
+  @@index([companyId, teamId])
 }
 
 model Invitation {
@@ -116,6 +142,11 @@ model Stage {
   id          String    @id @default(cuid())
   companyId   String
   company     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  // NULL means the ORG-LEVEL DEFAULT TEMPLATE: the stage set a newly created team is seeded
+  // from. A non-null teamId is that team's own live pipeline. Template rows are never attached
+  // to leads; only a team's own rows are.
+  teamId      String?
+  team        Team?     @relation(fields: [teamId], references: [id], onDelete: Cascade)
   name        String
   order       Int
   type        StageType @default(OPEN)
@@ -123,12 +154,21 @@ model Stage {
   createdAt   DateTime  @default(now())
   leads       Lead[]
   @@index([companyId])
+  @@index([companyId, teamId])
 }
 
 model Lead {
   id                String    @id @default(cuid())
   companyId         String
   company           Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  teamId            String
+  team              Team      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  // The BUILDING this lead is for, normalized, and the thing a team actually claims. Unique per
+  // company, so one building is worked by exactly one team at a time. A LOST lead KEEPS its
+  // claim (owner decision) — hence a plain unique index and deliberately NOT stage-aware
+  // uniqueness. Recomputed by the app on every write from the same source the backfill used
+  // (COALESCE(companyName, title)).
+  buildingKey       String
   title             String
   contactName       String
   email             String?
@@ -142,14 +182,22 @@ model Lead {
   owner             User      @relation("LeadOwner", fields: [ownerId], references: [id])
   expectedCloseDate DateTime?
   lostReason        String?
+  // When this lead was WON, set once at the moment of the transition. Replaces the old
+  // `updatedAt`-based "won in period" metric, which re-counted an old won lead into the current
+  // period every time anyone edited it. Null for a lead that has never been won.
+  wonAt             DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   activities        Activity[]
   tasks             Task[]
   attachments       Attachment[]
+  @@unique([companyId, buildingKey])
   @@index([companyId])
   @@index([companyId, stageId])
   @@index([companyId, ownerId])
+  @@index([companyId, teamId])
+  @@index([teamId, ownerId])
+  @@index([companyId, wonAt])
 }
 
 model Activity {
@@ -219,14 +267,65 @@ model Account {
   id                  String        @id @default(cuid())
   companyId           String
   company             Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  teamId              String
+  team                Team          @relation(fields: [teamId], references: [id], onDelete: Restrict)
   name                String
+  // Same building claim as Lead.buildingKey, carried across conversion: a won lead's key becomes
+  // its account's key, so the building stays claimed by the one team that sold it. Unique per
+  // company. Lead and Account hold SEPARATE unique indexes, so a won lead and the account it
+  // became legitimately share a key.
+  buildingKey         String
   website             String?
   industry            String?
   // Manually-entered key that maps this account to the partner company as known to the
   // external analytics API (matched by company name per the partner API contract). The real
   // PartnerAnalyticsSource fetches by THIS key, not the display name, so renaming the account
   // never mis-routes another partner's data onto it. Null => not yet linked => syncs nothing.
+  //
+  // NON-NULL MEANS "A LINK EXISTS", NOT "A LINK IS LIVE". Read it together with
+  // partnerLinkConfirmedAt below: the pair is a two-state machine and only the confirmed state
+  // authorizes anything.
   externalPartnerKey  String?
+  // WHEN THE LINK WAS CONFIRMED. Null while externalPartnerKey is non-null = PENDING.
+  //
+  // WHY THIS COLUMN EXISTS (security review finding F1): dropping PartnerAllowlist swapped an
+  // ENTITLEMENT check ("may Qonshu read this complex's data at all?") for a CONTENTION check
+  // ("has anyone here claimed it?"). Nothing answered the first question any more, so a plain
+  // MEMBER could name a guessed building, have the account auto-link off the live upstream list,
+  // and read that complex's debt, payments and — via the Objects tab — every unit's owner name
+  // and phone number, including buildings Qonshu has no contract with.
+  //
+  // So naming a building still records the claim (that is what stops two members pending one
+  // building), but the link grants NOTHING until it is confirmed on /partner-links — by the
+  // account team's own admin, or by the owner, and NEVER by the person who proposed it
+  // (partnerLinkProposedById below).
+  //
+  // resolvePartnerCredentials (src/lib/partner-api/credentials.ts) is the single chokepoint that
+  // enforces it: a pending link resolves to null and every consumer renders "not configured".
+  //
+  // Set by: confirm (a team admin for their own team, or a super admin anywhere) and the
+  // SUPER_ADMIN direct assign. Cleared with the key by: reject and clear.
+  partnerLinkConfirmedAt DateTime?
+  // WHO PROPOSED THE PENDING LINK — the user whose account-create or rename staked it.
+  //
+  // This exists to enforce a TWO-PERSON RULE: nobody may confirm a link they themselves proposed.
+  // A COMPANY_ADMIN is also a salesperson, so without this an admin could name any building and
+  // immediately approve their own access to that complex's debt, payments and unit owners —
+  // leaving the gate with one person on both sides of it. A SUPER_ADMIN is exempt: they are the
+  // last resort, and without that exemption a link they proposed would be unapprovable by anyone.
+  //
+  // READ AS AUTHORIZATION INPUT, so it is stored here rather than derived from PartnerLinkAudit.
+  // The audit is a log — rows can be filtered on read and an account can be re-proposed — and
+  // "who may act now" must come from current state, not from a query over history.
+  //
+  // A BARE String WITH NO RELATION, deliberately, matching PartnerLinkAudit.actorId: this must not
+  // acquire a cascade or a RESTRICT that makes deleting a user depend on partner-link state. A
+  // dangling id is harmless — it matches no live actor, so it blocks nobody.
+  //
+  // Null means "no proposer on record": an unlinked account, a link the SUPER_ADMIN assigned
+  // directly, or a confirmed link that predates this column (see the migration's backfill note).
+  // Cleared on reject; KEPT on confirm, so the record of who asked survives the approval.
+  partnerLinkProposedById String?
   // Ciphertext of the secret X-API-Key used to authenticate to the partner's Django backend
   // (encryption performed by the integration layer, not by this model). Nullable until linked.
   externalApiKeyEnc   String?
@@ -235,6 +334,7 @@ model Account {
   externalApiKeyLast4 String?
   status              AccountStatus @default(ACTIVE)
   accountManagerId    String
+  accountManager      User          @relation("AccountManager", fields: [accountManagerId], references: [id], onDelete: Restrict)
   primaryContactName  String?
   primaryContactEmail String?
   primaryContactPhone String?
@@ -250,6 +350,7 @@ model Account {
   serviceFees         ServiceFee[]
   partnerUsers        User[]
   installSnapshots    PlatformInstallSnapshot[]
+  partnerLinkAudits   PartnerLinkAudit[]
   // DB backstop for the GLOBAL partner namespace: one shared X-API-Key means `?partner=<name>`
   // addresses the same upstream complex for every tenant, so two accounts holding one name
   // double-count every analytics fan-out AND cross-expose two companies' debt/payments/unit
@@ -257,9 +358,12 @@ model Account {
   // racy on its own; this constraint is what actually makes a double claim impossible. Postgres
   // ignores NULLs in a unique index, so any number of unlinked accounts coexist.
   @@unique([externalPartnerKey])
+  @@unique([companyId, buildingKey])
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, accountManagerId])
+  @@index([companyId, teamId])
+  @@index([teamId, accountManagerId])
 }
 
 model AccountActivity {
@@ -345,30 +449,50 @@ model PlatformInstallSnapshot {
   @@index([companyId, capturedOn])
 }
 
-// SUPER_ADMIN-managed authorization table: which company is allowed to auto-link to which
-// external partner (complex). WHY IT EXISTS: auto-link used to resolve a partner from the
-// account NAME — free text the tenant supplies — so any MEMBER could create an account named
-// after another tenant's complex and claim it, and the 201 response confirmed the hit, making
-// account creation an enumeration oracle over the global partner namespace. Auto-link is now a
-// LOOKUP against this table instead of a CLAIM on a name, and a name that isn't allowlisted to
-// the caller's company is indistinguishable from a name that doesn't exist at all.
+// DURABLE audit trail for the most security-sensitive write in the app: which account points at
+// which external complex (Account.externalPartnerKey), over a namespace shared by everyone.
 //
-// NORMALIZATION: `partnerName` stores the EXACT upstream name (it is what gets sent as
-// `?partner=` and persisted to Account.externalPartnerKey); `normalizedName` is the trimmed,
-// lowercased form and is the ONLY column looked up by. Both are unique, so one complex can be
-// granted to at most one company however it is cased.
+// WHY A DEDICATED TABLE: this trail used to live in AccountActivity, which is cascade-deleted
+// with its account. Deleting the account therefore destroyed the record of who had linked it to
+// which complex — exactly the question an audit exists to answer, and exactly the record someone
+// covering their tracks would want gone. This table is deliberately attached to NOTHING that
+// cascades:
+//   - `accountId` is a NULLABLE FK with onDelete: SetNull, so the row outlives its account.
+//   - `companyId` is a BARE String with no relation (same convention as AccountActivity.authorId
+//     and SettlementEntry.createdById), so the row also outlives its company.
+//   - `actorId` is likewise bare, so it survives the deletion of the user who acted.
+// Nothing anywhere declares a cascade into this table. Do not add one.
 //
-// createdById is a bare String (no relation), matching AccountActivity.authorId: it records
-// which super admin added the grant without making the row depend on that user still existing.
-model PartnerAllowlist {
-  id             String   @id @default(cuid())
-  partnerName    String   @unique
-  normalizedName String   @unique
-  companyId      String
-  company        Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  createdById    String?
-  createdAt      DateTime @default(now())
-  @@index([companyId])
+// Because the FK can go null and the actor/company are unresolvable joins, every field needed to
+// READ the row later is DENORMALIZED at write time: accountName, partnerName and actorEmail are
+// snapshots of what was true when the link changed, not live lookups. They are intentionally NOT
+// kept in sync if the account or user is later renamed — the audit records what the admin saw.
+model PartnerLinkAudit {
+  id          String   @id @default(cuid())
+  // Bare String, no relation: see header. The company this account belonged to when the link
+  // changed.
+  companyId   String
+  // Goes NULL when the account is deleted; the row and its denormalized copy remain.
+  accountId   String?
+  account     Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  // Snapshot of Account.name at write time — the only readable identification of the account
+  // once accountId is null.
+  accountName String
+  // The external complex involved. For a "clear" this is the name the link HELD before being
+  // cleared, which is otherwise unrecoverable (the column becomes null). Null only when a clear
+  // found nothing linked.
+  partnerName String?
+  // One of PartnerLinkAction in src/lib/tenant/partner-link-audit.ts: "auto_link" | "assign" |
+  // "clear". A String rather than a DB enum so a later action can be added without a migration,
+  // matching how AccountActivity.outcome already encodes this vocabulary.
+  action      String
+  // Bare String, no relation: see header. Null for a system action with no human behind it.
+  actorId     String?
+  // Snapshot of the actor's email, so the row still names a person after that user is deleted.
+  actorEmail  String?
+  createdAt   DateTime @default(now())
+  @@index([companyId, createdAt])
+  @@index([accountId])
 }
 
 enum SettlementType {
@@ -409,13 +533,23 @@ model AccountFieldDef {
   id        String              @id @default(cuid())
   companyId String
   company   Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  // NULL means the ORG-LEVEL DEFAULT TEMPLATE that a new team's field set is seeded from; a
+  // non-null teamId is that team's own live definition. Template rows never carry values.
+  teamId    String?
+  team      Team?               @relation(fields: [teamId], references: [id], onDelete: Cascade)
   label     String
   type      AccountFieldType
   order     Int
   createdAt DateTime            @default(now())
   values    AccountFieldValue[]
-  @@unique([companyId, label])
+  // Scoped to the TEAM, not the company: two teams may each have a "Total area" field.
+  // CAVEAT: Postgres treats NULLs as DISTINCT in a unique index, so this constraint does NOT
+  // police the org-level template (teamId IS NULL) — duplicate template labels are possible at
+  // the DB level and MUST be rejected in app code. A partial unique index on (label) WHERE
+  // teamId IS NULL would close that, but Prisma cannot express one, so it is an app-layer rule.
+  @@unique([teamId, label])
   @@index([companyId])
+  @@index([companyId, teamId])
 }
 
 model AccountFieldValue {

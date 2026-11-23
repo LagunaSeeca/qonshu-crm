@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { testPrisma, resetDb } from "@/test/db";
+import { makeTeam, makeUser, su, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import { InvalidApiKeyError, UnknownPartnerError, PartnerApiUnavailableError } from "@/lib/partner-api/errors";
 import type { SessionUser } from "@/lib/auth/guards";
 import type { PartnerObjectsResponse } from "@/lib/partner-api/schema";
@@ -59,14 +60,13 @@ function rawObjects(): PartnerObjectsResponse {
 // "Configured" now means only a partner NAME — the account goes live off the shared
 // PARTNER_API_KEY env var (set in beforeEach below); there is no per-account key entry anymore.
 async function seedConfiguredAccount(slug: string) {
-  const c = await testPrisma.company.create({ data: { name: "Co", slug } });
-  const u = await testPrisma.user.create({
-    data: { companyId: c.id, email: `u-${slug}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" },
-  });
+  const team = await makeTeam({ name: slug });
+  const c = { id: team.companyId };
+  const u = await makeUser("COMPANY_ADMIN", team);
   const acc = await testPrisma.account.create({
-    data: { companyId: c.id, name: "Partner", accountManagerId: u.id, externalPartnerKey: "acme" },
+    data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Partner"), name: "Partner", accountManagerId: u.id, ...confirmedPartnerLink("acme") },
   });
-  const user: SessionUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+  const user: SessionUser = su(u);
   return { c, u, acc, user };
 }
 
@@ -152,10 +152,11 @@ describe("GET /api/accounts/[id]/objects — live normalization", () => {
   });
 
   it("reports not_configured without calling the API when the account has no partner key/API key", async () => {
-    const c = await testPrisma.company.create({ data: { name: "Co", slug: `obj-noconf-${Date.now()}-${Math.random()}` } });
-    const u = await testPrisma.user.create({ data: { companyId: c.id, email: `u-${Date.now()}@a.com`, passwordHash: "x", name: "U", role: "COMPANY_ADMIN" } });
-    const acc = await testPrisma.account.create({ data: { companyId: c.id, name: "Unlinked", accountManagerId: u.id } });
-    mockUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const team = await makeTeam();
+    const c = { id: team.companyId };
+    const u = await makeUser("COMPANY_ADMIN", team);
+    const acc = await testPrisma.account.create({ data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Unlinked"), name: "Unlinked", accountManagerId: u.id } });
+    mockUser = su(u);
 
     const res = await GET(new NextRequest(`http://localhost/api/accounts/${acc.id}/objects`), { params: Promise.resolve({ id: acc.id }) });
     const body = await res.json();
@@ -192,11 +193,125 @@ describe("GET /api/accounts/[id]/objects — live normalization", () => {
 
   it("404s for a foreign (cross-tenant) account without calling the API", async () => {
     const { acc: foreignAcc } = await seedConfiguredAccount("obj-x1");
-    const c = await testPrisma.company.create({ data: { name: "Co2", slug: `obj-x2-${Date.now()}-${Math.random()}` } });
-    const u = await testPrisma.user.create({ data: { companyId: c.id, email: `u2-${Date.now()}@a.com`, passwordHash: "x", name: "U2", role: "COMPANY_ADMIN" } });
-    mockUser = { id: u.id, companyId: c.id, role: "COMPANY_ADMIN" };
+    const u = await makeUser("COMPANY_ADMIN", await makeTeam());
+    mockUser = su(u);
 
     const res = await GET(new NextRequest(`http://localhost/x`), { params: Promise.resolve({ id: foreignAcc.id }) });
+    expect(res.status).toBe(404);
+    expect(fetchPartnerObjects).not.toHaveBeenCalled();
+  });
+
+  // ---- role gate: enforced in the service (getAccountObjects), shared with server components ----
+
+  function twoBuildings(): PartnerObjectsResponse {
+    const raw = rawObjects();
+    raw.buildings.push({
+      id: 2,
+      name: "Building B",
+      blocks: [
+        { id: 20, name: "Block 2", apartments: [
+          { id: 101, owner_id: 6, owner_name: "Secret Owner", owner_mobile: "+777", debt: 1, balance: 2, net: 1, apartment_number: "1" },
+          { id: 102, owner_id: null, owner_name: null, owner_mobile: null, debt: 0, balance: 0, net: 0, apartment_number: "2" },
+        ] },
+      ],
+      parkings: [
+        { id: 201, owner_id: null, owner_name: null, owner_mobile: null, debt: 0, balance: 0, net: 0, parking_number: "P-1" },
+        { id: 202, owner_id: null, owner_name: null, owner_mobile: null, debt: 0, balance: 0, net: 0, parking_number: "P-2" },
+      ],
+      properties: [],
+      offices: [],
+    });
+    return raw;
+  }
+
+  async function seedMemberAccount() {
+    const team = await makeTeam();
+    const member = await makeUser("MEMBER", team);
+    const acc = await testPrisma.account.create({
+      data: { companyId: team.companyId, teamId: team.id, buildingKey: buildingKey("Mine"), name: "Mine", accountManagerId: member.id, ...confirmedPartnerLink("acme") },
+    });
+    return { team, member, acc };
+  }
+
+  it("a MEMBER receives totals only: no buildings key, no unit, owner or money detail anywhere in the payload", async () => {
+    const { member, acc } = await seedMemberAccount();
+    mockUser = su(member);
+    vi.mocked(fetchPartnerObjects).mockResolvedValue(twoBuildings());
+
+    const res = await GET(new NextRequest(`http://localhost/x`), { params: Promise.resolve({ id: acc.id }) });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    const body = JSON.parse(text);
+
+    expect(body).toEqual({
+      status: "ok",
+      detail: "summary",
+      partner: "acme",
+      complexType: "RESIDENTIAL",
+      totals: { buildings: 2, blocks: 2, apartments: 3, parkings: 3, properties: 1, offices: 1 },
+    });
+    expect(body).not.toHaveProperty("buildings");
+    // serialized-payload check: nothing identifying a unit or its owner may appear at all
+    for (const leak of ["Building A", "Building B", "Block 1", "12B", "P-7", "Jane", "Secret Owner", "+777", "Acme LLC", "ownerName", "debt", "balance"]) {
+      expect(text).not.toContain(leak);
+    }
+  });
+
+  it("the service itself (not just the route) strips detail for a MEMBER and keeps it for COMPANY_ADMIN", async () => {
+    const { getAccountObjects } = await import("@/lib/tenant/account-objects");
+    const { member, acc } = await seedMemberAccount();
+    vi.mocked(fetchPartnerObjects).mockResolvedValue(twoBuildings());
+
+    const asMember = await getAccountObjects(su(member), acc.id);
+    expect(asMember.status).toBe("ok");
+    expect(JSON.stringify(asMember)).not.toContain("Secret Owner");
+    expect(asMember).not.toHaveProperty("buildings");
+
+    const adminUser = await makeUser("COMPANY_ADMIN", { id: member.teamId!, companyId: member.companyId! } as never);
+    const asAdmin = await getAccountObjects(su(adminUser), acc.id);
+    expect(asAdmin).toMatchObject({ status: "ok", detail: "full" });
+    expect((asAdmin as { buildings: unknown[] }).buildings).toHaveLength(2);
+  });
+
+  it("COMPANY_ADMIN gets full detail plus the same totals", async () => {
+    const { acc, user } = await seedConfiguredAccount("obj-admin-full");
+    mockUser = user;
+    vi.mocked(fetchPartnerObjects).mockResolvedValue(twoBuildings());
+
+    const body = await (await GET(new NextRequest(`http://localhost/x`), { params: Promise.resolve({ id: acc.id }) })).json();
+    expect(body.detail).toBe("full");
+    expect(body.buildings).toHaveLength(2);
+    expect(body.totals).toEqual({ buildings: 2, blocks: 2, apartments: 3, parkings: 3, properties: 1, offices: 1 });
+  });
+
+  it("PARTNER_VIEWER gets full detail for its own account and 404 for any other", async () => {
+    const { c, acc } = await seedConfiguredAccount("obj-pv");
+    const team = await testPrisma.team.findFirstOrThrow({ where: { companyId: c.id } });
+    const pv = await makeUser("PARTNER_VIEWER", team, { accountId: acc.id });
+    const other = await testPrisma.account.create({
+      data: { companyId: c.id, teamId: team.id, buildingKey: buildingKey("Other"), name: "Other", accountManagerId: (await makeUser("COMPANY_ADMIN", team)).id, ...confirmedPartnerLink("beta") },
+    });
+    vi.mocked(fetchPartnerObjects).mockResolvedValue(twoBuildings());
+    mockUser = su(pv);
+
+    const own = await (await GET(new NextRequest(`http://localhost/x`), { params: Promise.resolve({ id: acc.id }) })).json();
+    expect(own.detail).toBe("full");
+    expect(own.buildings).toHaveLength(2);
+
+    vi.mocked(fetchPartnerObjects).mockClear();
+    const res = await GET(new NextRequest(`http://localhost/x`), { params: Promise.resolve({ id: other.id }) });
+    expect(res.status).toBe(404);
+    expect(fetchPartnerObjects).not.toHaveBeenCalled();
+  });
+
+  it("a MEMBER gets 404, and no upstream call, for an account they do not manage (totals never cover other books)", async () => {
+    const { team, member } = await seedMemberAccount();
+    const admin = await makeUser("COMPANY_ADMIN", team);
+    const notMine = await testPrisma.account.create({
+      data: { companyId: team.companyId, teamId: team.id, buildingKey: buildingKey("NotMine"), name: "NotMine", accountManagerId: admin.id, ...confirmedPartnerLink("beta") },
+    });
+    mockUser = su(member);
+    const res = await GET(new NextRequest(`http://localhost/x`), { params: Promise.resolve({ id: notMine.id }) });
     expect(res.status).toBe(404);
     expect(fetchPartnerObjects).not.toHaveBeenCalled();
   });
