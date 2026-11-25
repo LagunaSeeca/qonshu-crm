@@ -1,6 +1,6 @@
 import type { PrismaClient, Account } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
-import { NotFoundError } from "@/lib/auth/guards";
+import { assertCan, NotFoundError } from "@/lib/auth/guards";
 import { listAccounts, getAccount } from "./accounts";
 import { fetchAllPayments, countUniquePayers, type AllPayments } from "./partner-payments";
 import { resolvePartnerCredentials, type PartnerCredentials } from "@/lib/partner-api/credentials";
@@ -67,6 +67,15 @@ export async function getCompanyAnalytics(
   // detail on `view_payment_detail` may ask for them (today: getReport). Nothing is persisted.
   opts?: { accountId?: string; includePayments?: boolean },
 ) {
+  // MONEY, AGGREGATED — total debt, payment counts and amounts, per-method and per-category amount
+  // breakdowns, summed across every building the caller can see. `view_financials` (everyone but
+  // ONBOARDING; MEMBER unchanged, since /analytics has always shown a member their own buildings).
+  //
+  // Asserted FIRST, before any scope resolution or upstream fan-out: id-independent, so it is not a
+  // 403/404 oracle, and a denied caller costs no network calls. This is also the gate the partner
+  // portal and the dashboard inherit — getDashboardStats and getReport both route their partner
+  // KPIs through this one function.
+  assertCan(user, "view_financials");
   // Scope resolution — same chokepoint rules as before: PARTNER_VIEWER is pinned to their own
   // account (a sentinel that matches nothing when unset → fail closed); admin/member may pass
   // an optional single-account filter, validated through getAccount so a foreign id 404s

@@ -1,8 +1,19 @@
 import type { PrismaClient, ServiceFee, ServiceFeeStatus, SettlementMethod } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
-import { NotFoundError } from "@/lib/auth/guards";
-import { getAccount } from "./accounts";
+import { assertCan, NotFoundError } from "@/lib/auth/guards";
+import { getAccount, getWritableAccount } from "./accounts";
 import { accountScopeWhere } from "./scope";
+
+// GATING LIVES HERE, IN THE SERVICE, NOT ONLY IN THE ROUTE HANDLERS — the same invariant
+// settlements.ts states at length. Server components call these functions directly and hand the
+// result to client components as props, so a gate that sits only in `/api/...` still ships the
+// numbers into the browser on the page render.
+//
+// A SERVICE FEE IS MONEY: it is what Qonshu invoices a building. READS therefore require
+// `view_financials`, which every role holds EXCEPT ONBOARDING — a MEMBER included, unchanged, since
+// their own buildings' billing has always been theirs to see. WRITES go through getWritableAccount
+// (`edit_accounts`), so an assigned onboarding user cannot create, amend, delete, or flip the paid
+// state of an invoice on a building they are merely activating.
 
 const num = (d: { toNumber: () => number }) => d.toNumber();
 
@@ -13,7 +24,7 @@ function firstOfMonth(d: Date): Date {
 export async function addServiceFee(db: PrismaClient, user: SessionUser, accountId: string, args: {
   periodMonth: Date; amount: number; dueDate?: Date; note?: string;
 }): Promise<ServiceFee> {
-  const acc = await getAccount(db, user, accountId);
+  const acc = await getWritableAccount(db, user, accountId);
   if (!acc) throw new NotFoundError("account not in scope");
   return db.serviceFee.create({ data: {
     companyId: acc.companyId, accountId, periodMonth: firstOfMonth(args.periodMonth), amount: args.amount,
@@ -32,8 +43,13 @@ export async function addServiceFee(db: PrismaClient, user: SessionUser, account
 // "No such fee" and "not your account" return the SAME NotFoundError on purpose: a different
 // answer for the two is an id-probing oracle over the org's whole billing table.
 async function requireFeeInScope(db: PrismaClient, user: SessionUser, feeId: string): Promise<ServiceFee> {
+  // Hoisted above the child lookup, as in account-tasks.ts/account-asks.ts: `edit_accounts` is an
+  // id-independent ROLE test, so asserting it only after the fee row is found would answer 403 for
+  // a real fee id and 404 for an invented one — reinstating, for exactly the roles being kept out,
+  // the id-probing oracle that the shared NotFoundError below exists to close.
+  assertCan(user, "edit_accounts");
   const found = await db.serviceFee.findUnique({ where: { id: feeId } });
-  if (!found || !(await getAccount(db, user, found.accountId))) throw new NotFoundError("fee not in scope");
+  if (!found || !(await getWritableAccount(db, user, found.accountId))) throw new NotFoundError("fee not in scope");
   return found;
 }
 
@@ -69,6 +85,10 @@ export async function markFeeUnpaid(db: PrismaClient, user: SessionUser, feeId: 
 }
 
 export async function getAccountServiceFees(db: PrismaClient, user: SessionUser, accountId: string) {
+  // BEFORE the scope lookup, and intentionally so: `view_financials` does not look at the id, so
+  // the refusal is the same for every id and discloses nothing — while putting it after would make
+  // "403 vs 404" tell an onboarding user whether a building exists in someone else's book.
+  assertCan(user, "view_financials");
   const acc = await getAccount(db, user, accountId);
   if (!acc) throw new NotFoundError("account not in scope");
   const fees = await db.serviceFee.findMany({
@@ -90,6 +110,11 @@ export async function getAccountServiceFees(db: PrismaClient, user: SessionUser,
 export async function listCompanyServiceFees(db: PrismaClient, user: SessionUser, opts?: {
   status?: ServiceFeeStatus; from?: Date; to?: Date;
 }) {
+  // The billing roll-up is money, so it needs `view_financials`. Note that getDashboardStats calls
+  // this UNCONDITIONALLY for `finance.serviceFeesOutstanding` — which is safe only because
+  // leadScopeWhere already refuses ONBOARDING before the dashboard reaches this line. A MEMBER
+  // holds view_financials, so their dashboard and billing page are unchanged.
+  assertCan(user, "view_financials");
   const scope = accountScopeWhere(user);
   const accounts = await db.account.findMany({ where: scope, orderBy: { name: "asc" } });
   const where: { companyId: string; accountId: { in: string[] }; status?: ServiceFeeStatus; periodMonth?: { gte?: Date; lte?: Date } } = {

@@ -93,11 +93,76 @@ describe("leadScopeWhere", () => {
   });
 });
 
+describe("leadScopeWhere — ONBOARDING", () => {
+  // THE SINGLE THROW THAT CLOSES THE WHOLE CRM. getDashboardStats, getReport, getMyWork, leads.ts
+  // and stages.ts all resolve their scope through leadScopeWhere, so this one assertion is the
+  // regression guard for every one of those surfaces at once.
+  it("ONBOARDING is refused the CRM outright, and company/team context cannot buy it in", () => {
+    expect(() => leadScopeWhere(session("ONBOARDING", { companyId: CO }))).toThrow(ForbiddenError);
+    // Not an accident of the missing team: even handed one, the answer is the same.
+    expect(() => leadScopeWhere(session("ONBOARDING", { companyId: CO, teamId: T1 }))).toThrow(ForbiddenError);
+  });
+});
+
 describe("accountScopeWhere", () => {
-  it("MEMBER sees only the accounts they manage", () => {
+  // THE MEMBER RELAXATION. This used to be `{ companyId, teamId, accountManagerId: "m1" }` — own
+  // rows only. Several sales managers now work one building, so access is manager OR assigned.
+  //
+  // toEqual on the WHOLE object, not toMatchObject: a dropped key here is not a narrower filter,
+  // it is the whole company. The exact shape is the contract, and `AND` holding the membership
+  // test is the part callers must compose with rather than spread over (see the composition rule
+  // in scope.ts, and the listAccounts test in team-isolation.test.ts that proves it).
+  it("MEMBER sees the accounts they manage OR are assigned to, inside their own team", () => {
     expect(accountScopeWhere(session("MEMBER", { id: "m1" }))).toEqual({
-      companyId: CO, teamId: T1, accountManagerId: "m1",
+      companyId: CO,
+      teamId: T1,
+      AND: [{ OR: [{ accountManagerId: "m1" }, { assignments: { some: { userId: "m1" } } }] }],
     });
+  });
+
+  it("MEMBER keeps its TEAM key, so an assignment cannot reach into another team's book", () => {
+    const where = accountScopeWhere(session("MEMBER", { id: "m1" }));
+    // The relaxation is strictly WITHIN the member's own team. Losing this key would turn an
+    // AccountAssignment row into a cross-team grant, which nobody is entitled to issue.
+    expect(where.teamId).toBe(T1);
+    expect(where.companyId).toBe(CO);
+  });
+
+  it("ONBOARDING sees ONLY assigned accounts: company-wide, no team read, no company read", () => {
+    expect(accountScopeWhere(session("ONBOARDING", { id: "ob1", companyId: CO }))).toEqual({
+      companyId: CO,
+      AND: [{ assignments: { some: { userId: "ob1" } } }],
+    });
+  });
+
+  it("ONBOARDING carries NO teamId key, and a stray team on the session does not add one", () => {
+    const where = accountScopeWhere(session("ONBOARDING", { id: "ob1", companyId: CO }));
+    // Deliberate: activation staff serve every team, so requireTeam would refuse all of them. The
+    // assignment test in `AND` is what selects rows — an inclusion list, so no assignments means
+    // no rows, which is the fail-closed direction.
+    expect(where.teamId).toBeUndefined();
+    expect("teamId" in where).toBe(false);
+    const withTeam = accountScopeWhere(session("ONBOARDING", { id: "ob1", companyId: CO, teamId: T1 }));
+    expect(withTeam.teamId).toBeUndefined();
+  });
+
+  it("ONBOARDING fails closed with no company context", () => {
+    expect(() => accountScopeWhere(session("ONBOARDING", { companyId: null }))).toThrow(ForbiddenError);
+  });
+
+  // `scope.companyId` is read straight off the returned object by service-fees.ts, settlements.ts
+  // and accounts.ts getAccount. If it ever moved inside the AND, those callers would silently get
+  // `undefined` — which in a Prisma WHERE is no filter at all.
+  it("companyId is a TOP-LEVEL key in every branch", () => {
+    for (const u of [
+      session("MEMBER", { id: "m1" }),
+      session("COMPANY_ADMIN"),
+      session("SUPER_ADMIN", { companyId: CO }),
+      session("ONBOARDING", { id: "ob1", companyId: CO }),
+      session("PARTNER_VIEWER", { accountId: "a1" }),
+    ]) {
+      expect(accountScopeWhere(u).companyId).toBe(CO);
+    }
   });
 
   it("COMPANY_ADMIN sees their whole team", () => {
@@ -204,6 +269,24 @@ describe("resolveAssignableOwner", () => {
   it("PARTNER_VIEWER cannot assign anything", async () => {
     await expect(
       resolveAssignableOwner(noReader(), session("PARTNER_VIEWER", { accountId: "a1" }), "m1"),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it("ONBOARDING can neither assign nor be assigned", async () => {
+    // Cannot ASSIGN: refused before any query, so onboarding staff cannot create owned records.
+    await expect(
+      resolveAssignableOwner(noReader(), session("ONBOARDING", { companyId: CO }), "m1"),
+    ).rejects.toThrow(ForbiddenError);
+    // Cannot BE assigned: OWNABLE_ROLES is an allowlist of COMPANY_ADMIN/MEMBER, so an onboarding
+    // user named as a Lead owner or Account manager is refused at loadOwnable. This is what keeps
+    // the role out of every owner picker's accepted set, not just out of the picker's options.
+    const admin = session("COMPANY_ADMIN", { id: "a1" });
+    await expect(
+      resolveAssignableOwner(reader(member("ob1", { role: "ONBOARDING", teamId: null })), admin, "ob1"),
+    ).rejects.toThrow(ForbiddenError);
+    const sa = session("SUPER_ADMIN");
+    await expect(
+      resolveAssignableOwner(reader(member("ob2", { role: "ONBOARDING", teamId: null })), sa, "ob2"),
     ).rejects.toThrow(ForbiddenError);
   });
 });

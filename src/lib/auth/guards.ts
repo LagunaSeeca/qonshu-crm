@@ -13,7 +13,11 @@ export type Action =
   | "view_payment_detail"
   | "view_settlements"
   | "write_settlements"
-  | "view_object_detail";
+  | "view_financials"
+  | "view_object_detail"
+  | "edit_accounts"
+  | "manage_onboarding"
+  | "manage_account_assignments";
 export class ForbiddenError extends Error {}
 export class NotFoundError extends Error {}
 
@@ -36,7 +40,58 @@ const MATRIX: Record<Action, readonly Role[]> = {
   // capability. A transfer row moves `remaining`/`owed` directly, i.e. what Qonshu owes a
   // partner, so write authority stays with the owner.
   write_settlements: ["SUPER_ADMIN"],
-  view_object_detail: ["PARTNER_VIEWER", "COMPANY_ADMIN", "SUPER_ADMIN"],
+  // EVERYONE EXCEPT ONBOARDING — and that is the whole reason this action exists.
+  //
+  // "Money" was never one capability. A MEMBER holds NEITHER view_payment_detail NOR
+  // view_settlements, yet a member legitimately reads service fees (CRM billing for the buildings
+  // they manage) and the per-unit debt/balance that comes back with view_object_detail. So there
+  // was no existing action that could be denied to ONBOARDING without ALSO taking those figures
+  // away from a MEMBER, which is a behaviour change the owner did not ask for.
+  //
+  // ONBOARDING staff are activation staff: they need the building, its units and the residents'
+  // names and phone numbers to run the post-contract checklist (SMS, WhatsApp, app training). They
+  // have no business seeing what the building owes, what it has paid, or what Qonshu invoices it.
+  // This action is the line between those two things, and it is enforced in the SERVICES (server
+  // components call them directly and hand the result to the client bundle, so a route-only gate
+  // still ships the numbers to the browser).
+  //
+  // PARTNER_VIEWER is listed because a building's own representative reads their own building's
+  // money — that is the partner portal's entire purpose, and it already holds the strictly
+  // narrower view_payment_detail / view_settlements.
+  view_financials: ["PARTNER_VIEWER", "MEMBER", "COMPANY_ADMIN", "SUPER_ADMIN"],
+  // ONBOARDING is ADDED here: the checklist steps are "send the residents an SMS", "add them to
+  // the WhatsApp group", "train the manager" — none of which can be done without the unit list and
+  // the owner names/phones that this capability unlocks. It carries no money (see view_financials,
+  // which strips debt/balance/net from the same payload for a role that lacks it).
+  view_object_detail: ["PARTNER_VIEWER", "ONBOARDING", "COMPANY_ADMIN", "SUPER_ADMIN"],
+  // ACCOUNT AND SUB-RESOURCE WRITES, as ONE gate.
+  //
+  // Before this, every account mutator authorized purely with getAccount — i.e. "if you can read
+  // it you can write it". That is sound while read scope and write scope coincide, and it stopped
+  // being true the moment ACCESS COULD COME FROM AN ASSIGNMENT: an ONBOARDING user assigned to a
+  // building is inside that building's read scope, so without a role gate they could rename it
+  // (which re-stakes the pending partner link), flip its status (DEMO -> ACTIVE seeds a checklist),
+  // delete it outright, mint a PARTNER_VIEWER login, or edit its fields, fees, installs, tasks and
+  // asks. None of that is activation work.
+  //
+  // PARTNER_VIEWER is excluded for the same reason it always was: a building's representative is a
+  // reader of their own building, never an editor of our CRM record of it.
+  edit_accounts: ["MEMBER", "COMPANY_ADMIN", "SUPER_ADMIN"],
+  // READ AND WRITE of the post-contract onboarding checklist. ONBOARDING is the role the checklist
+  // exists for; the sales side keeps access because the manager who closed the building is the
+  // person chasing the activation, and an admin has to be able to see where it is stuck.
+  //
+  // PARTNER_VIEWER is absent on purpose and must stay absent: the checklist is Qonshu's internal
+  // record of how an activation is going, including steps that are about the customer rather than
+  // for them. A building's representative must never see it.
+  manage_onboarding: ["ONBOARDING", "MEMBER", "COMPANY_ADMIN", "SUPER_ADMIN"],
+  // WHO MAY GRANT ACCESS TO A BUILDING. Assignment is now a visibility primitive — an
+  // AccountAssignment row is what puts a building in a MEMBER's or an ONBOARDING user's scope — so
+  // the power to create one is the power to widen somebody's data access. That belongs with the
+  // roles that already administer people (manage_users), and nowhere else: a MEMBER who could
+  // assign could hand their own book to anyone, and an ONBOARDING user who could assign could
+  // grant themselves every building in the company.
+  manage_account_assignments: ["COMPANY_ADMIN", "SUPER_ADMIN"],
 };
 
 // Fails closed: an unknown/future role or an unknown action yields false, never a default-allow.

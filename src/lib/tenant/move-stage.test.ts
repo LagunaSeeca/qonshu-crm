@@ -4,6 +4,7 @@ import { testPrisma, resetDb } from "@/test/db";
 import { buildingKey, makeTeamWithUsers, uniq } from "@/test/fixtures";
 import { listStages, seedTeamStages } from "./stages";
 import { createLead, moveLeadStage } from "./leads";
+import { startTrialFromLead } from "./lead-conversion";
 
 async function fixture(companyId?: string) {
   const t = await makeTeamWithUsers(companyId ? { companyId } : {});
@@ -123,5 +124,53 @@ describe("moveLeadStage", () => {
       expect(moved.reason).toBe("building_claimed");
       expect(await testPrisma.account.count({ where: { sourceLeadId: lead.id } })).toBe(0);
     });
+  });
+});
+
+// The stage move's own view of a trial: a building already on DEMO is ACTIVATED by the Won move
+// rather than converted a second time. moveLeadStage reaches this through convertLeadToAccount —
+// the same function the manual Convert button calls — so there is one promotion path, not two.
+describe("moveLeadStage: a building already on trial", () => {
+  beforeEach(resetDb);
+  afterAll(() => testPrisma.$disconnect());
+
+  it("activates the DEMO account instead of creating a second one, and seeds the checklist once", async () => {
+    const t = await fixture();
+    const lead = await createLead(testPrisma, t.suMember, {
+      title: "D", contactName: "C", stageId: t.open.id, companyName: uniq("Trial Tower "),
+    });
+    const { account } = await startTrialFromLead(testPrisma, t.suMember, lead.id, {
+      trialEndsAt: new Date(Date.UTC(2030, 0, 1)),
+    });
+    expect(account.status).toBe("DEMO");
+    // Nothing to onboard until a contract exists.
+    expect(await testPrisma.onboardingStep.count({ where: { accountId: account.id } })).toBe(0);
+
+    const moved = await moveLeadStage(testPrisma, t.suMember, lead.id, t.won.id);
+
+    expect(moved.autoConverted).toBe(true);
+    expect(moved.reason).toBeUndefined();
+    expect(await testPrisma.account.count({ where: { sourceLeadId: lead.id } })).toBe(1);
+    const promoted = await testPrisma.account.findUniqueOrThrow({ where: { id: account.id } });
+    expect(promoted.status).toBe("ACTIVE");
+    expect(await testPrisma.onboardingStep.count({ where: { accountId: account.id } })).toBe(6);
+  });
+
+  it("leaves the DEMO account alone on a LOST move", async () => {
+    const t = await fixture();
+    const lead = await createLead(testPrisma, t.suMember, {
+      title: "D", contactName: "C", stageId: t.open.id, companyName: uniq("Trial Tower "),
+    });
+    const { account } = await startTrialFromLead(testPrisma, t.suMember, lead.id, {
+      trialEndsAt: new Date(Date.UTC(2030, 0, 1)),
+    });
+
+    const moved = await moveLeadStage(testPrisma, t.suMember, lead.id, t.lost.id, "budget");
+
+    // A lost trial is written off by hand (CHURNED), never automatically: the building may still
+    // be using the app while the commercial conversation continues.
+    expect(moved.autoConverted).toBe(false);
+    expect((await testPrisma.account.findUniqueOrThrow({ where: { id: account.id } })).status).toBe("DEMO");
+    expect(await testPrisma.onboardingStep.count({ where: { accountId: account.id } })).toBe(0);
   });
 });

@@ -130,6 +130,15 @@ export async function getAccountAnalytics(
   accountId: string,
   range: { from: Date; to: Date },
 ): Promise<AccountAnalytics> {
+  // THE ANALYTICS TAB IS MONEY. Every KPI it returns is a financial fact about the building —
+  // total_debt, payments count and amount, the per-method and per-category amount breakdowns. So
+  // `view_financials`: everyone but ONBOARDING, with a MEMBER unchanged (this has always been their
+  // own buildings' numbers).
+  //
+  // Gated in the SERVICE because the account page is a server component that calls this and hands
+  // the DTO to a client component as props — a route-only gate would still ship every figure to the
+  // browser. Asserted before the scope lookup: id-independent, so no 403/404 oracle.
+  assertCan(user, "view_financials");
   const acc = await getAccount(db, user, accountId); // tenancy chokepoint: foreign account -> null
   if (!acc) throw new NotFoundError("account not in scope");
 
@@ -176,6 +185,13 @@ export async function listAccountPayments(
 ): Promise<AccountPayments> {
   // Payer names + amounts per payment: not for MEMBER. Gated in the service (throws
   // ForbiddenError -> 403) before any scope lookup or upstream call.
+  //
+  // `view_financials` as well, and not redundantly: view_payment_detail already excludes ONBOARDING
+  // today, but the two actions answer different questions ("may you see WHO paid" vs "may you see
+  // money at all") and a future widening of payment detail must not be able to hand an onboarding
+  // user a payment ledger as a side effect. Asserting both keeps each rule enforced by the action
+  // that states it.
+  assertCan(user, "view_financials");
   assertCan(user, "view_payment_detail");
   const acc = await getAccount(db, user, accountId);
   // Fail closed: a foreign / out-of-scope account yields an empty page, never another partner's

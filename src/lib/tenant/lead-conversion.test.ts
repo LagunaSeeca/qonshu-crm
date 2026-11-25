@@ -3,8 +3,9 @@ import { testPrisma, resetDb } from "@/test/db";
 import { makeTeam, makeUser, su, buildingKey, confirmedPartnerLink } from "@/test/fixtures";
 import { seedTeamStages, listStages } from "./stages";
 import { createLead, moveLeadStage } from "./leads";
-import { convertLeadToAccount } from "./lead-conversion";
-import { createAccountWithLogin } from "./accounts";
+import { convertLeadToAccount, startTrialFromLead } from "./lead-conversion";
+import { createAccountWithLogin, InvalidTrialError } from "./accounts";
+import { ONBOARDING_TEMPLATE } from "./onboarding-template";
 import { BuildingClaimedError } from "./building-claim";
 import type { PartnerListResponse } from "@/lib/partner-api/schema";
 import type { SessionUser } from "@/lib/auth/guards";
@@ -290,5 +291,187 @@ describe("the PENDING partner link a conversion stakes", () => {
     const hit = await createAccountWithLogin(testPrisma, user, { name: "Sabah.City" });
     expect(hit.account.externalPartnerKey).toBe("sabah.city");
     expect(hit.account.partnerLinkConfirmedAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// TRIALS FROM LEADS. Some buildings get a 2-3 month trial before any contract exists. The
+// building becomes an Account in `DEMO` so sales can see its live statistics, while the LEAD
+// stays in the pipeline as not-yet-Won. Signing the contract is DEMO -> ACTIVE, which seeds the
+// onboarding checklist — and that promotion is reached from BOTH ways of saying "we won this":
+// the manual Convert button and moveLeadStage's auto-convert, since both call
+// convertLeadToAccount.
+// ---------------------------------------------------------------------------------------------
+describe("trials from leads", () => {
+  let savedKey: string | undefined;
+
+  beforeEach(async () => {
+    await resetDb();
+    savedKey = process.env.PARTNER_API_KEY;
+    process.env.PARTNER_API_KEY = "sk_test_shared";
+    vi.mocked(fetchPartners).mockReset();
+    vi.mocked(fetchPartners).mockResolvedValue(partners());
+  });
+  afterAll(async () => {
+    if (savedKey === undefined) delete process.env.PARTNER_API_KEY;
+    else process.env.PARTNER_API_KEY = savedKey;
+    await testPrisma.$disconnect();
+  });
+
+  const endsAt = new Date(Date.UTC(2030, 0, 1));
+  const steps = (accountId: string) =>
+    testPrisma.onboardingStep.findMany({ where: { accountId }, orderBy: { position: "asc" } });
+
+  it("a Won conversion seeds exactly 6 steps, in template order, positions 1..6", async () => {
+    const { user, open, won } = await setup("lc-seed");
+    const lead = await createLead(testPrisma, user, {
+      title: "Deal", contactName: "C", companyName: "Seeded Tower", stageId: open.id,
+    });
+
+    await moveLeadStage(testPrisma, user, lead.id, won.id);
+
+    const acc = await testPrisma.account.findFirstOrThrow({ where: { sourceLeadId: lead.id } });
+    const rows = await steps(acc.id);
+    expect(rows.length).toBe(6);
+    expect(rows.map((r) => r.templateKey)).toEqual(ONBOARDING_TEMPLATE.map((s) => s.key));
+    expect(rows.map((r) => r.position)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("startTrialFromLead creates a DEMO account and leaves the lead where it is", async () => {
+    const { user, team, open } = await setup("lc-trial");
+    const lead = await createLead(testPrisma, user, {
+      title: "Deal", contactName: "Jane", companyName: "Trial Tower", email: "j@t.co", stageId: open.id,
+    });
+
+    const { account, created } = await startTrialFromLead(testPrisma, user, lead.id, {
+      trialStartsAt: new Date(Date.UTC(2026, 2, 1)), trialEndsAt: new Date(Date.UTC(2026, 4, 30)),
+    });
+
+    expect(created).toBe(true);
+    expect(account.status).toBe("DEMO");
+    expect(account.sourceLeadId).toBe(lead.id);
+    expect(account.trialStartsAt?.toISOString()).toBe("2026-03-01T00:00:00.000Z");
+    expect(account.trialEndsAt?.toISOString()).toBe("2026-05-30T00:00:00.000Z");
+    // Created through createAccount, so the lead's identity carries over exactly as on the Won
+    // path: the building claim, the team that is selling it, and the salesperson as manager.
+    expect(account.buildingKey).toBe(lead.buildingKey);
+    expect(account.teamId).toBe(team.id);
+    expect(account.accountManagerId).toBe(lead.ownerId);
+    expect(account.primaryContactName).toBe("Jane");
+    // No contract yet: no onboarding checklist.
+    expect(await steps(account.id)).toEqual([]);
+    // The LEAD is untouched — starting a trial is not winning a deal.
+    const after = await testPrisma.lead.findUniqueOrThrow({ where: { id: lead.id } });
+    expect(after.stageId).toBe(open.id);
+    expect(after.wonAt).toBeNull();
+  });
+
+  it("startTrialFromLead twice returns the same account and creates no duplicate", async () => {
+    const { user, open } = await setup("lc-trial-twice");
+    const lead = await createLead(testPrisma, user, {
+      title: "Deal", contactName: "C", companyName: "Once Tower", stageId: open.id,
+    });
+
+    const first = await startTrialFromLead(testPrisma, user, lead.id, { trialEndsAt: endsAt });
+    const second = await startTrialFromLead(testPrisma, user, lead.id, {
+      // A different window, deliberately: the second call must not re-date the live trial.
+      trialEndsAt: new Date(Date.UTC(2031, 0, 1)),
+    });
+
+    expect(second.created).toBe(false);
+    expect(second.account.id).toBe(first.account.id);
+    expect(second.account.trialEndsAt?.toISOString()).toBe(first.account.trialEndsAt?.toISOString());
+    expect(await testPrisma.account.count({ where: { sourceLeadId: lead.id } })).toBe(1);
+  });
+
+  it("startTrialFromLead is refused on a WON or LOST lead, and creates nothing", async () => {
+    const { user, open, won, lost } = await setup("lc-trial-won");
+    const wonLead = await createLead(testPrisma, user, {
+      title: "Deal", contactName: "C", companyName: "Won Tower", stageId: open.id,
+    });
+    await moveLeadStage(testPrisma, user, wonLead.id, won.id);
+    const lostLead = await createLead(testPrisma, user, {
+      title: "Deal", contactName: "C", companyName: "Lost Tower", stageId: open.id,
+    });
+    await moveLeadStage(testPrisma, user, lostLead.id, lost.id);
+
+    // The won lead already HAS an account (auto-convert), so idempotency answers first: it comes
+    // back unchanged and ACTIVE rather than being re-opened as a trial.
+    const existing = await startTrialFromLead(testPrisma, user, wonLead.id, { trialEndsAt: endsAt });
+    expect(existing.created).toBe(false);
+    expect(existing.account.status).toBe("ACTIVE");
+
+    // With no account to find, the stage itself is the refusal.
+    await expect(startTrialFromLead(testPrisma, user, lostLead.id, { trialEndsAt: endsAt }))
+      .rejects.toThrow(InvalidTrialError);
+    expect(await testPrisma.account.count({ where: { sourceLeadId: lostLead.id } })).toBe(0);
+  });
+
+  it("promotes a DEMO account to ACTIVE when its lead moves to Won, and seeds EXACTLY once", async () => {
+    const { user, open, won } = await setup("lc-promote");
+    const lead = await createLead(testPrisma, user, {
+      title: "Deal", contactName: "C", companyName: "Promoted Tower", stageId: open.id,
+    });
+    const { account } = await startTrialFromLead(testPrisma, user, lead.id, { trialEndsAt: endsAt });
+
+    const moved = await moveLeadStage(testPrisma, user, lead.id, won.id);
+
+    expect(moved.autoConverted).toBe(true);
+    // No second account: the trial account IS the customer.
+    expect(await testPrisma.account.count({ where: { sourceLeadId: lead.id } })).toBe(1);
+    const promoted = await testPrisma.account.findUniqueOrThrow({ where: { id: account.id } });
+    expect(promoted.status).toBe("ACTIVE");
+    // The trial window is kept as history.
+    expect(promoted.trialEndsAt?.toISOString()).toBe(endsAt.toISOString());
+    // 6, NOT 12. The conditional `where: { status: "DEMO" }` makes the second promotion a no-op,
+    // and seedOnboardingChecklist's claim makes the second seed one.
+    expect((await steps(account.id)).length).toBe(6);
+
+    // Out of Won and back in, plus the manual button: still 6.
+    await moveLeadStage(testPrisma, user, lead.id, open.id);
+    await moveLeadStage(testPrisma, user, lead.id, won.id);
+    const again = await convertLeadToAccount(testPrisma, user, lead.id);
+    expect(again.created).toBe(false);
+    expect(again.account.id).toBe(account.id);
+    expect((await steps(account.id)).length).toBe(6);
+  });
+
+  it("the manual convert promotes a DEMO account WITHOUT moving its lead to Won", async () => {
+    const { user, open } = await setup("lc-manual-promote");
+    const lead = await createLead(testPrisma, user, {
+      title: "Deal", contactName: "C", companyName: "Signed Tower", stageId: open.id,
+    });
+    const { account } = await startTrialFromLead(testPrisma, user, lead.id, { trialEndsAt: endsAt });
+
+    // The contract was signed while the lead is still mid-pipeline. The owner's rule: activating a
+    // trial does NOT auto-win its lead — sales does that separately, in either order.
+    const { account: promoted, created } = await convertLeadToAccount(testPrisma, user, lead.id);
+
+    expect(created).toBe(false);
+    expect(promoted.id).toBe(account.id);
+    expect(promoted.status).toBe("ACTIVE");
+    expect(promoted.onboardingSeededAt).not.toBeNull();
+    expect((await steps(account.id)).length).toBe(6);
+    const after = await testPrisma.lead.findUniqueOrThrow({ where: { id: lead.id } });
+    expect(after.stageId).toBe(open.id);
+    expect(after.wonAt).toBeNull();
+  });
+
+  it("a trial whose lead is marked LOST stays in DEMO, and a convert on it changes nothing", async () => {
+    const { user, open, lost } = await setup("lc-trial-lost");
+    const lead = await createLead(testPrisma, user, {
+      title: "Deal", contactName: "C", companyName: "Lost Trial Tower", stageId: open.id,
+    });
+    const { account } = await startTrialFromLead(testPrisma, user, lead.id, { trialEndsAt: endsAt });
+
+    const moved = await moveLeadStage(testPrisma, user, lead.id, lost.id, "budget");
+
+    // Losing the deal during a trial leaves the account in DEMO: somebody sets CHURNED by hand.
+    expect(moved.autoConverted).toBe(false);
+    expect((await testPrisma.account.findUniqueOrThrow({ where: { id: account.id } })).status).toBe("DEMO");
+    // And the manual button cannot activate a building that was just lost.
+    const { account: unchanged } = await convertLeadToAccount(testPrisma, user, lead.id);
+    expect(unchanged.status).toBe("DEMO");
+    expect(await steps(account.id)).toEqual([]);
   });
 });

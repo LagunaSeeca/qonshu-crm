@@ -24,6 +24,12 @@ export async function resetDb() {
   await testPrisma.accountAsk.deleteMany();
   await testPrisma.accountTask.deleteMany();
   await testPrisma.accountActivity.deleteMany();
+  // Both cascade from account.deleteMany() below, so these two lines are not strictly required —
+  // but every other account child is cleared explicitly here, and relying on an implicit cascade
+  // for an AUTHORIZATION table (an AccountAssignment row is what grants a user access to a
+  // building) is the kind of implicitness that makes a leaked fixture row look like a code bug.
+  await testPrisma.onboardingStep.deleteMany();
+  await testPrisma.accountAssignment.deleteMany();
   // Must precede User: Account.accountManagerId is now a real RESTRICT relation to User, so a
   // surviving account blocks the deletion of the user who manages it.
   await testPrisma.account.deleteMany();

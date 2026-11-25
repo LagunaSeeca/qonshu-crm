@@ -1,7 +1,7 @@
 import type { PrismaClient, AccountActivity, AccountActivityKind } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { ForbiddenError, NotFoundError } from "@/lib/auth/guards";
-import { getAccount } from "./accounts";
+import { getAccount, getWritableAccount } from "./accounts";
 import { isPartnerLinkOutcome } from "./partner-link-audit";
 
 export async function addAccountActivity(db: PrismaClient, user: SessionUser, accountId: string, args: { kind: AccountActivityKind; body: string; outcome?: string; occurredAt?: Date }): Promise<AccountActivity> {
@@ -10,7 +10,10 @@ export async function addAccountActivity(db: PrismaClient, user: SessionUser, ac
   // here and this is the tenant-facing writer — free-text outcome, caller-chosen occurredAt — so
   // the prefix stays reserved rather than letting a tenant plant rows indistinguishable from them.
   if (isPartnerLinkOutcome(args.outcome)) throw new ForbiddenError("reserved outcome prefix");
-  const account = await getAccount(db, user, accountId);
+  // getWritableAccount: an activity is a permanent row on the account's timeline with a
+  // caller-chosen `occurredAt` and free text, and AUTHORSHIP of one is history nothing can clear
+  // (see work.ts on why that matters). Writing to a building's record is account-write territory.
+  const account = await getWritableAccount(db, user, accountId);
   if (!account) throw new NotFoundError("account not in scope");
   return db.accountActivity.create({ data: { companyId: account.companyId, accountId, authorId: user.id, kind: args.kind, body: args.body, outcome: args.outcome, occurredAt: args.occurredAt ?? new Date() } });
 }

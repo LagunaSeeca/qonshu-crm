@@ -1,7 +1,7 @@
 import type { PrismaClient, PlatformInstallSnapshot } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { NotFoundError } from "@/lib/auth/guards";
-import { getAccount } from "./accounts";
+import { getAccount, getWritableAccount } from "./accounts";
 
 export async function getAccountInstallSnapshots(db: PrismaClient, user: SessionUser, accountId: string): Promise<PlatformInstallSnapshot[]> {
   const acc = await getAccount(db, user, accountId);
@@ -19,7 +19,10 @@ export async function getAccountInstallSnapshots(db: PrismaClient, user: Session
 export async function upsertInstallSnapshot(db: PrismaClient, user: SessionUser, accountId: string, args: {
   capturedOn: Date; iosInstalls: number; androidInstalls: number;
 }): Promise<PlatformInstallSnapshot> {
-  const acc = await getAccount(db, user, accountId);
+  // getWritableAccount: these rows feed the dashboard's install KPIs, so writing one edits a figure
+  // the company reports on. The snapshot READ above stays open to anyone who can open the account —
+  // install counts are not money, and an assigned onboarding user tracking activation needs them.
+  const acc = await getWritableAccount(db, user, accountId);
   if (!acc) throw new NotFoundError("account not in scope");
   return db.platformInstallSnapshot.upsert({
     where: { accountId_capturedOn: { accountId, capturedOn: args.capturedOn } },

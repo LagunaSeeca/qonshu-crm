@@ -10,6 +10,7 @@ enum Role {
   SUPER_ADMIN
   COMPANY_ADMIN
   MEMBER
+  ONBOARDING
   PARTNER_VIEWER
 }
 
@@ -30,29 +31,31 @@ enum InviteStatus {
 }
 
 model Company {
-  id                  String              @id @default(cuid())
-  name                String
-  slug                String              @unique
-  status              CompanyStatus       @default(ACTIVE)
-  createdAt           DateTime            @default(now())
-  teams               Team[]
-  users               User[]
-  invitations         Invitation[]
-  stages              Stage[]
-  leads               Lead[]
-  activities          Activity[]
-  tasks               Task[]
-  attachments         Attachment[]
-  accounts            Account[]
-  accountActivities   AccountActivity[]
-  accountTasks        AccountTask[]
-  accountAsks         AccountAsk[]
-  accountAttachments  AccountAttachment[]
-  settlementEntries   SettlementEntry[]
-  accountFieldDefs    AccountFieldDef[]
-  accountFieldValues  AccountFieldValue[]
-  serviceFees         ServiceFee[]
-  installSnapshots    PlatformInstallSnapshot[]
+  id                 String                    @id @default(cuid())
+  name               String
+  slug               String                    @unique
+  status             CompanyStatus             @default(ACTIVE)
+  createdAt          DateTime                  @default(now())
+  teams              Team[]
+  users              User[]
+  invitations        Invitation[]
+  stages             Stage[]
+  leads              Lead[]
+  activities         Activity[]
+  tasks              Task[]
+  attachments        Attachment[]
+  accounts           Account[]
+  accountActivities  AccountActivity[]
+  accountTasks       AccountTask[]
+  accountAsks        AccountAsk[]
+  accountAttachments AccountAttachment[]
+  settlementEntries  SettlementEntry[]
+  accountFieldDefs   AccountFieldDef[]
+  accountFieldValues AccountFieldValue[]
+  serviceFees        ServiceFee[]
+  installSnapshots   PlatformInstallSnapshot[]
+  accountAssignments AccountAssignment[]
+  onboardingSteps    OnboardingStep[]
 }
 
 // A sales team inside the one org (Qonshu). Each team has one COMPANY_ADMIN ("Team Admin" in the
@@ -60,11 +63,11 @@ model Company {
 // AccountFieldDef set. Teams are the isolation boundary that Company used to be: a MEMBER sees
 // only their OWN rows, a team admin sees their whole team, a SUPER_ADMIN sees everything.
 model Team {
-  id        String   @id @default(cuid())
+  id        String            @id @default(cuid())
   companyId String
-  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company   Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
   name      String
-  createdAt DateTime @default(now())
+  createdAt DateTime          @default(now())
   users     User[]
   stages    Stage[]
   leads     Lead[]
@@ -76,25 +79,26 @@ model Team {
 }
 
 model User {
-  id           String     @id @default(cuid())
-  companyId    String?
-  company      Company?   @relation(fields: [companyId], references: [id])
+  id                      String                    @id @default(cuid())
+  companyId               String?
+  company                 Company?                  @relation(fields: [companyId], references: [id])
   // Null for SUPER_ADMIN (sees every team) and for PARTNER_VIEWER (scoped to one Account via
   // accountId, never to a team). Required in practice for COMPANY_ADMIN and MEMBER, but kept
   // nullable because the column cannot be NOT NULL while those two roles exist alongside them.
-  teamId       String?
-  team         Team?      @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  email        String     @unique
-  passwordHash String
-  name         String
-  role         Role
-  status       UserStatus @default(ACTIVE)
-  createdAt    DateTime   @default(now())
-  ownedLeads   Lead[]     @relation("LeadOwner")
-  managedAccounts Account[] @relation("AccountManager")
-  accountId    String?
-  account      Account?   @relation(fields: [accountId], references: [id])
+  teamId                  String?
+  team                    Team?                     @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  email                   String                    @unique
+  passwordHash            String
+  name                    String
+  role                    Role
+  status                  UserStatus                @default(ACTIVE)
+  createdAt               DateTime                  @default(now())
+  ownedLeads              Lead[]                    @relation("LeadOwner")
+  managedAccounts         Account[]                 @relation("AccountManager")
+  accountId               String?
+  account                 Account?                  @relation(fields: [accountId], references: [id])
   createdInstallSnapshots PlatformInstallSnapshot[]
+  accountAssignments      AccountAssignment[]
 
   @@index([companyId])
   @@index([accountId])
@@ -153,16 +157,17 @@ model Stage {
   probability Int       @default(0)
   createdAt   DateTime  @default(now())
   leads       Lead[]
+
   @@index([companyId])
   @@index([companyId, teamId])
 }
 
 model Lead {
-  id                String    @id @default(cuid())
+  id                String       @id @default(cuid())
   companyId         String
-  company           Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company           Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
   teamId            String
-  team              Team      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  team              Team         @relation(fields: [teamId], references: [id], onDelete: Restrict)
   // The BUILDING this lead is for, normalized, and the thing a team actually claims. Unique per
   // company, so one building is worked by exactly one team at a time. A LOST lead KEEPS its
   // claim (owner decision) — hence a plain unique index and deliberately NOT stage-aware
@@ -175,22 +180,23 @@ model Lead {
   phone             String?
   companyName       String?
   source            String?
-  priority          Priority  @default(MEDIUM)
+  priority          Priority     @default(MEDIUM)
   stageId           String
-  stage             Stage     @relation(fields: [stageId], references: [id])
+  stage             Stage        @relation(fields: [stageId], references: [id])
   ownerId           String
-  owner             User      @relation("LeadOwner", fields: [ownerId], references: [id])
+  owner             User         @relation("LeadOwner", fields: [ownerId], references: [id])
   expectedCloseDate DateTime?
   lostReason        String?
   // When this lead was WON, set once at the moment of the transition. Replaces the old
   // `updatedAt`-based "won in period" metric, which re-counted an old won lead into the current
   // period every time anyone edited it. Null for a lead that has never been won.
   wonAt             DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
   activities        Activity[]
   tasks             Task[]
   attachments       Attachment[]
+
   @@unique([companyId, buildingKey])
   @@index([companyId])
   @@index([companyId, stageId])
@@ -212,20 +218,22 @@ model Activity {
   outcome    String?
   occurredAt DateTime     @default(now())
   createdAt  DateTime     @default(now())
+
   @@index([companyId, leadId])
 }
 
 model Task {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   companyId  String
-  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   leadId     String
-  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  lead       Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
   title      String
   dueDate    DateTime?
-  done       Boolean  @default(false)
+  done       Boolean   @default(false)
   assigneeId String?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
+
   @@index([companyId, leadId])
   @@index([companyId, assigneeId])
 }
@@ -242,10 +250,12 @@ model Attachment {
   mime         String
   uploadedById String
   createdAt    DateTime @default(now())
+
   @@index([companyId, leadId])
 }
 
 enum AccountStatus {
+  DEMO
   ACTIVE
   AT_RISK
   CHURNED
@@ -264,19 +274,19 @@ enum AskStatus {
 }
 
 model Account {
-  id                  String        @id @default(cuid())
-  companyId           String
-  company             Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  teamId              String
-  team                Team          @relation(fields: [teamId], references: [id], onDelete: Restrict)
-  name                String
+  id                      String                    @id @default(cuid())
+  companyId               String
+  company                 Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  teamId                  String
+  team                    Team                      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  name                    String
   // Same building claim as Lead.buildingKey, carried across conversion: a won lead's key becomes
   // its account's key, so the building stays claimed by the one team that sold it. Unique per
   // company. Lead and Account hold SEPARATE unique indexes, so a won lead and the account it
   // became legitimately share a key.
-  buildingKey         String
-  website             String?
-  industry            String?
+  buildingKey             String
+  website                 String?
+  industry                String?
   // Manually-entered key that maps this account to the partner company as known to the
   // external analytics API (matched by company name per the partner API contract). The real
   // PartnerAnalyticsSource fetches by THIS key, not the display name, so renaming the account
@@ -285,7 +295,7 @@ model Account {
   // NON-NULL MEANS "A LINK EXISTS", NOT "A LINK IS LIVE". Read it together with
   // partnerLinkConfirmedAt below: the pair is a two-state machine and only the confirmed state
   // authorizes anything.
-  externalPartnerKey  String?
+  externalPartnerKey      String?
   // WHEN THE LINK WAS CONFIRMED. Null while externalPartnerKey is non-null = PENDING.
   //
   // WHY THIS COLUMN EXISTS (security review finding F1): dropping PartnerAllowlist swapped an
@@ -305,7 +315,7 @@ model Account {
   //
   // Set by: confirm (a team admin for their own team, or a super admin anywhere) and the
   // SUPER_ADMIN direct assign. Cleared with the key by: reject and clear.
-  partnerLinkConfirmedAt DateTime?
+  partnerLinkConfirmedAt  DateTime?
   // WHO PROPOSED THE PENDING LINK — the user whose account-create or rename staked it.
   //
   // This exists to enforce a TWO-PERSON RULE: nobody may confirm a link they themselves proposed.
@@ -328,29 +338,45 @@ model Account {
   partnerLinkProposedById String?
   // Ciphertext of the secret X-API-Key used to authenticate to the partner's Django backend
   // (encryption performed by the integration layer, not by this model). Nullable until linked.
-  externalApiKeyEnc   String?
+  externalApiKeyEnc       String?
   // Last 4 chars of the plaintext key, kept alongside the ciphertext for masked display
   // (e.g. "•••• 9f3a") without ever decrypting the secret for the UI.
-  externalApiKeyLast4 String?
-  status              AccountStatus @default(ACTIVE)
-  accountManagerId    String
-  accountManager      User          @relation("AccountManager", fields: [accountManagerId], references: [id], onDelete: Restrict)
-  primaryContactName  String?
-  primaryContactEmail String?
-  primaryContactPhone String?
-  sourceLeadId        String?       @unique
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
-  activities          AccountActivity[]
-  tasks               AccountTask[]
-  asks                AccountAsk[]
-  attachments         AccountAttachment[]
-  settlementEntries   SettlementEntry[]
-  fieldValues         AccountFieldValue[]
-  serviceFees         ServiceFee[]
-  partnerUsers        User[]
-  installSnapshots    PlatformInstallSnapshot[]
-  partnerLinkAudits   PartnerLinkAudit[]
+  externalApiKeyLast4     String?
+  status                  AccountStatus             @default(ACTIVE)
+  // DEMO / trial window, as calendar days (@db.Date, not timestamps: a timestamp would give
+  // time-zone off-by-one errors in "42 days left").
+  // A CHECK constraint "Account_demo_trial_dates_check" exists in the migration
+  // 20261124090100_demo_trials_assignments_onboarding enforcing: status = DEMO requires both
+  // trial dates, and trialEndsAt >= trialStartsAt. Prisma does not model CHECK constraints, so it
+  // will NOT show up in this schema or in `migrate diff`.
+  trialStartsAt           DateTime?                 @db.Date
+  trialEndsAt             DateTime?                 @db.Date
+  // null = unknown / not yet asked. Drives whether the payment-provider onboarding step applies.
+  takesOnlinePayments     Boolean?
+  // Idempotency claim for seeding the onboarding checklist (set once, when the account first
+  // becomes ACTIVE). Pre-existing accounts were backfilled to createdAt: already past onboarding.
+  onboardingSeededAt      DateTime?
+  accountManagerId        String
+  accountManager          User                      @relation("AccountManager", fields: [accountManagerId], references: [id], onDelete: Restrict)
+  primaryContactName      String?
+  primaryContactEmail     String?
+  primaryContactPhone     String?
+  sourceLeadId            String?                   @unique
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+  activities              AccountActivity[]
+  tasks                   AccountTask[]
+  asks                    AccountAsk[]
+  attachments             AccountAttachment[]
+  settlementEntries       SettlementEntry[]
+  fieldValues             AccountFieldValue[]
+  serviceFees             ServiceFee[]
+  partnerUsers            User[]
+  installSnapshots        PlatformInstallSnapshot[]
+  partnerLinkAudits       PartnerLinkAudit[]
+  assignments             AccountAssignment[]
+  onboardingSteps         OnboardingStep[]
+
   // DB backstop for the GLOBAL partner namespace: one shared X-API-Key means `?partner=<name>`
   // addresses the same upstream complex for every tenant, so two accounts holding one name
   // double-count every analytics fan-out AND cross-expose two companies' debt/payments/unit
@@ -361,6 +387,7 @@ model Account {
   @@unique([companyId, buildingKey])
   @@index([companyId])
   @@index([companyId, status])
+  @@index([companyId, status, trialEndsAt])
   @@index([companyId, accountManagerId])
   @@index([companyId, teamId])
   @@index([teamId, accountManagerId])
@@ -378,20 +405,22 @@ model AccountActivity {
   outcome    String?
   occurredAt DateTime            @default(now())
   createdAt  DateTime            @default(now())
+
   @@index([companyId, accountId])
 }
 
 model AccountTask {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   companyId  String
-  company    Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   accountId  String
-  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account    Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   title      String
   dueDate    DateTime?
-  done       Boolean  @default(false)
+  done       Boolean   @default(false)
   assigneeId String?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
+
   @@index([companyId, accountId])
 }
 
@@ -407,6 +436,7 @@ model AccountAsk {
   authorId   String?
   createdAt  DateTime  @default(now())
   resolvedAt DateTime?
+
   @@index([companyId, accountId])
 }
 
@@ -422,6 +452,7 @@ model AccountAttachment {
   mime         String
   uploadedById String
   createdAt    DateTime @default(now())
+
   @@index([companyId, accountId])
 }
 
@@ -445,6 +476,7 @@ model PlatformInstallSnapshot {
   createdById     String?
   createdBy       User?    @relation(fields: [createdById], references: [id])
   createdAt       DateTime @default(now())
+
   @@unique([accountId, capturedOn])
   @@index([companyId, capturedOn])
 }
@@ -491,6 +523,7 @@ model PartnerLinkAudit {
   // Snapshot of the actor's email, so the row still names a person after that user is deleted.
   actorEmail  String?
   createdAt   DateTime @default(now())
+
   @@index([companyId, createdAt])
   @@index([accountId])
 }
@@ -499,6 +532,7 @@ enum SettlementType {
   COLLECTED
   TRANSFER
 }
+
 enum SettlementMethod {
   CASH
   BANK_TRANSFER
@@ -506,18 +540,19 @@ enum SettlementMethod {
 }
 
 model SettlementEntry {
-  id          String            @id @default(cuid())
+  id          String           @id @default(cuid())
   companyId   String
-  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company     Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   accountId   String
-  account     Account           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account     Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
   type        SettlementType
   amount      Decimal
   method      SettlementMethod
   occurredAt  DateTime
   note        String?
   createdById String
-  createdAt   DateTime          @default(now())
+  createdAt   DateTime         @default(now())
+
   @@index([companyId, accountId])
   @@index([companyId, type])
 }
@@ -542,6 +577,7 @@ model AccountFieldDef {
   order     Int
   createdAt DateTime            @default(now())
   values    AccountFieldValue[]
+
   // Scoped to the TEAM, not the company: two teams may each have a "Total area" field.
   // CAVEAT: Postgres treats NULLs as DISTINCT in a unique index, so this constraint does NOT
   // police the org-level template (teamId IS NULL) — duplicate template labels are possible at
@@ -553,15 +589,16 @@ model AccountFieldDef {
 }
 
 model AccountFieldValue {
-  id          String           @id @default(cuid())
-  companyId   String
-  company     Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  accountId   String
-  account     Account          @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  fieldDefId  String
-  fieldDef    AccountFieldDef  @relation(fields: [fieldDefId], references: [id], onDelete: Cascade)
-  value       String
-  updatedAt   DateTime         @updatedAt
+  id         String          @id @default(cuid())
+  companyId  String
+  company    Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  fieldDefId String
+  fieldDef   AccountFieldDef @relation(fields: [fieldDefId], references: [id], onDelete: Cascade)
+  value      String
+  updatedAt  DateTime        @updatedAt
+
   @@unique([accountId, fieldDefId])
   @@index([companyId, accountId])
 }
@@ -586,7 +623,57 @@ model ServiceFee {
   note        String?
   createdById String
   createdAt   DateTime          @default(now())
+
   @@unique([accountId, periodMonth])
   @@index([companyId, status])
   @@index([companyId, accountId])
+}
+
+// AUTHORIZATION INPUT: a row here grants `userId` access to building `accountId` (the ONBOARDING
+// role's access comes entirely from these rows). Writes are therefore admin-only, enforced in the
+// service layer. onDelete: Cascade on `user` is intended: deleting a user must revoke their access.
+// createdById is an informational bare id (no relation), so it never blocks a user delete.
+model AccountAssignment {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@unique([accountId, userId])
+  @@index([userId, accountId])
+}
+
+// One row of a building's post-contract onboarding checklist. templateKey is null for a one-off
+// custom step. user ids (completedById, assigneeId, createdById) are bare ids with NO relation,
+// deliberately (same convention as AccountTask.assigneeId): deleting a user is never blocked by,
+// nor cascades through, this data.
+model OnboardingStep {
+  id            String    @id @default(cuid())
+  companyId     String
+  company       Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountId     String
+  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  templateKey   String?
+  title         String
+  position      Int
+  done          Boolean   @default(false)
+  completedById String?
+  completedAt   DateTime?
+  assigneeId    String?
+  dueDate       DateTime? @db.Date
+  note          String?
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // DB-level backstop against seeding the checklist twice. Postgres allows multiple NULLs, so any
+  // number of custom (templateKey null) steps coexist.
+  @@unique([accountId, templateKey])
+  @@index([accountId, position])
+  @@index([companyId, assigneeId, done])
 }

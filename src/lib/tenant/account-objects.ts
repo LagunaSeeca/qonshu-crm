@@ -25,6 +25,24 @@ import type {
 // result into the client bundle, so a route-only check would still ship per-unit data to the
 // browser. A role without `view_object_detail` gets the portfolio TOTALS and nothing per-unit —
 // the detail is stripped before the value is returned, so it is never in any serialized payload.
+//
+// THERE ARE NOW TWO GATES, and they cut the payload in different directions.
+//
+//   view_object_detail  — may you see the UNITS at all (and therefore the owner names and phones)?
+//                         No  -> ObjectsSummary: counts only, no `buildings` key whatsoever.
+//   view_financials     — may you see the MONEY on those units?
+//                         No  -> the units come back with `debt`/`balance`/`net` REMOVED.
+//
+// ONBOARDING holds the first and not the second, which is the entire shape of the role: the
+// activation checklist is "text the residents, add them to WhatsApp, train the manager", so the
+// unit list and the owners' names and phone numbers are the job — and what each flat owes Qonshu
+// is categorically not.
+//
+// THE KEYS ARE OMITTED, NOT ZEROED. A `debt: 0` is a statement that the flat owes nothing, which
+// would be a fabricated financial fact; this codebase has a standing rule against inventing a 0
+// where it has no value (see settlements.ts, which drops `collected`/`remaining` outright rather
+// than defaulting a failed fetch to 0). An absent key also fails CLOSED in any consumer: reading
+// `u.debt` yields undefined and formats as nothing, rather than as a confident zero.
 
 // Every unit collapses to this flat shape. `net` is always recomputed — the upstream `net` is
 // intentionally ignored.
@@ -38,6 +56,11 @@ export type NormalizedUnit = {
   balance: number;
   net: number;
 };
+
+// The three money keys, named once so the money-free mirrors below are derived from the real shape
+// and the two can never drift apart.
+export type UnitMoney = Pick<NormalizedUnit, "debt" | "balance" | "net">;
+const MONEY_KEYS = ["debt", "balance", "net"] as const satisfies readonly (keyof UnitMoney)[];
 export type NormalizedProperty = NormalizedUnit & { type: string };
 export type NormalizedBlock = { id: number; name: string; apartments: NormalizedUnit[] };
 export type NormalizedBuilding = {
@@ -50,7 +73,27 @@ export type NormalizedBuilding = {
   offices: NormalizedUnit[];
 };
 
+// Money-free mirrors of the four shapes above, for a caller that holds `view_object_detail` but
+// NOT `view_financials`. Built with Omit over UnitMoney rather than written out, so adding a money
+// field to NormalizedUnit automatically removes it here too.
+export type NormalizedUnitNoMoney = Omit<NormalizedUnit, keyof UnitMoney>;
+export type NormalizedPropertyNoMoney = Omit<NormalizedProperty, keyof UnitMoney>;
+export type NormalizedBlockNoMoney = { id: number; name: string; apartments: NormalizedUnitNoMoney[] };
+export type NormalizedBuildingNoMoney = {
+  id: number;
+  name: string;
+  blocks: NormalizedBlockNoMoney[];
+  parkings: NormalizedUnitNoMoney[];
+  properties: NormalizedPropertyNoMoney[];
+  offices: NormalizedUnitNoMoney[];
+};
+
 // Counts only. Deliberately NO money (debt/balance) here: those are payment detail.
+//
+// Re-confirmed for the ONBOARDING work: there is no monetary field in this type, so there is
+// nothing for the view_financials strip to remove from `totals` — the counts stay whole for every
+// role that gets this far. If a money field is ever ADDED here, it must be stripped alongside the
+// per-unit keys (see stripMoney below), not left because `totals` "is just totals".
 export type ObjectsTotals = {
   buildings: number;
   blocks: number;
@@ -69,6 +112,16 @@ type OkBase = {
 export type ObjectsFull = OkBase & { detail: "full"; buildings: NormalizedBuilding[] };
 // Members: totals only. No `buildings` key at all.
 export type ObjectsSummary = OkBase & { detail: "summary" };
+// ONBOARDING: the full unit tree, with the three money keys gone from every unit.
+//
+// DELIBERATELY NOT A MEMBER OF `ObjectsResult`. Adding a second `detail: "full"` variant to that
+// union would widen `state.buildings` in the existing Objects.tsx to
+// `NormalizedBuilding[] | NormalizedBuildingNoMoney[]` and break its `formatMoney(u.debt)` calls at
+// compile time — in a component this change is not allowed to touch, and whose money columns a
+// later UI task is going to hide for this role anyway. So `ObjectsResult` keeps its exact current
+// shape and getAccountObjects' return type is widened instead; the API serializes structurally
+// either way. When the UI task lands, fold this into ObjectsResult and narrow on the money keys.
+export type ObjectsFullNoMoney = OkBase & { detail: "full"; buildings: NormalizedBuildingNoMoney[] };
 
 export type ObjectsResult =
   | { status: "not_found" }
@@ -122,7 +175,36 @@ export function computeTotals(buildings: NormalizedBuilding[]): ObjectsTotals {
   return t;
 }
 
-export async function getAccountObjects(user: SessionUser, accountId: string): Promise<ObjectsResult> {
+// Remove the money keys from one unit. `delete` on a shallow copy, so the keys are genuinely ABSENT
+// from the object — not present-and-undefined, which `JSON.stringify` would also drop but which a
+// `"debt" in u` check would read as present.
+function stripUnitMoney<T extends UnitMoney>(u: T): Omit<T, keyof UnitMoney> {
+  const copy = { ...u } as Record<string, unknown>;
+  for (const k of MONEY_KEYS) delete copy[k];
+  return copy as Omit<T, keyof UnitMoney>;
+}
+
+// Walk the whole tree. Every unit-bearing collection must be covered: apartments (nested under
+// blocks), and the three flat ones hanging off the building. Missing one would leave a building's
+// parking debts in a payload the rest of which was carefully cleaned.
+function stripMoney(buildings: NormalizedBuilding[]): NormalizedBuildingNoMoney[] {
+  return buildings.map((b) => ({
+    id: b.id,
+    name: b.name,
+    blocks: b.blocks.map((bl) => ({
+      id: bl.id,
+      name: bl.name,
+      apartments: bl.apartments.map(stripUnitMoney),
+    })),
+    parkings: b.parkings.map(stripUnitMoney),
+    properties: b.properties.map(stripUnitMoney),
+    offices: b.offices.map(stripUnitMoney),
+  }));
+}
+
+export async function getAccountObjects(
+  user: SessionUser, accountId: string,
+): Promise<ObjectsResult | ObjectsFullNoMoney> {
   // Same-company / partner-scope chokepoint: violations resolve to null.
   const account = await getAccount(prisma, user, accountId);
   if (!account) return { status: "not_found" };
@@ -156,5 +238,12 @@ export async function getAccountObjects(user: SessionUser, accountId: string): P
   };
   // Fails closed: unknown/unlisted role -> summary only.
   if (!can(user, "view_object_detail")) return { ...base, detail: "summary" };
+  // The second gate. A role that may see the units but not the money (ONBOARDING) gets the whole
+  // tree with debt/balance/net removed from every unit — the resident contact details it needs,
+  // none of the financial position it does not. A MEMBER never reaches this branch at all (they
+  // lack view_object_detail and got the summary above), so nothing about a member changes here.
+  if (!can(user, "view_financials")) {
+    return { ...base, detail: "full", buildings: stripMoney(buildings) };
+  }
   return { ...base, detail: "full", buildings };
 }

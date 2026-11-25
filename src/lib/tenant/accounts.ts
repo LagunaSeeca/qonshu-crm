@@ -1,13 +1,25 @@
 import { Prisma } from "@prisma/client";
 import type { PrismaClient, Account, AccountStatus, User } from "@prisma/client";
-import { ForbiddenError, isAdmin, NotFoundError, type SessionUser } from "@/lib/auth/guards";
+import { assertCan, ForbiddenError, isAdmin, NotFoundError, type SessionUser } from "@/lib/auth/guards";
 import { removeLeadDir } from "@/lib/files/storage";
 import { hashPassword } from "@/lib/auth/password";
 import { accountScopeWhere, resolveAssignableOwner, type AssignableOwner } from "./scope";
 import { assertBuildingUnclaimed, normalizeBuildingName } from "./building-claim";
 import { recordPartnerLinkChange } from "./partner-link-audit";
+import { seedOnboardingChecklist } from "./onboarding-seed";
+import { toTrialDate, todayTrialDate } from "@/lib/trial";
 
 export class InvalidPartnerLoginError extends Error {}
+// A DEMO account's trial window is missing, backwards, or being edited on an account that is not
+// on trial. Typed so the routes answer 400 with a message the user can act on.
+//
+// THE DATABASE WOULD ALSO CATCH IT — `Account_demo_trial_dates_check` (status <> 'DEMO' OR both
+// dates present AND end >= start) — but as a RAW Postgres error with no Prisma code, which
+// errorResponse cannot map and which surfaces as a bare 500. The CHECK is the backstop; this is
+// the answer the user gets.
+export class InvalidTrialError extends Error {}
+// A status change the lifecycle does not allow. See assertStatusTransition for the rules.
+export class InvalidStatusTransitionError extends Error {}
 // At most ONE ACTIVE PARTNER_VIEWER per account. A second live login for one building means two
 // sets of credentials nobody is tracking for the same complex's debt, payments and unit-level
 // owner names/phones — and revoking "the" partner's access no longer means anything. Typed so the
@@ -96,7 +108,64 @@ export type NewAccountData = {
   name: string; website?: string; industry?: string; status?: AccountStatus;
   accountManagerId?: string; primaryContactName?: string;
   primaryContactEmail?: string; primaryContactPhone?: string; sourceLeadId?: string;
+  // THE TRIAL WINDOW, and only meaningful with `status: "DEMO"`. Dates, never strings: the routes
+  // parse the ISO they receive so the service has one representation (see resolveTrialWindow).
+  trialStartsAt?: Date; trialEndsAt?: Date;
 };
+
+// The trial window to WRITE for a new account, derived from its status.
+//
+// DEMO IS THE ONLY STATUS THAT CARRIES ONE, and an account may only BE DEMO if it was CREATED
+// DEMO (updateAccount refuses every transition INTO it), so this is the one place a trial window
+// is ever opened. For any other status both columns are written NULL rather than silently
+// persisting dates nobody will ever read — a "trial" on an ACTIVE account is not a state this
+// lifecycle has, and leaving stray dates there would make `trialEndsAt` stop meaning "on trial".
+//
+// `trialEndsAt` is REQUIRED for DEMO: a trial with no end is not a trial, and it is also what the
+// DB CHECK demands. `trialStartsAt` defaults to TODAY, because "start the trial now" is the
+// overwhelmingly common case and the UI offers a length rather than two dates.
+function resolveTrialWindow(data: {
+  status?: AccountStatus; trialStartsAt?: Date; trialEndsAt?: Date;
+}): { trialStartsAt: Date | null; trialEndsAt: Date | null } {
+  if ((data.status ?? "ACTIVE") !== "DEMO") return { trialStartsAt: null, trialEndsAt: null };
+  if (!data.trialEndsAt) throw new InvalidTrialError("a trial needs an end date");
+  const trialStartsAt = data.trialStartsAt ? toTrialDate(data.trialStartsAt) : todayTrialDate();
+  const trialEndsAt = toTrialDate(data.trialEndsAt);
+  assertTrialOrder(trialStartsAt, trialEndsAt);
+  return { trialStartsAt, trialEndsAt };
+}
+
+function assertTrialOrder(startsAt: Date, endsAt: Date): void {
+  if (endsAt.getTime() < startsAt.getTime()) {
+    throw new InvalidTrialError("the trial cannot end before it starts");
+  }
+}
+
+// THE DEMO LIFECYCLE, as the owner settled it.
+//
+//   (create) --> DEMO --> ACTIVE   contract signed; seeds the onboarding checklist
+//                    \--> CHURNED  trial lost; seeds NOTHING
+//
+// TWO RULES, both enforced here:
+//
+//  1. NOTHING MAY TRANSITION INTO DEMO. A trial is a state a building is BORN in — it is using the
+//     app with no signed contract yet. "ACTIVE -> DEMO" would mean un-signing a contract, and it
+//     would also have to invent a trial window for a customer who never had one. A building that
+//     genuinely starts a second trial is a new conversation, not a status flip.
+//  2. FROM DEMO, ONLY ACTIVE OR CHURNED. AT_RISK describes a paying customer whose relationship is
+//     wobbling; applied to a trial it would quietly make the account look like a won customer in
+//     every status filter while no contract exists. A trial either converts or it is written off.
+//
+// Everything outside DEMO keeps its existing freedom (ACTIVE <-> AT_RISK <-> CHURNED).
+function assertStatusTransition(from: AccountStatus, to: AccountStatus): void {
+  if (from === to) return;
+  if (to === "DEMO") {
+    throw new InvalidStatusTransitionError("invalid_status_transition: an account can only start as DEMO");
+  }
+  if (from === "DEMO" && to !== "ACTIVE" && to !== "CHURNED") {
+    throw new InvalidStatusTransitionError("invalid_status_transition: a trial can only be activated or churned");
+  }
+}
 
 export type CreateAccountOptions = {
   // CONVERSION ONLY, and only ever read off a Lead row that already passed leadScopeWhere.
@@ -145,6 +214,9 @@ async function insertAccount(
   owner: AssignableOwner, companyId: string, pendingKey: string | null,
 ): Promise<Account> {
   const buildingKey = normalizeBuildingName(data.name);
+  // BEFORE the claim guard, so a malformed trial costs neither an advisory lock nor a write: this
+  // throws InvalidTrialError (-> 400) rather than letting the DB CHECK produce an unmappable 500.
+  const trial = resolveTrialWindow(data);
 
   // ONE BUILDING, ONE TEAM — under an advisory lock, immediately before the insert. The unique
   // index on (companyId, buildingKey) cannot do this alone: a lead and an account live in
@@ -160,6 +232,7 @@ async function insertAccount(
     companyId, teamId: owner.teamId, name: data.name, buildingKey,
     website: data.website, industry: data.industry,
     status: data.status ?? "ACTIVE",
+    ...trial,
     accountManagerId: owner.ownerId,
     primaryContactName: data.primaryContactName,
     primaryContactEmail: data.primaryContactEmail, primaryContactPhone: data.primaryContactPhone,
@@ -176,6 +249,16 @@ async function insertAccount(
     // not granting — the same as any member.
     partnerLinkProposedById: pendingKey === null ? null : user.id,
   } });
+
+  // SEED HOOK (a): an account that is born ACTIVE has a signed contract from day one, so its
+  // onboarding checklist starts now. This covers BOTH manual creation and the Won -> convert path
+  // (lead-conversion.ts creates through here), which is why the hook sits at the shared insert
+  // rather than in either caller. A DEMO account seeds NOTHING: no contract, no onboarding.
+  //
+  // Inside the caller's transaction, as seedOnboardingChecklist requires — so a later failure in
+  // this same transaction (the partner audit row below, or createAccountWithLogin's partner user)
+  // rolls the claim back with it and the retry re-seeds cleanly.
+  if (account.status === "ACTIVE") await seedOnboardingChecklist(tx, account);
 
   if (pendingKey === null) return account;
   // Attribution for the most security-sensitive write in the system — see ./partner-link-audit.ts.
@@ -210,6 +293,12 @@ async function insertAccount(
 export async function createAccount(
   db: PrismaClient, user: SessionUser, data: NewAccountData, opts?: CreateAccountOptions,
 ): Promise<Account> {
+  // UP FRONT, before any lookup or write: creating a building is an account WRITE. There is no id
+  // to protect here, so there is no 404-vs-403 question — a role that may not edit accounts may not
+  // conjure one either. (resolveAssignableOwner would also refuse an ONBOARDING actor a line later,
+  // but relying on that would make "who may create an account" a side effect of "who may own one",
+  // and the two are not the same question.)
+  assertCan(user, "edit_accounts");
   const { owner, companyId } = await resolveOwnership(db, user, data, opts);
   const pendingKey = await pendingPartnerKey(db, data.name);
 
@@ -272,6 +361,10 @@ export async function createAccountWithLogin(db: PrismaClient, user: SessionUser
   partnerLogin?: { name: string; email: string; password: string };
 }): Promise<{ account: Account; partnerUser: User | null }> {
   const { partnerLogin, ...accountData } = data;
+  // Same up-front account-write gate as createAccount, and for the same reason. Before the
+  // partner-login check below so that a role which may not create accounts at all gets one answer
+  // whether or not it also asked for a login.
+  assertCan(user, "edit_accounts");
   // Creating the ACCOUNT stays open to a MEMBER; attaching a partner login to it does not. This is
   // the same gate as createPartnerLogin and for the same reason — a PARTNER_VIEWER holds the
   // capabilities a MEMBER is denied, so minting one is privilege escalation. Checked before any
@@ -370,7 +463,10 @@ export async function createPartnerLogin(
   db: PrismaClient, user: SessionUser, accountId: string,
   login: { name: string; email: string; password: string },
 ): Promise<PartnerLoginRow> {
-  const account = await getAccount(db, user, accountId);
+  // getWritableAccount, not getAccount: minting a login is a write on this account. The isAdmin
+  // check below is NARROWER than edit_accounts (it keeps a MEMBER out, who does hold edit_accounts)
+  // and stays where it was, behind the scope lookup — see getWritableAccount on the ordering.
+  const account = await getWritableAccount(db, user, accountId);
   if (!account) throw new NotFoundError("account not in scope");
   // After the scope check on purpose: an out-of-scope account stays a 404 for everyone rather than
   // turning into a 403 that confirms the id exists. isAdmin, not assertCan("view_settlements"),
@@ -395,14 +491,23 @@ export async function createPartnerLogin(
 }
 
 export function listAccounts(db: PrismaClient, user: SessionUser, opts?: { status?: AccountStatus; accountManagerId?: string; q?: string }): Promise<Account[]> {
-  // accountScopeWhere (./scope.ts) is the single source of truth: own rows for a MEMBER, own team
-  // for a team admin, the whole company for a super admin given a company, and exactly one id for
-  // a PARTNER_VIEWER. The local `{ companyId }`-for-everyone copy this file used to carry was the
-  // last place in the app where a member still saw the whole org.
+  // accountScopeWhere (./scope.ts) is the single source of truth: manager-or-assigned inside their
+  // own team for a MEMBER, own team for a team admin, assigned-only for ONBOARDING, the whole
+  // company for a super admin given a company, and exactly one id for a PARTNER_VIEWER. The local
+  // `{ companyId }`-for-everyone copy this file used to carry was the last place in the app where a
+  // member still saw the whole org.
   //
-  // Caller-supplied filters are AND-ed onto the scope, never assigned over it (same rule as
-  // leads.ts scopedWhere): `where.accountManagerId = x` would overwrite the `accountManagerId:
-  // user.id` pinned for a MEMBER. As an AND a filter can only narrow the scope.
+  // THE SCOPE IS NESTED, NOT SPREAD. This line used to read
+  //
+  //     { ...scope, AND: filters }
+  //
+  // which was correct only while every key in the scope was a scalar. The scope now carries its
+  // MEMBERSHIP TEST under `AND` (manager OR assigned), so that spread copied the scope's `AND` in
+  // and the literal's own `AND:` immediately REPLACED it — and the failure mode is open, not
+  // closed: searching or filtering the account list returned the member's whole TEAM instead of
+  // their own buildings, and ONBOARDING's whole COMPANY instead of their assignments. A filter must
+  // only ever be able to NARROW the scope, which `{ AND: [scope, ...filters] }` guarantees because
+  // the scope is one of the conjuncts rather than a set of keys something can overwrite.
   const filters: Prisma.AccountWhereInput[] = [];
   if (opts?.status) filters.push({ status: opts.status });
   if (opts?.accountManagerId) filters.push({ accountManagerId: opts.accountManagerId });
@@ -411,7 +516,7 @@ export function listAccounts(db: PrismaClient, user: SessionUser, opts?: { statu
     { industry: { contains: opts.q, mode: "insensitive" } },
   ] });
   const scope = accountScopeWhere(user);
-  const where: Prisma.AccountWhereInput = filters.length > 0 ? { ...scope, AND: filters } : { ...scope };
+  const where: Prisma.AccountWhereInput = filters.length > 0 ? { AND: [scope, ...filters] } : scope;
   // `id` breaks ties: equal updatedAt values would otherwise order nondeterministically, and
   // the partner dedup in company-analytics.ts takes the FIRST account per partner off this list.
   return db.account.findMany({ where, orderBy: [{ updatedAt: "desc" }, { id: "asc" }] });
@@ -439,19 +544,99 @@ export async function getAccount(db: PrismaClient, user: SessionUser, id: string
     return row.companyId === scope.companyId ? row : null;
   }
 
-  return db.account.findFirst({ where: { id, ...accountScopeWhere(user) } });
+  // `{ AND: [{ id }, scope] }`, not `{ id, ...scope }`. The spread was safe (the literal added only
+  // a scalar `id`, so nothing of the scope was overwritten) and is still replaced, because the
+  // scope now carries an `AND` and a one-key spread next to a membership filter is exactly the
+  // shape that turns into a leak the first time somebody adds a second key here.
+  return db.account.findFirst({ where: { AND: [{ id }, accountScopeWhere(user)] } });
+}
+
+// THE WRITE CHOKEPOINT. Use this, never getAccount, for anything that MUTATES an account or one of
+// its sub-resources (tasks, asks, activities, attachments, custom field values, installs, fees).
+//
+// WHY IT HAD TO EXIST. Every account mutator in this codebase authorized with getAccount alone,
+// which encodes the rule "if you can read it, you can write it". That held only while read access
+// meant ownership. It stopped holding the moment access could come from an ASSIGNMENT: an
+// ONBOARDING user assigned to building X is legitimately inside X's read scope, and with no second
+// gate they could rename it (re-staking the building claim and its pending partner link), change
+// its status — including DEMO -> ACTIVE, which seeds the onboarding checklist — delete it, mint a
+// PARTNER_VIEWER login for it, or edit its fields, fees, installs, tasks and asks. Read access for
+// the activation checklist is not write authority over the CRM record.
+//
+// ORDER: THE CAPABILITY FIRST, THEN THE SCOPE. That is the opposite of createPartnerLogin's
+// isAdmin check below, and the difference is deliberate. The 404-before-403 discipline exists so a
+// refusal cannot confirm that an id EXISTS. `edit_accounts` is a pure ROLE test — it does not look
+// at the id at all — so an ONBOARDING caller gets the identical ForbiddenError for a real id, a
+// foreign id and a made-up one. It is not an oracle, and checking it first means a denied write
+// costs no query. createPartnerLogin's isAdmin check is narrower than this gate (it keeps a MEMBER
+// out, who DOES hold edit_accounts) and stays behind the scope lookup, where it was.
+//
+// Returns null for out-of-scope, exactly like getAccount, so every existing
+// `if (!found) throw new NotFoundError(...)` call site keeps its shape and its 404.
+export async function getWritableAccount(
+  db: PrismaClient, user: SessionUser, id: string,
+): Promise<Account | null> {
+  assertCan(user, "edit_accounts");
+  return getAccount(db, user, id);
 }
 
 export async function updateAccount(db: PrismaClient, user: SessionUser, id: string, data: Partial<{
   name: string; website: string | null; industry: string | null; status: AccountStatus;
   accountManagerId: string; primaryContactName: string | null;
   primaryContactEmail: string | null; primaryContactPhone: string | null;
+  // EXTENDING A TRIAL — the only reason these are writable at all, and only while the account IS
+  // DEMO (see below). NOT nullable: a DEMO account with a missing date is exactly what the DB
+  // CHECK forbids, and clearing a trial is not an operation this lifecycle has.
+  trialStartsAt: Date; trialEndsAt: Date;
   // NO `externalPartnerKey` and NO `teamId`. Same reason as createAccount: the partner namespace
   // is global, so setAccountPartner (SUPER_ADMIN-only) is the sole explicit writer; and the team
   // follows the validated manager, so a caller naming it directly must fail to compile.
 }>): Promise<Account> {
-  const found = await getAccount(db, user, id);
+  // getWritableAccount: a rename re-stakes the pending partner link and re-claims the building, and
+  // a status change can seed the onboarding checklist. Neither is something read access buys.
+  const found = await getWritableAccount(db, user, id);
   if (!found) throw new NotFoundError("account not in scope");
+
+  // THE LIFECYCLE GATE, before any other work: an illegal status change must cost nothing and must
+  // not half-apply the rest of the patch. Every status write in the app comes through here.
+  if (data.status) assertStatusTransition(found.status, data.status);
+
+  // SEEDING IS DRIVEN OFF THE TRANSITION, not off the new value: a patch that re-posts ACTIVE on an
+  // already-ACTIVE account is not an activation and must not look like one. (seedOnboardingChecklist
+  // would refuse it anyway — the claim is the authority — but the intent belongs here, in the
+  // caller that knows what changed.)
+  const becameActive = data.status === "ACTIVE" && found.status !== "ACTIVE";
+
+  // TRIAL DATES ARE EDITABLE ONLY WHILE THE ACCOUNT IS DEMO. That is how a trial gets EXTENDED,
+  // and it is the whole of the permission: re-dating the trial of a signed customer (or of a
+  // churned one) would rewrite history on a window nothing reads any more, and on a non-DEMO row
+  // the DB CHECK does not even require the pair to be coherent. Refused together with a status
+  // change out of DEMO in the same patch, because "activate and also extend the trial you are
+  // ending" has no meaning — the UI sends one or the other.
+  //
+  // A NO-OP RE-POST IS NOT AN EDIT. Every edit form in this app posts the whole record back (see
+  // the accountManagerId branch above, which exists for the same reason), so a form that renders
+  // the trial window would otherwise 400 on an ACTIVE account merely for echoing the dates that
+  // are already stored. Compared against the row, not against `undefined`.
+  const { trialStartsAt: patchStart, trialEndsAt: patchEnd, ...rest } = data;
+  const unchanged = (patch: Date | undefined, current: Date | null) =>
+    patch === undefined || (current !== null && toTrialDate(patch).getTime() === current.getTime());
+  const editingTrial = !unchanged(patchStart, found.trialStartsAt) || !unchanged(patchEnd, found.trialEndsAt);
+  let trial: { trialStartsAt: Date; trialEndsAt: Date } | null = null;
+  if (editingTrial) {
+    if (found.status !== "DEMO" || (data.status !== undefined && data.status !== "DEMO")) {
+      throw new InvalidTrialError("trial dates can only be changed while the account is on trial");
+    }
+    // Each side falls back to what the row already holds, so extending a trial means sending the
+    // new end date alone. A DEMO row always has both (the DB CHECK guarantees it); the `??` is
+    // there so a hand-edited row cannot turn this into a crash.
+    const trialStartsAt = patchStart ? toTrialDate(patchStart)
+      : found.trialStartsAt ? toTrialDate(found.trialStartsAt) : todayTrialDate();
+    const trialEndsAt = patchEnd ? toTrialDate(patchEnd)
+      : found.trialEndsAt ? toTrialDate(found.trialEndsAt) : todayTrialDate();
+    assertTrialOrder(trialStartsAt, trialEndsAt);
+    trial = { trialStartsAt, trialEndsAt };
+  }
 
   // REASSIGNMENT IS AN ADMIN ACTION. Letting a MEMBER set accountManagerId is letting them hand
   // their own account to anybody — or, under accountScopeWhere, delete it from their own book and
@@ -511,17 +696,40 @@ export async function updateAccount(db: PrismaClient, user: SessionUser, id: str
         where: { companyId: found.companyId, teamId: reassigned.teamId, role: "COMPANY_ADMIN", status: "ACTIVE" },
         select: { id: true },
       });
+      // ONE SOURCE PER FACT. The new manager has access through `accountManagerId`; an assignment
+      // row saying the same thing is a second, independent grant that outlives the next
+      // reassignment — revoking their management would leave them silently assigned. Deleted
+      // BEFORE the keep-list is read so the row cannot come back as its own justification.
+      await tx.accountAssignment.deleteMany({
+        where: { accountId: found.id, userId: reassigned.ownerId },
+      });
+      // ASSIGNED USERS KEEP THEIR WORK. The keep-list used to be the new manager plus the target
+      // team's admins, which pre-dates AccountAssignment: an ONBOARDING user assigned to this
+      // building is still in its scope after a manager change (accountScopeWhere admits them by
+      // assignment, not by team), so nulling their open items would strip the checklist they are
+      // there to run for a change that has nothing to do with them.
+      const assigned = await tx.accountAssignment.findMany({
+        where: { accountId: found.id }, select: { userId: true },
+      });
+      const keep = [reassigned.ownerId, ...admins.map((a) => a.id), ...assigned.map((a) => a.userId)];
       await tx.accountTask.updateMany({
-        where: {
-          accountId: found.id, done: false,
-          assigneeId: { not: null, notIn: [reassigned.ownerId, ...admins.map((a) => a.id)] },
-        },
+        where: { accountId: found.id, done: false, assigneeId: { not: null, notIn: keep } },
+        data: { assigneeId: null },
+      });
+      // The same treatment for the onboarding checklist, which is the other thing on an account
+      // that carries an assignee. Open steps only: a DONE step records who actually did it and is
+      // history, not a work item.
+      await tx.onboardingStep.updateMany({
+        where: { accountId: found.id, done: false, assigneeId: { not: null, notIn: keep } },
         data: { assigneeId: null },
       });
     }
 
     const updated = await tx.account.update({ where: { id }, data: {
-      ...data,
+      // `rest`, not `data`: the trial dates are re-written below from `trial`, normalized to the
+      // UTC-midnight calendar days the `@db.Date` columns hold.
+      ...rest,
+      ...(trial ?? {}),
       ...(renamed ? { buildingKey } : {}),
       ...(restaking
         ? {
@@ -545,6 +753,16 @@ export async function updateAccount(db: PrismaClient, user: SessionUser, id: str
         actorId: user.id, action: "pending", partnerName: restakeKey,
       });
     }
+
+    // SEED HOOK (b): the account BECAME ACTIVE in this transaction — the DEMO -> ACTIVE contract
+    // signature, or any other status landing on ACTIVE. Inside the same transaction as the status
+    // write, so "is ACTIVE" and "has a checklist" commit together or not at all, and so the claim
+    // inside seedOnboardingChecklist sees the ACTIVE row it requires.
+    //
+    // A PRE-EXISTING account coming back from AT_RISK seeds NOTHING: the migration backfilled its
+    // `onboardingSeededAt`, so the claim matches zero rows. That is the regression the backfill
+    // exists to prevent.
+    if (becameActive) await seedOnboardingChecklist(tx, updated);
     return updated;
   });
 
@@ -610,7 +828,7 @@ async function remapFieldValuesToTeam(
 }
 
 export async function deleteAccount(db: PrismaClient, user: SessionUser, id: string): Promise<void> {
-  const found = await getAccount(db, user, id);
+  const found = await getWritableAccount(db, user, id);
   if (!found) throw new NotFoundError("account not in scope");
   // found.companyId, not user.companyId: a SUPER_ADMIN has none, and the uploads directory is
   // keyed by the ACCOUNT's company either way.

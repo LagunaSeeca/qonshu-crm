@@ -3,10 +3,15 @@ import { Prisma } from "@prisma/client";
 import { testPrisma, resetDb } from "@/test/db";
 import { makeTeam, makeTeamWithUsers, makeUser, su, uniq, buildingKey } from "@/test/fixtures";
 import {
-  createAccount, createAccountWithLogin, listAccounts, getAccount, updateAccount,
+  createAccount, createAccountWithLogin, listAccounts, getAccount, updateAccount, deleteAccount,
   createPartnerLogin, listPartnerLogins,
   isPartnerKeyConflict, PartnerLoginExistsError,
+  InvalidTrialError, InvalidStatusTransitionError,
 } from "./accounts";
+import { seedOnboardingChecklist } from "./onboarding-seed";
+import { ONBOARDING_TEMPLATE } from "./onboarding-template";
+import { getDashboardStats } from "./dashboard";
+import { todayTrialDate } from "@/lib/trial";
 import { createFieldDef, setAccountFieldValue, getAccountFields } from "./account-fields";
 import { BuildingClaimedError } from "./building-claim";
 import { ForbiddenError, NotFoundError } from "@/lib/auth/guards";
@@ -695,5 +700,415 @@ describe("Account.externalPartnerKey is unique platform-wide", () => {
     expect(isPartnerKeyConflict(known(adapterShape("sourceLeadId")))).toBe(false);
 
     expect(isPartnerKeyConflict(new Error("nope"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// ACCESS BY ASSIGNMENT — the membership scope, and the composition bug that made it fail OPEN.
+//
+// accountScopeWhere now carries its membership test (manager OR assigned) under `AND`, because an
+// OR cannot be expressed as a flat where-key. Any caller that builds
+//
+//     { ...scope, AND: filters }
+//
+// therefore copies the scope's AND in and immediately REPLACES it — and the result is not a
+// narrower query, it is the member's WHOLE TEAM (and, for ONBOARDING, the whole company).
+// listAccounts did exactly that. The filtered cases below are asserted explicitly for that reason:
+// an UNFILTERED listAccounts takes a different branch and would have passed throughout.
+// ---------------------------------------------------------------------------------------------
+describe("accounts: access by assignment", () => {
+  beforeEach(prepare);
+  afterAll(async () => { restore(); await testPrisma.$disconnect(); });
+
+  const ids = (rows: { id: string }[]) => rows.map((r) => r.id).sort();
+  const caught = async (fn: () => Promise<unknown>) => {
+    try { await fn(); return null; } catch (e) { return e; }
+  };
+
+  // One team: m1 manages "Alpha Tower"; m2 manages "Beta Tower" and "Gamma Tower"; m1 and an
+  // ONBOARDING user are both ASSIGNED to Gamma (several people on one building is the point).
+  // So m1 must see Alpha + Gamma and NEVER Beta, under every filter combination.
+  async function world() {
+    const t = await makeTeamWithUsers();
+    const m2 = await makeUser("MEMBER", t.team);
+    const onboarder = await makeUser("ONBOARDING", t.team);
+    const alpha = await createAccount(testPrisma, t.suMember, { name: "Alpha Tower" });
+    const beta = await createAccount(testPrisma, su(m2), { name: "Beta Tower" });
+    const gamma = await createAccount(testPrisma, su(m2), { name: "Gamma Tower" });
+    const assign = (userId: string, accountId: string) =>
+      testPrisma.accountAssignment.create({ data: { companyId: t.companyId, accountId, userId } });
+    await assign(t.member.id, gamma.id);
+    await assign(onboarder.id, gamma.id);
+    return { t, m2, onboarder, suOnboarder: su(onboarder), alpha, beta, gamma, assign };
+  }
+
+  it("a MEMBER sees accounts they manage OR are assigned to, and no teammate's others", async () => {
+    const w = await world();
+    expect(ids(await listAccounts(testPrisma, w.t.suMember))).toEqual(ids([w.alpha, w.gamma]));
+    // Reachable by id too, which is what every child read/write goes through.
+    expect((await getAccount(testPrisma, w.t.suMember, w.gamma.id))?.id).toBe(w.gamma.id);
+    // The relaxation is PER ROW: the teammate's unassigned building stays invisible.
+    expect(await getAccount(testPrisma, w.t.suMember, w.beta.id)).toBeNull();
+    // And the manager keeps seeing their own, assignment or not.
+    expect(ids(await listAccounts(testPrisma, su(w.m2)))).toEqual(ids([w.beta, w.gamma]));
+  });
+
+  // THE TEST THAT WOULD HAVE CAUGHT THE SPREAD BUG. With `{ ...scope, AND: filters }` the
+  // membership filter was discarded and these calls handed a member Beta — a teammate's building
+  // they neither manage nor are assigned to.
+  it("a q/status filter still excludes an account the MEMBER neither manages nor is assigned to", async () => {
+    const w = await world();
+    const seen = async (o: Parameters<typeof listAccounts>[2]) =>
+      ids(await listAccounts(testPrisma, w.t.suMember, o));
+
+    // `q` and `status` both match all three accounts, so only the scope can keep Beta out.
+    expect(await seen({ q: "Tower" })).toEqual(ids([w.alpha, w.gamma]));
+    expect(await seen({ status: w.beta.status })).toEqual(ids([w.alpha, w.gamma]));
+    expect(await seen({ q: "Tower", status: w.beta.status })).toEqual(ids([w.alpha, w.gamma]));
+    // Naming Beta directly, by text and by its manager: a filter may narrow, never widen.
+    expect(await seen({ q: "Beta" })).toEqual([]);
+    expect(await seen({ accountManagerId: w.m2.id })).toEqual([w.gamma.id]);
+    expect(await seen({ accountManagerId: w.m2.id, q: "Beta" })).toEqual([]);
+  });
+
+  it("ONBOARDING sees ONLY assigned accounts, filtered or not, and nothing at all when unassigned", async () => {
+    const w = await world();
+    expect(ids(await listAccounts(testPrisma, w.suOnboarder))).toEqual([w.gamma.id]);
+    // Same spread bug, bigger blast radius: an ONBOARDING scope has no team key either, so with
+    // the membership filter dropped a filtered list would have returned the WHOLE COMPANY.
+    expect(ids(await listAccounts(testPrisma, w.suOnboarder, { q: "Tower" }))).toEqual([w.gamma.id]);
+    expect(ids(await listAccounts(testPrisma, w.suOnboarder, { status: w.beta.status }))).toEqual([w.gamma.id]);
+    expect(await listAccounts(testPrisma, w.suOnboarder, { q: "Alpha" })).toEqual([]);
+    expect((await getAccount(testPrisma, w.suOnboarder, w.gamma.id))?.id).toBe(w.gamma.id);
+    expect(await getAccount(testPrisma, w.suOnboarder, w.alpha.id)).toBeNull();
+
+    const stranger = su(await makeUser("ONBOARDING", w.t.team));
+    expect(await listAccounts(testPrisma, stranger)).toEqual([]);
+    expect(await listAccounts(testPrisma, stranger, { q: "Tower" })).toEqual([]);
+    expect(await getAccount(testPrisma, stranger, w.gamma.id)).toBeNull();
+  });
+
+  it("an assignment does NOT cross a team boundary for a MEMBER (but ONBOARDING is company-wide)", async () => {
+    const w = await world();
+    const other = await makeTeamWithUsers({ companyId: w.t.companyId });
+    const foreign = await createAccount(testPrisma, other.suMember, { name: "Delta Tower" });
+    // A cross-team assignment row (nobody should be able to write one, but the scope must not
+    // depend on that) grants a MEMBER nothing: accountScopeWhere keeps their teamId key precisely
+    // so an assignment can only widen them WITHIN their own book.
+    await w.assign(w.t.member.id, foreign.id);
+    expect(ids(await listAccounts(testPrisma, w.t.suMember))).toEqual(ids([w.alpha, w.gamma]));
+    expect(await getAccount(testPrisma, w.t.suMember, foreign.id)).toBeNull();
+    // ONBOARDING, by contrast, IS company-wide by design — assignment is its only boundary.
+    await w.assign(w.onboarder.id, foreign.id);
+    expect(ids(await listAccounts(testPrisma, w.suOnboarder))).toEqual(ids([w.gamma, foreign]));
+  });
+
+  // ONE GATE FOR ACCOUNT WRITES: being in read scope is not write authority.
+  it("an assigned ONBOARDING user is refused every account write, while a co-assigned MEMBER is not", async () => {
+    const w = await world();
+    // Gamma IS in the onboarder's read scope (asserted above), so each refusal below comes from the
+    // edit_accounts capability and from nothing else.
+    await expect(updateAccount(testPrisma, w.suOnboarder, w.gamma.id, { name: "Renamed" }))
+      .rejects.toThrow(ForbiddenError);
+    await expect(updateAccount(testPrisma, w.suOnboarder, w.gamma.id, { status: "ACTIVE" }))
+      .rejects.toThrow(ForbiddenError);
+    await expect(deleteAccount(testPrisma, w.suOnboarder, w.gamma.id)).rejects.toThrow(ForbiddenError);
+    await expect(createAccount(testPrisma, w.suOnboarder, { name: uniq("Sneaky ") }))
+      .rejects.toThrow(ForbiddenError);
+    await expect(createAccountWithLogin(testPrisma, w.suOnboarder, { name: uniq("Sneaky ") }))
+      .rejects.toThrow(ForbiddenError);
+    await expect(createPartnerLogin(testPrisma, w.suOnboarder, w.gamma.id, {
+      name: "Rep", email: `${uniq("rep-")}@test.local`, password: "password123",
+    })).rejects.toThrow(ForbiddenError);
+    // Asserted twice, like every denial in this codebase: refused AND nothing written.
+    const after = await testPrisma.account.findUniqueOrThrow({ where: { id: w.gamma.id } });
+    expect(after.name).toBe("Gamma Tower");
+    expect(await testPrisma.user.count({ where: { role: "PARTNER_VIEWER" } })).toBe(0);
+    expect(await testPrisma.account.count({ where: { name: { startsWith: "Sneaky" } } })).toBe(0);
+
+    // The co-assigned MEMBER's writes are UNAFFECTED — the half of this feature that must not
+    // regress. m1 does not MANAGE Gamma; the assignment is what lets them edit it.
+    await expect(updateAccount(testPrisma, w.t.suMember, w.gamma.id, { industry: "x" }))
+      .resolves.toMatchObject({ industry: "x" });
+  });
+
+  it("an out-of-scope write stays NotFound, and ONBOARDING's refusal never confirms an id", async () => {
+    const w = await world();
+    // The discipline this codebase holds everywhere: a MEMBER naming a building they cannot see
+    // gets NotFound, not a Forbidden that would confirm the id exists.
+    await expect(updateAccount(testPrisma, w.t.suMember, w.beta.id, { industry: "x" }))
+      .rejects.toThrow(NotFoundError);
+    // ONBOARDING gets the IDENTICAL error for a real id and an invented one, because edit_accounts
+    // is a pure ROLE test that never looks at the id. So the 403 is not an oracle.
+    const real = await caught(() => updateAccount(testPrisma, w.suOnboarder, w.gamma.id, { industry: "x" }));
+    const fake = await caught(() => updateAccount(testPrisma, w.suOnboarder, "no-such-account", { industry: "x" }));
+    expect(real).toBeInstanceOf(ForbiddenError);
+    expect(fake).toBeInstanceOf(ForbiddenError);
+    expect((real as Error).message).toBe((fake as Error).message);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// THE DEMO/TRIAL LIFECYCLE and the IDEMPOTENT CHECKLIST SEEDING.
+//
+// A building on a 2-3 month trial has NO signed contract, so it must not read as a won customer —
+// but it IS using the mobile app, so sales needs its live statistics. It therefore becomes an
+// Account early, in `DEMO`, with a trial window. When the contract is signed it goes DEMO ->
+// ACTIVE, and THAT is what seeds the six-step onboarding checklist.
+// ---------------------------------------------------------------------------------------------
+describe("accounts: DEMO trials and onboarding seeding", () => {
+  beforeEach(prepare);
+  afterAll(async () => { restore(); await testPrisma.$disconnect(); });
+
+  const day = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d));
+  const steps = (accountId: string) =>
+    testPrisma.onboardingStep.findMany({ where: { accountId }, orderBy: { position: "asc" } });
+
+  // A PRE-EXISTING account, as the migration left it: `onboardingSeededAt` backfilled to createdAt
+  // (already past onboarding) and NO checklist rows. Written raw on purpose — going through
+  // createAccount would seed it, which is the state this fixture must NOT have.
+  async function legacyAccount(
+    t: Awaited<ReturnType<typeof makeTeamWithUsers>>, status: "ACTIVE" | "AT_RISK",
+  ) {
+    const name = uniq("Legacy Tower ");
+    return testPrisma.account.create({ data: {
+      companyId: t.companyId, teamId: t.team.id, name, buildingKey: buildingKey(name),
+      accountManagerId: t.member.id, status, onboardingSeededAt: new Date("2020-01-01T00:00:00Z"),
+    } });
+  }
+
+  it("creating an ACTIVE account seeds exactly 6 steps, in template order, positions 1..6", async () => {
+    const t = await makeTeamWithUsers();
+    const acc = await createAccount(testPrisma, t.suMember, { name: uniq("Signed Tower ") });
+
+    const rows = await steps(acc.id);
+    expect(rows.length).toBe(6);
+    expect(rows.map((r) => r.templateKey)).toEqual(ONBOARDING_TEMPLATE.map((s) => s.key));
+    expect(rows.map((r) => r.title)).toEqual(ONBOARDING_TEMPLATE.map((s) => s.title));
+    expect(rows.map((r) => r.position)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(rows.every((r) => r.companyId === t.companyId)).toBe(true);
+    expect(rows.every((r) => r.done === false)).toBe(true);
+    // The claim is stamped, which is what makes every later activation a no-op.
+    const after = await testPrisma.account.findUniqueOrThrow({ where: { id: acc.id } });
+    expect(after.onboardingSeededAt).not.toBeNull();
+  });
+
+  it("creating a DEMO account stores the calendar window and seeds NOTHING", async () => {
+    const t = await makeTeamWithUsers();
+    const acc = await createAccount(testPrisma, t.suMember, {
+      name: uniq("Trial Tower "), status: "DEMO",
+      trialStartsAt: day(2026, 3, 1), trialEndsAt: day(2026, 5, 30),
+    });
+
+    expect(acc.status).toBe("DEMO");
+    expect(acc.trialStartsAt?.toISOString()).toBe("2026-03-01T00:00:00.000Z");
+    expect(acc.trialEndsAt?.toISOString()).toBe("2026-05-30T00:00:00.000Z");
+    // No contract, no onboarding — and no claim stamped, so activation can still seed later.
+    expect(await steps(acc.id)).toEqual([]);
+    expect(acc.onboardingSeededAt).toBeNull();
+  });
+
+  it("DEMO defaults trialStartsAt to today", async () => {
+    const t = await makeTeamWithUsers();
+    const acc = await createAccount(testPrisma, t.suMember, {
+      name: uniq("Trial Tower "), status: "DEMO", trialEndsAt: day(2030, 1, 1),
+    });
+    expect(acc.trialStartsAt?.toISOString()).toBe(todayTrialDate().toISOString());
+  });
+
+  // A 500 here would be the DB CHECK (Account_demo_trial_dates_check) answering instead of us.
+  it("creating DEMO without an end date, or with a backwards window, is a validation error not a 500", async () => {
+    const t = await makeTeamWithUsers();
+    await expect(createAccount(testPrisma, t.suMember, { name: uniq("Bad Trial "), status: "DEMO" }))
+      .rejects.toThrow(InvalidTrialError);
+    await expect(createAccount(testPrisma, t.suMember, {
+      name: uniq("Bad Trial "), status: "DEMO",
+      trialStartsAt: day(2026, 5, 1), trialEndsAt: day(2026, 4, 1),
+    })).rejects.toThrow(InvalidTrialError);
+    // Refused AND nothing written.
+    expect(await testPrisma.account.count({ where: { name: { startsWith: "Bad Trial" } } })).toBe(0);
+  });
+
+  it("DEMO -> ACTIVE seeds the checklist once; DEMO -> CHURNED seeds nothing", async () => {
+    const t = await makeTeamWithUsers();
+    const signed = await createAccount(testPrisma, t.suMember, {
+      name: uniq("Signing Tower "), status: "DEMO", trialEndsAt: day(2030, 1, 1),
+    });
+    const lost = await createAccount(testPrisma, t.suMember, {
+      name: uniq("Churning Tower "), status: "DEMO", trialEndsAt: day(2030, 1, 1),
+    });
+
+    const activated = await updateAccount(testPrisma, t.suMember, signed.id, { status: "ACTIVE" });
+    expect(activated.status).toBe("ACTIVE");
+    expect((await steps(signed.id)).length).toBe(6);
+    // Re-posting ACTIVE is not a second activation.
+    await updateAccount(testPrisma, t.suMember, signed.id, { status: "ACTIVE" });
+    expect((await steps(signed.id)).length).toBe(6);
+
+    // A lost trial is written off by hand. CHURNED is allowed and seeds nothing — the building
+    // never signed anything, so it has no onboarding to run.
+    const churned = await updateAccount(testPrisma, t.suMember, lost.id, { status: "CHURNED" });
+    expect(churned.status).toBe("CHURNED");
+    expect(await steps(lost.id)).toEqual([]);
+  });
+
+  it("DEMO -> AT_RISK and ACTIVE -> DEMO are both refused", async () => {
+    const t = await makeTeamWithUsers();
+    const demo = await createAccount(testPrisma, t.suMember, {
+      name: uniq("Trial Tower "), status: "DEMO", trialEndsAt: day(2030, 1, 1),
+    });
+    const active = await createAccount(testPrisma, t.suMember, { name: uniq("Customer Tower ") });
+
+    // AT_RISK describes a paying customer whose relationship is wobbling; on a trial it would
+    // quietly make a contract-less building look won in every status filter.
+    await expect(updateAccount(testPrisma, t.suMember, demo.id, { status: "AT_RISK" }))
+      .rejects.toThrow(InvalidStatusTransitionError);
+    // An account may only BE DEMO if it was CREATED DEMO: there is no un-signing a contract.
+    await expect(updateAccount(testPrisma, t.suMember, active.id, { status: "DEMO" }))
+      .rejects.toThrow(InvalidStatusTransitionError);
+    await expect(updateAccount(testPrisma, t.suMember, active.id, {
+      status: "DEMO", trialEndsAt: day(2030, 1, 1),
+    })).rejects.toThrow(InvalidStatusTransitionError);
+
+    // Refused AND nothing written.
+    expect((await testPrisma.account.findUniqueOrThrow({ where: { id: demo.id } })).status).toBe("DEMO");
+    expect((await testPrisma.account.findUniqueOrThrow({ where: { id: active.id } })).status).toBe("ACTIVE");
+  });
+
+  it("trial dates are editable ONLY while the account is DEMO", async () => {
+    const t = await makeTeamWithUsers();
+    const demo = await createAccount(testPrisma, t.suMember, {
+      name: uniq("Extending Tower "), status: "DEMO",
+      trialStartsAt: day(2026, 3, 1), trialEndsAt: day(2026, 5, 1),
+    });
+
+    // EXTENDING a live trial: the end date alone, the start kept.
+    const extended = await updateAccount(testPrisma, t.suMember, demo.id, { trialEndsAt: day(2026, 6, 1) });
+    expect(extended.trialEndsAt?.toISOString()).toBe("2026-06-01T00:00:00.000Z");
+    expect(extended.trialStartsAt?.toISOString()).toBe("2026-03-01T00:00:00.000Z");
+    // A backwards window is still refused on the edit path.
+    await expect(updateAccount(testPrisma, t.suMember, demo.id, { trialEndsAt: day(2026, 1, 1) }))
+      .rejects.toThrow(InvalidTrialError);
+    // "Activate and also re-date the trial you are ending" has no meaning.
+    await expect(updateAccount(testPrisma, t.suMember, demo.id, {
+      status: "ACTIVE", trialEndsAt: day(2026, 7, 1),
+    })).rejects.toThrow(InvalidTrialError);
+
+    await updateAccount(testPrisma, t.suMember, demo.id, { status: "ACTIVE" });
+    // Signed: the window is history and is no longer editable.
+    await expect(updateAccount(testPrisma, t.suMember, demo.id, { trialEndsAt: day(2026, 9, 1) }))
+      .rejects.toThrow(InvalidTrialError);
+    // ...but ECHOING the stored window is not an edit. Every edit form in this app posts the whole
+    // record back, so this must stay a no-op rather than a 400 on an ordinary save.
+    await expect(updateAccount(testPrisma, t.suMember, demo.id, {
+      industry: "resi", trialStartsAt: day(2026, 3, 1), trialEndsAt: day(2026, 6, 1),
+    })).resolves.toMatchObject({ industry: "resi" });
+    const after = await testPrisma.account.findUniqueOrThrow({ where: { id: demo.id } });
+    expect(after.trialEndsAt?.toISOString()).toBe("2026-06-01T00:00:00.000Z");
+  });
+
+  // THE REGRESSION THE BACKFILL EXISTS TO PREVENT. Every account that predates this feature was
+  // backfilled `onboardingSeededAt = createdAt`, so a customer that signed years ago and bounces
+  // AT_RISK -> ACTIVE must not suddenly grow a six-step checklist.
+  it("AT_RISK -> ACTIVE on a pre-existing (backfilled) account seeds NOTHING", async () => {
+    const t = await makeTeamWithUsers();
+    const legacy = await legacyAccount(t, "AT_RISK");
+
+    const updated = await updateAccount(testPrisma, t.suAdmin, legacy.id, { status: "ACTIVE" });
+
+    expect(updated.status).toBe("ACTIVE");
+    expect(await steps(legacy.id)).toEqual([]);
+    // And the backfilled stamp is NOT bumped: the claim never matched, so nothing was written.
+    expect(updated.onboardingSeededAt?.toISOString()).toBe("2020-01-01T00:00:00.000Z");
+  });
+
+  // The concurrency argument in onboarding-seed.ts, asserted: the conditional UPDATE is a row
+  // lock, so the loser re-reads after the winner commits, matches 0 rows and inserts nothing.
+  it("two concurrent seeds leave exactly 6 rows and only one of them returns true", async () => {
+    const t = await makeTeamWithUsers();
+    const legacy = await legacyAccount(t, "ACTIVE");
+    // Un-stamp it so BOTH callers see a seedable account — the state the race needs.
+    await testPrisma.account.update({ where: { id: legacy.id }, data: { onboardingSeededAt: null } });
+
+    const seed = () => testPrisma.$transaction((tx) => seedOnboardingChecklist(tx, legacy));
+    const results = await Promise.all([seed(), seed()]);
+
+    expect(results.filter(Boolean).length).toBe(1);
+    expect((await steps(legacy.id)).length).toBe(6);
+  });
+
+  it("seeding never touches AccountTask — the checklist is a separate table", async () => {
+    const t = await makeTeamWithUsers();
+    const demo = await createAccount(testPrisma, t.suMember, {
+      name: uniq("Task Tower "), status: "DEMO", trialEndsAt: day(2030, 1, 1),
+    });
+    await testPrisma.accountTask.create({
+      data: { companyId: t.companyId, accountId: demo.id, title: "Call the manager" },
+    });
+
+    await updateAccount(testPrisma, t.suMember, demo.id, { status: "ACTIVE" });
+
+    expect((await steps(demo.id)).length).toBe(6);
+    // 1, not 7: the six steps are OnboardingStep rows and nothing else moved.
+    expect(await testPrisma.accountTask.count({ where: { accountId: demo.id } })).toBe(1);
+  });
+
+  // A DEMO building has no signed contract, so it is NOT a won customer. The dashboard's
+  // activeAccounts counts `status === "ACTIVE"` — adding a trial must not move that number.
+  it("DEMO accounts are excluded from the dashboard's activeAccounts count", async () => {
+    const t = await makeTeamWithUsers();
+    const range = { from: new Date("2026-07-01T00:00:00Z"), to: new Date("2026-07-31T23:59:59Z") };
+    await createAccount(testPrisma, t.suMember, { name: uniq("Customer Tower ") });
+    const before = await getDashboardStats(testPrisma, t.suMember, range);
+
+    await createAccount(testPrisma, t.suMember, {
+      name: uniq("Trial Tower "), status: "DEMO", trialEndsAt: day(2030, 1, 1),
+    });
+    const after = await getDashboardStats(testPrisma, t.suMember, range);
+
+    expect(before.partners.activeAccounts).toBe(1);
+    expect(after.partners.activeAccounts).toBe(before.partners.activeAccounts);
+    // It IS in the account list, though — that is the whole point of making it an account.
+    expect(after.partners.accounts).toBe(before.partners.accounts + 1);
+  });
+
+  // REASSIGNMENT CLEANUP. The old keep-list (new manager + target team's admins) pre-dates
+  // AccountAssignment: an assigned user is still in the account's scope after a manager change, so
+  // nulling their work would strip the checklist they are there to run.
+  it("reassignment keeps ASSIGNED users' items, clears the old manager's, and drops the new manager's assignment row", async () => {
+    const t = await makeTeamWithUsers();
+    const m2 = await makeUser("MEMBER", t.team);
+    const onboarder = await makeUser("ONBOARDING", t.team);
+    const acc = await createAccount(testPrisma, su(m2), { name: uniq("Handover Tower ") });
+    const assign = (userId: string) =>
+      testPrisma.accountAssignment.create({ data: { companyId: t.companyId, accountId: acc.id, userId } });
+    await assign(onboarder.id);
+    // The INCOMING manager also holds an assignment row — the duplicate grant this cleanup removes.
+    await assign(t.member.id);
+
+    const task = (assigneeId: string) => testPrisma.accountTask.create({
+      data: { companyId: t.companyId, accountId: acc.id, title: "t", assigneeId },
+    });
+    const oldManagerTask = await task(m2.id);
+    const onboarderTask = await task(onboarder.id);
+    const rows = await steps(acc.id);
+    await testPrisma.onboardingStep.update({ where: { id: rows[0].id }, data: { assigneeId: m2.id } });
+    await testPrisma.onboardingStep.update({ where: { id: rows[1].id }, data: { assigneeId: onboarder.id } });
+    // A DONE step is history — who actually did it — and must survive the reassignment.
+    await testPrisma.onboardingStep.update({
+      where: { id: rows[2].id }, data: { assigneeId: m2.id, done: true },
+    });
+
+    await updateAccount(testPrisma, t.suAdmin, acc.id, { accountManagerId: t.member.id });
+
+    const stepById = new Map((await steps(acc.id)).map((s) => [s.id, s]));
+    expect(stepById.get(rows[0].id)!.assigneeId).toBeNull();            // old manager, open -> cleared
+    expect(stepById.get(rows[1].id)!.assigneeId).toBe(onboarder.id);    // assigned user -> kept
+    expect(stepById.get(rows[2].id)!.assigneeId).toBe(m2.id);           // done -> untouched history
+    expect((await testPrisma.accountTask.findUniqueOrThrow({ where: { id: oldManagerTask.id } })).assigneeId).toBeNull();
+    expect((await testPrisma.accountTask.findUniqueOrThrow({ where: { id: onboarderTask.id } })).assigneeId).toBe(onboarder.id);
+    // ONE SOURCE PER FACT: the new manager has access via accountManagerId, never also as a row.
+    const left = await testPrisma.accountAssignment.findMany({ where: { accountId: acc.id } });
+    expect(left.map((a) => a.userId)).toEqual([onboarder.id]);
   });
 });

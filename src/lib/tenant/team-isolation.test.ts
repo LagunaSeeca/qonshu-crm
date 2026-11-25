@@ -939,13 +939,22 @@ describe("team isolation", () => {
         expect((await listCompanySettlements(testPrisma, p)).totals.transferred).toBe(100);
       });
 
-      it("by-id child mutations on another building are NotFound and change nothing", async () => {
+      // CHANGED EXPECTATION (ONBOARDING/assignment work): these three were NotFound and are now
+      // Forbidden, because account writes gained a role gate (`edit_accounts`, which excludes
+      // PARTNER_VIEWER) asserted BEFORE the child row is looked up. That is not a weakening of the
+      // id-probing discipline — a partner now gets the IDENTICAL Forbidden for a real id and an
+      // invented one, since the capability never looks at the id — and it refuses the write one
+      // query earlier than before. deleteSettlementEntry was already Forbidden for this reason.
+      it("by-id child mutations on another building are refused and change nothing", async () => {
         const w = await world();
         const p = (await repFor(w, "m1")).session;
-        expect(await outcome(() => toggleAccountTask(testPrisma, p, w.acctTasks.m2.id, true))).toBe("NotFound");
-        expect(await outcome(() => resolveAsk(testPrisma, p, w.asks.m3.id))).toBe("NotFound");
+        expect(await outcome(() => toggleAccountTask(testPrisma, p, w.acctTasks.m2.id, true))).toBe("Forbidden");
+        expect(await outcome(() => resolveAsk(testPrisma, p, w.asks.m3.id))).toBe("Forbidden");
         expect(await outcome(() => deleteSettlementEntry(testPrisma, p, w.entries.m2.id))).toBe("Forbidden");
-        expect(await outcome(() => markFeePaid(testPrisma, p, w.fees.m3.id, {}))).toBe("NotFound");
+        expect(await outcome(() => markFeePaid(testPrisma, p, w.fees.m3.id, {}))).toBe("Forbidden");
+        // The refusal is id-independent: a made-up id gets the same answer, so nothing is confirmed.
+        expect(await outcome(() => toggleAccountTask(testPrisma, p, "no-such-task", true))).toBe("Forbidden");
+        expect(await outcome(() => markFeePaid(testPrisma, p, "no-such-fee", {}))).toBe("Forbidden");
         expect((await testPrisma.accountTask.findUniqueOrThrow({ where: { id: w.acctTasks.m2.id } })).done).toBe(false);
         expect(await testPrisma.settlementEntry.count({ where: { id: w.entries.m2.id } })).toBe(1);
         expect((await testPrisma.serviceFee.findUniqueOrThrow({ where: { id: w.fees.m3.id } })).status).toBe("UNPAID");

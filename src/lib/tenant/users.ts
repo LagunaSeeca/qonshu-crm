@@ -1,6 +1,7 @@
 import type { PrismaClient, User, UserStatus, Role, Prisma } from "@prisma/client";
 import { ForbiddenError, NotFoundError, isAdmin, type SessionUser } from "@/lib/auth/guards";
 import { hashPassword } from "@/lib/auth/password";
+import { pruneAssignmentsOutsideTeam } from "./account-assignments";
 
 export class InvalidUserRoleError extends Error {}
 
@@ -11,17 +12,28 @@ export class InvalidUserRoleError extends Error {}
 //   SUPER_ADMIN    the owner. Creates one COMPANY_ADMIN ("Team Admin") per sales team; sees all.
 //   COMPANY_ADMIN  adds MEMBERs to its OWN team, and partner logins for its OWN team's accounts.
 //   MEMBER         cannot administer users at all.
+//   ONBOARDING     activation staff. teamId null; company-wide, but sees only ASSIGNED accounts.
 //   PARTNER_VIEWER a building's representative. teamId null, pinned to one Account.
 //
-// Two rules are load-bearing and repeated in each function:
+// Three rules are load-bearing and repeated in each function:
 //   1. Only the SUPER_ADMIN creates team admins. A team admin promoting itself a peer (or a
 //      second admin into a sibling team) would make the "one admin per team" model unenforceable.
 //   2. A team admin naming someone else's teamId/accountId is REJECTED, never silently
 //      substituted with its own. Substituting would return 201/200 for something other than what
 //      was asked, which is both a lie to the caller and an invitation to probe.
+//   3. Only the SUPER_ADMIN creates ONBOARDING users, and they always land with teamId null.
+//      Same reasoning as rule 1, one step stronger: an ONBOARDING login is a COMPANY-WIDE identity
+//      (no team filter at all — see accountScopeWhere), so a team admin able to mint one would be
+//      minting a role whose reach exceeds their own.
 
 // The roles that live on a team. PARTNER_VIEWER is deliberately absent: a partner login belongs to
-// an Account, never to a team, and carries teamId null.
+// an Account, never to a team, and carries teamId null. ONBOARDING is absent for the same reason in
+// mirror image: it belongs to the company and reaches buildings through AccountAssignment rows.
+//
+// This constant is ALSO what keeps ONBOARDING out of every owner picker (it is the `role: { in: }`
+// filter in listAssignableUsers below), matching OWNABLE_ROLES in scope.ts, which refuses to resolve
+// one as a Lead owner or Account manager. Both lists are allowlists of the same two roles, so the
+// new role was excluded by construction rather than by remembering to exclude it.
 const TEAM_ROLES: Role[] = ["COMPANY_ADMIN", "MEMBER"];
 
 // Users a team admin may see: its own team, PLUS the partner logins pinned to an account that
@@ -125,6 +137,14 @@ export async function createUser(
     role: Role;
     accountId?: string | null;
     teamId?: string | null;
+    // READ ON THE ONBOARDING BRANCH ONLY, and only ever from a SUPER_ADMIN (that branch is
+    // SUPER_ADMIN-gated before this value is touched). Every other role derives its company from
+    // the named team or the named account, which is why this argument does not exist for them —
+    // see the note above about a client-supplied companyId being one more cross-tenant field to
+    // police. An ONBOARDING user has NEITHER a team NOR an account, so there is nothing left to
+    // derive it from: the owner, whose own companyId is null because they sit above the org, must
+    // say which company the login belongs to.
+    companyId?: string;
   },
 ): Promise<User> {
   if (!isAdmin(user)) throw new ForbiddenError(`${user.role} cannot create users`);
@@ -137,12 +157,32 @@ export async function createUser(
   if (args.role === "COMPANY_ADMIN" && user.role !== "SUPER_ADMIN") {
     throw new ForbiddenError("only the super admin can create a team admin");
   }
+  // Rule 3: ONBOARDING is the owner's to grant. ForbiddenError, not InvalidUserRoleError, because
+  // this is an authorization refusal rather than a malformed request — a COMPANY_ADMIN asking for
+  // one is asking for something they are not allowed to have, not something that cannot exist.
+  if (args.role === "ONBOARDING" && user.role !== "SUPER_ADMIN") {
+    throw new ForbiddenError("only the super admin can create an onboarding user");
+  }
 
   let companyId: string;
   let teamId: string | null;
   let accountId: string | null = null;
 
-  if (args.role === "PARTNER_VIEWER") {
+  if (args.role === "ONBOARDING") {
+    // TEAM FORCED TO NULL, and a named team REJECTED rather than dropped (rule 2's shape): an
+    // onboarding user works every team's buildings and is confined by AccountAssignment rows, so a
+    // teamId would be a filter that means nothing — and silently honouring one would create a role
+    // the scope helpers do not expect to find a team on.
+    if (args.teamId) throw new InvalidUserRoleError("teamId is not allowed for ONBOARDING");
+    if (args.accountId) throw new InvalidUserRoleError("accountId is only allowed for PARTNER_VIEWER");
+    // The SUPER_ADMIN's own companyId may legitimately be null (it sits above the org), but an
+    // ONBOARDING user must have a company — accountScopeWhere's requireCompany throws otherwise and
+    // the login would be unusable. Named explicitly, never defaulted.
+    const named = args.companyId ?? user.companyId;
+    if (!named) throw new InvalidUserRoleError("companyId is required to create an onboarding user");
+    companyId = named;
+    teamId = null;
+  } else if (args.role === "PARTNER_VIEWER") {
     // A partner login is defined by its one account and has no team of its own, so a teamId here
     // is a caller misunderstanding — rejected rather than dropped, so the mistake is visible.
     if (args.teamId) throw new InvalidUserRoleError("teamId is not allowed for PARTNER_VIEWER");
@@ -223,4 +263,48 @@ export async function setUserStatus(
   if (!found) throw new NotFoundError("user not in scope");
   if (found.role === "SUPER_ADMIN") throw new ForbiddenError("the super admin cannot be deactivated");
   return db.user.update({ where: { id: found.id }, data: { status } });
+}
+
+// Move a team-scoped user to another team of the same company — AND REVOKE THE GRANTS THEY LEAVE
+// BEHIND.
+//
+// WHY THE CLEANUP LIVES INSIDE THE MOVE, in the same transaction. Access to a building now comes
+// from an AccountAssignment row (scope.ts accountScopeWhere reads that table), and those rows name
+// an ACCOUNT, not a team. So moving a MEMBER from team A to team B leaves every team-A grant they
+// held intact, which silently breaks team isolation: the rows still exist and the scope still reads
+// them. There is no safe "clean it up afterwards" — a crash between the two writes would leave a
+// user sitting in team B holding live grants on team A's buildings, so the move and the revoke are
+// one atomic fact. See pruneAssignmentsOutsideTeam in ./account-assignments for the rule itself
+// (and for why an ONBOARDING user, being teamless by design, is never pruned).
+//
+// Scope and refusals mirror setUserStatus above: the target must be inside the actor's own
+// visibility, and nobody moves themselves (a COMPANY_ADMIN moving itself out of its team would
+// take its own team's user administration with it, mid-request). The destination team is validated
+// against the DB and must be in the same company — a teamId is client input that decides which
+// book someone can read.
+export async function setUserTeam(
+  db: PrismaClient,
+  user: SessionUser,
+  id: string,
+  teamId: string,
+): Promise<User> {
+  if (id === user.id) throw new ForbiddenError("you cannot change your own team");
+  const found = await getUser(db, user, id);
+  if (!found) throw new NotFoundError("user not in scope");
+  // ONBOARDING, SUPER_ADMIN and PARTNER_VIEWER are teamless by design (see the role table at the
+  // top of this file); putting any of them on a team would create a role shape the scope functions
+  // do not model.
+  if (!TEAM_ROLES.includes(found.role)) {
+    throw new InvalidUserRoleError(`a ${found.role} is not on a team`);
+  }
+  const team = await db.team.findUnique({ where: { id: teamId }, select: { id: true, companyId: true } });
+  if (!team || team.companyId !== found.companyId) throw new NotFoundError("team not found");
+  if (team.id === found.teamId) return found;
+
+  return db.$transaction(async (tx) => {
+    const moved = await tx.user.update({ where: { id: found.id }, data: { teamId: team.id } });
+    // Atomic with the move: the grants they held on their OLD team's buildings die with the move.
+    await pruneAssignmentsOutsideTeam(tx, { userId: moved.id, role: moved.role, teamId: moved.teamId });
+    return moved;
+  });
 }

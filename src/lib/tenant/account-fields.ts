@@ -1,7 +1,7 @@
 import type { PrismaClient, AccountFieldDef, AccountFieldType } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth/guards";
 import { ForbiddenError, NotFoundError } from "@/lib/auth/guards";
-import { getAccount } from "./accounts";
+import { getAccount, getWritableAccount } from "./accounts";
 
 // CUSTOM ACCOUNT FIELDS ARE PER TEAM.
 //
@@ -30,6 +30,15 @@ export type FieldDefScope = { companyId: string; teamId: string | null };
 // the whole table rather than a smaller result set.
 export function defScopeWhere(user: SessionUser): FieldDefScope {
   if (user.role === "PARTNER_VIEWER") throw new ForbiddenError("partners cannot read field definitions");
+  // ONBOARDING too. Definitions are a TEAM's columns and activation staff have no team (teamId
+  // null), so they have no definition set — and no business reshaping one. This already failed
+  // closed via the `!user.teamId` check below, but on a message ("ONBOARDING is not on a team")
+  // that reads like a data bug to be fixed rather than the rule it actually is.
+  //
+  // Note what still works: the per-account VALUE read (getAccountFields) is keyed off
+  // `account.teamId`, NOT the reader's team, so an assigned ONBOARDING user still sees the
+  // building's custom fields read-only. Only the DEFINITION set is closed to them.
+  if (user.role === "ONBOARDING") throw new ForbiddenError("onboarding staff have no field definition set");
   // A SUPER_ADMIN sits above every company and so has companyId null (see scope.ts). The template
   // still belongs to a company, so the caller must supply the context — same contract as every
   // other scope helper, and the same fail-closed answer when it does not.
@@ -58,6 +67,9 @@ export async function resolveFieldDefScope(
   requested: FieldDefScopeRequest = {},
 ): Promise<FieldDefScope> {
   if (user.role === "PARTNER_VIEWER") throw new ForbiddenError("partners cannot read field definitions");
+  // Same rule as defScopeWhere. Stated explicitly rather than left to the fail-closed throw at the
+  // bottom, so the refusal is legible at the top of the function with the other one.
+  if (user.role === "ONBOARDING") throw new ForbiddenError("onboarding staff have no field definition set");
 
   if (user.role === "SUPER_ADMIN") {
     // REQUIRED, not defaulted: a SUPER_ADMIN has no team, and guessing one would edit the wrong
@@ -181,7 +193,10 @@ export async function getAccountFields(db: PrismaClient, user: SessionUser, acco
 }
 
 export async function setAccountFieldValue(db: PrismaClient, user: SessionUser, accountId: string, fieldDefId: string, value: string) {
-  const acc = await getAccount(db, user, accountId);
+  // getWritableAccount: the VALUE read (getAccountFields, above) is open to anyone who can open the
+  // account — including an assigned ONBOARDING user, who sees the team's columns read-only — but
+  // writing one edits the team's record of the building.
+  const acc = await getWritableAccount(db, user, accountId);
   if (!acc) throw new NotFoundError("account not in scope");
   // The definition must belong to THIS ACCOUNT'S TEAM. A `{ id, companyId }` lookup accepted any
   // definition in the org — including the template, whose rows must never carry values, and
