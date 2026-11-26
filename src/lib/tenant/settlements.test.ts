@@ -7,6 +7,8 @@ import {
   deleteSettlementEntry,
   getAccountSettlement,
   listCompanySettlements,
+  setCollectionMode,
+  SelfCollectingError,
   currentSettlementPeriod,
   resolveSettlementPeriod,
 } from "./settlements";
@@ -50,6 +52,24 @@ async function setup(slug: string, opts: { linked?: boolean } = {}) {
     memberUser: su(member) as SessionUser,
     saUser: su(superAdmin) as SessionUser,
   };
+}
+
+// A second (third, fourth) building inside an existing tenant, with its own confirmed partner
+// link so it can have a Collected of its own. `mode` is the whole point for the SELF cases.
+function makeAccount(
+  c: { id: string },
+  team: { id: string },
+  accountManagerId: string,
+  name: string,
+  partner: string,
+  mode: "QONSHU" | "SELF" = "QONSHU",
+) {
+  return testPrisma.account.create({
+    data: {
+      companyId: c.id, teamId: team.id, buildingKey: buildingKey(name), name,
+      accountManagerId, collectionMode: mode, ...confirmedPartnerLink(partner),
+    },
+  });
 }
 
 // Writes bypass the service where the test is not about the write gate: addSettlementEntry needs
@@ -149,12 +169,20 @@ describe("settlements", () => {
     expect(s.transfers).toHaveLength(0);
   });
 
-  it("the upstream is asked for exactly the period's calendar bounds", async () => {
+  // The upstream filters on inclusive CALENDAR DATES, and every period on this path is a BAKU
+  // boundary, so the instants below are Baku March: 1 March 00:00 Baku is 28 Feb 20:00Z, and
+  // 31 March 23:59:59.999 Baku is 31 March 19:59:59.999Z.
+  //
+  // REGRESSION: this used to pass UTC instants and `isoDate` was a plain `toISOString()`. Once the
+  // page started resolving Baku periods, a Baku `from` of 2026-10-31T20:00Z was sent as
+  // "2026-10-31" and the upstream folded 31 OCTOBER's card payments into November's Collected —
+  // inflating Owed by that amount and counting the same money in two months.
+  it("the upstream is asked for the period's BAKU calendar bounds, not its UTC ones", async () => {
     const { acc, adminUser, partnerName } = await setup("s-bounds");
     cardByPartner.set(partnerName, 1);
     await getAccountSettlement(testPrisma, adminUser, acc.id, {
-      from: new Date("2026-03-01T00:00:00.000Z"),
-      to: new Date("2026-03-31T23:59:59.999Z"),
+      from: new Date("2026-02-28T20:00:00.000Z"),
+      to: new Date("2026-03-31T19:59:59.999Z"),
     });
     expect(fetchPartnerStats).toHaveBeenCalledWith(
       expect.objectContaining({ partner: partnerName, dateFrom: "2026-03-01", dateTo: "2026-03-31" }),
@@ -244,7 +272,11 @@ describe("settlements", () => {
     // CHANGED ON PURPOSE: `totals` carries the degraded-data flags now (both empty here — every
     // account answered), so the exact-shape assertion has to list them.
     expect(sumA.totals).toEqual({
-      collected: 1000, transferred: 250, remaining: 750, owed: 750, partial: false, degradedAccountIds: [],
+      collected: 1000, transferred: 250, remaining: 750, owed: 750,
+      // Both accounts here are QONSHU, so the self-collecting base is 0 — not absent. An
+      // exact-shape assertion is the point of this test: a new total must be declared here.
+      selfCollected: 0,
+      partial: false, degradedAccountIds: [],
     });
 
     const sumB = await listCompanySettlements(testPrisma, B.adminUser);
@@ -360,19 +392,276 @@ describe("settlements", () => {
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
+  // --- self-collecting buildings -----------------------------------------------------------
+
+  it("a SELF account keeps Collected but has NO remaining/owed, and is in none of the four totals", async () => {
+    const { c, acc, team, adminUser, saUser, partnerName } = await setup("s-self-totals");
+    cardByPartner.set(partnerName, 1000);
+    await seedTransfer(c.id, acc.id, saUser.id, 250, inPeriod);
+    // A building that collects its own residents' money. It has a transfer row of its own
+    // (historic), which must NOT be folded into the company's transferred total either.
+    const selfAcc = await makeAccount(c, team, adminUser.id, "Zelf Tower", "s-self-totals-self", "SELF");
+    cardByPartner.set("s-self-totals-self", 400);
+    await seedTransfer(c.id, selfAcc.id, saUser.id, 100, inPeriod);
+
+    const s = await listCompanySettlements(testPrisma, adminUser);
+    const selfRow = s.rows.find((r) => r.accountId === selfAcc.id)!;
+    expect(selfRow.collectionMode).toBe("SELF");
+    expect(selfRow.collected).toBe(400); // the service-fee base is still owed to Qonshu
+    expect(selfRow.remaining).toBeUndefined();
+    expect(selfRow.owed).toBeUndefined();
+    expect(s.rows.find((r) => r.accountId === acc.id)!.collectionMode).toBe("QONSHU");
+
+    // THE REGRESSION: the old `r.collected !== undefined` filter admitted this row and then read
+    // its missing `remaining`, so every total came out NaN. Assert the real numbers, and assert
+    // they are numbers.
+    expect(s.totals).toEqual({
+      collected: 1000,
+      transferred: 250,
+      remaining: 750,
+      owed: 750,
+      selfCollected: 400,
+      partial: false,
+      degradedAccountIds: [],
+    });
+    for (const n of [s.totals.collected, s.totals.transferred, s.totals.remaining, s.totals.owed, s.totals.selfCollected]) {
+      expect(Number.isNaN(n)).toBe(false);
+    }
+  });
+
+  it("selfCollected sums only the SELF rows whose upstream actually answered", async () => {
+    const { c, acc, team, adminUser, partnerName } = await setup("s-self-sum");
+    cardByPartner.set(partnerName, 100);
+    const good = await makeAccount(c, team, adminUser.id, "Self Good", "s-self-sum-good", "SELF");
+    const bad = await makeAccount(c, team, adminUser.id, "Self Bad", "s-self-sum-bad", "SELF");
+    cardByPartner.set("s-self-sum-good", 300);
+    cardByPartner.set("s-self-sum-bad", 9999); // never arrives
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) => {
+      if (partner === "s-self-sum-bad") throw new PartnerApiUnavailableError();
+      return makePartnerStats({ partner, amount_by_card: cardByPartner.get(partner) ?? 0, total_payments_amount: 999_999 });
+    });
+
+    const s = await listCompanySettlements(testPrisma, adminUser);
+    expect(s.totals.selfCollected).toBe(300); // not 300 + 9999, and not 300 + 0
+    expect(s.totals.collected).toBe(100); // the QONSHU account only
+    expect(s.rows.find((r) => r.accountId === good.id)!.collected).toBe(300);
+    expect(s.rows.find((r) => r.accountId === bad.id)!.collected).toBeUndefined();
+    expect(s.totals.partial).toBe(true);
+    expect(s.totals.degradedAccountIds).toEqual([bad.id]);
+    expect(s.rows.find((r) => r.accountId === acc.id)!.collected).toBe(100);
+  });
+
+  it("a transfer against a SELF account is refused, and the transfers it already had still list", async () => {
+    const { c, acc, adminUser, saUser, partnerName } = await setup("s-self-transfer");
+    cardByPartner.set(partnerName, 500);
+    // Recorded while the building was still QONSHU - real money that really moved.
+    await seedTransfer(c.id, acc.id, saUser.id, 200, inPeriod);
+    await setCollectionMode(testPrisma, saUser, acc.id, "SELF");
+
+    await expect(
+      addSettlementEntry(testPrisma, saUser, acc.id, { amount: 10, method: "CASH", occurredAt: inPeriod }),
+    ).rejects.toBeInstanceOf(SelfCollectingError);
+    // Machine-readable, so the UI explains the state instead of printing a parsed sentence.
+    await expect(
+      addSettlementEntry(testPrisma, saUser, acc.id, { amount: 10, method: "CASH", occurredAt: inPeriod }),
+    ).rejects.toMatchObject({ reason: "self_collecting" });
+    expect(await testPrisma.settlementEntry.count({ where: { accountId: acc.id } })).toBe(1);
+
+    const s = await getAccountSettlement(testPrisma, adminUser, acc.id);
+    expect(s.collectionMode).toBe("SELF");
+    expect(s.transfers).toHaveLength(1);
+    expect(s.transferred).toBe(200);
+    expect(s.transferredByMethod).toEqual({ CASH: 200, BANK_TRANSFER: 0, MANUAL: 0 });
+    expect(s.collected).toBe(500);
+    expect(s.remaining).toBeUndefined();
+    expect(s.owed).toBeUndefined();
+  });
+
+  // --- setCollectionMode -------------------------------------------------------------------
+
+  it("setCollectionMode is SUPER_ADMIN only: team admin, member, onboarding and partner are refused", async () => {
+    const { acc, team, adminUser, memberUser, saUser } = await setup("s-mode-gate");
+    const onboarder = su(await makeUser("ONBOARDING", team));
+    const partner = su(await makeUser("PARTNER_VIEWER", team, { accountId: acc.id }));
+
+    for (const refused of [adminUser, memberUser, onboarder, partner]) {
+      await expect(setCollectionMode(testPrisma, refused, acc.id, "SELF")).rejects.toBeInstanceOf(ForbiddenError);
+    }
+    // Nothing moved: the flag decides whether Qonshu owes this building anything at all.
+    expect((await testPrisma.account.findUniqueOrThrow({ where: { id: acc.id } })).collectionMode).toBe("QONSHU");
+
+    // ...and the owner's write does land, so the refusals above are a gate, not a broken path.
+    expect(await setCollectionMode(testPrisma, saUser, acc.id, "SELF")).toEqual({ id: acc.id, collectionMode: "SELF" });
+    expect((await testPrisma.account.findUniqueOrThrow({ where: { id: acc.id } })).collectionMode).toBe("SELF");
+    expect(await setCollectionMode(testPrisma, saUser, acc.id, "QONSHU")).toEqual({ id: acc.id, collectionMode: "QONSHU" });
+  });
+
+  it("setCollectionMode gives the SAME 404 for another tenant's account and for an id that does not exist", async () => {
+    const A = await setup("s-mode-404-a");
+    const B = await setup("s-mode-404-b");
+    // A SUPER_ADMIN acting INSIDE a company context (the shape scope.ts sanctions). A teamless
+    // super admin is above every company by design, so it is not the caller that can be fenced.
+    const scoped: SessionUser = { ...A.saUser, companyId: A.c.id };
+
+    const outside = await setCollectionMode(testPrisma, scoped, B.acc.id, "SELF").catch((e) => e);
+    const missing = await setCollectionMode(testPrisma, scoped, "no-such-account", "SELF").catch((e) => e);
+    expect(outside).toBeInstanceOf(NotFoundError);
+    expect(missing).toBeInstanceOf(NotFoundError);
+    // Identical answers: the pair must not be an existence oracle.
+    expect(outside.constructor).toBe(missing.constructor);
+    expect(outside.message).toBe(missing.message);
+    expect((await testPrisma.account.findUniqueOrThrow({ where: { id: B.acc.id } })).collectionMode).toBe("QONSHU");
+  });
+
+  // --- filters ------------------------------------------------------------------------------
+
+  it("the q filter cannot widen scope: it never reaches another tenant's building", async () => {
+    const A = await setup("s-q-a");
+    const B = await setup("s-q-b");
+    const mine = await makeAccount(A.c, A.team, A.adminUser.id, "Zebra House", "s-q-a-zebra");
+    cardByPartner.set("s-q-a-zebra", 42);
+
+    // A team admin in the other tenant searching for it by name gets nothing at all - the filter
+    // is ANDed INSIDE the scope, never spread over it.
+    const other = await listCompanySettlements(testPrisma, B.adminUser, undefined, { q: "Zebra" });
+    expect(other.rows).toEqual([]);
+    expect(other.totals.collected).toBe(0);
+
+    // A MEMBER never gets as far as a filter: view_settlements excludes the role outright.
+    await expect(
+      listCompanySettlements(testPrisma, B.memberUser, undefined, { q: "Zebra" }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(
+      listCompanySettlements(testPrisma, A.memberUser, undefined, { q: "Zebra" }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    // A partner login is confined to its ONE account, filter or no filter.
+    const partner = su(await makeUser("PARTNER_VIEWER", A.team, { accountId: A.acc.id }));
+    expect((await listCompanySettlements(testPrisma, partner, undefined, { q: "Zebra" })).rows).toEqual([]);
+
+    // The owning tenant does find it, which is what makes the two empties above a scope result.
+    const ownTenant = await listCompanySettlements(testPrisma, A.adminUser, undefined, { q: "zebra" });
+    expect(ownTenant.rows.map((r) => r.accountId)).toEqual([mine.id]); // and case-insensitive
+  });
+
+  it("filters are applied to the ACCOUNT query, so the upstream is not asked about filtered-out buildings", async () => {
+    const { c, acc, team, adminUser, partnerName } = await setup("s-filter-traffic");
+    cardByPartner.set(partnerName, 10);
+    const other = await makeAccount(c, team, adminUser.id, "Other Bldg", "s-filter-traffic-other");
+    cardByPartner.set("s-filter-traffic-other", 20);
+
+    const s = await listCompanySettlements(testPrisma, adminUser, undefined, { accountId: other.id });
+    expect(s.rows.map((r) => r.accountId)).toEqual([other.id]);
+    expect(s.totals.collected).toBe(20);
+    expect(fetchPartnerStats).toHaveBeenCalledTimes(1);
+    expect(fetchPartnerStats).toHaveBeenCalledWith(expect.objectContaining({ partner: "s-filter-traffic-other" }));
+    expect(acc.id).not.toBe(other.id);
+  });
+
+  it("each status bucket: owed, settled, and the rows that belong to neither", async () => {
+    const { c, acc, team, adminUser, saUser, partnerName } = await setup("s-status");
+    cardByPartner.set(partnerName, 1000); // "Partner": owed 1000
+
+    const settled = await makeAccount(c, team, adminUser.id, "Settled Bldg", "s-status-settled");
+    cardByPartner.set("s-status-settled", 300);
+    await seedTransfer(c.id, settled.id, saUser.id, 300, inPeriod); // remaining 0 -> settled
+
+    const over = await makeAccount(c, team, adminUser.id, "Over Bldg", "s-status-over");
+    cardByPartner.set("s-status-over", 100);
+    await seedTransfer(c.id, over.id, saUser.id, 250, inPeriod); // remaining -150 -> settled
+
+    const dark = await makeAccount(c, team, adminUser.id, "Dark Bldg", "s-status-dark");
+    const selfAcc = await makeAccount(c, team, adminUser.id, "Self Bldg", "s-status-self", "SELF");
+    cardByPartner.set("s-status-self", 50);
+    vi.mocked(fetchPartnerStats).mockImplementation(async ({ partner }) => {
+      if (partner === "s-status-dark") throw new PartnerApiUnavailableError();
+      return makePartnerStats({ partner, amount_by_card: cardByPartner.get(partner) ?? 0, total_payments_amount: 999_999 });
+    });
+
+    const all = await listCompanySettlements(testPrisma, adminUser);
+    expect(all.rows).toHaveLength(5);
+
+    const owed = await listCompanySettlements(testPrisma, adminUser, undefined, { status: "owed" });
+    expect(owed.rows.map((r) => r.accountId)).toEqual([acc.id]);
+    // Totals reflect the FILTERED rows — but `partial`/`degradedAccountIds` DO NOT.
+    //
+    // REGRESSION: they were computed off the filtered rows, so applying a status filter made
+    // `partial` go false. A row with an unknown Collected has no `remaining`, so the filter drops
+    // it — and with it the only signal that the totals are incomplete. The page showed "covers
+    // only the accounts that responded" unfiltered, then presented a knowingly short cash
+    // position as the company's complete one the moment you clicked "Owed".
+    expect(owed.totals).toEqual({
+      collected: 1000, transferred: 0, remaining: 1000, owed: 1000,
+      selfCollected: 0, partial: true, degradedAccountIds: [dark.id],
+    });
+
+    const done = await listCompanySettlements(testPrisma, adminUser, undefined, { status: "settled" });
+    expect(done.rows.map((r) => r.accountId).sort()).toEqual([over.id, settled.id].sort());
+    expect(done.totals.collected).toBe(400);
+    expect(done.totals.transferred).toBe(550);
+    expect(done.totals.remaining).toBe(-150);
+    // The incompleteness disclosure survives this filter too.
+    expect(done.totals.partial).toBe(true);
+    expect(done.totals.degradedAccountIds).toEqual([dark.id]);
+
+    // An unknown Collected and a SELF row have no `remaining` to bucket, so they appear under
+    // neither value and only show up when no status filter is set.
+    for (const bucket of ["owed", "settled"] as const) {
+      const s = await listCompanySettlements(testPrisma, adminUser, undefined, { status: bucket });
+      expect(s.rows.map((r) => r.accountId)).not.toContain(dark.id);
+      expect(s.rows.map((r) => r.accountId)).not.toContain(selfAcc.id);
+    }
+    expect(all.rows.map((r) => r.accountId)).toEqual(expect.arrayContaining([dark.id, selfAcc.id]));
+    expect(all.totals.selfCollected).toBe(50);
+  });
+
+  it("PINNED: the roll-up's Collected is amount_by_card alone, for QONSHU and SELF rows alike", async () => {
+    const { c, acc, team, adminUser, partnerName } = await setup("s-card-pin");
+    const selfAcc = await makeAccount(c, team, adminUser.id, "Zelf Pin", "s-card-pin-self", "SELF");
+    cardByPartner.set(partnerName, 1200);
+    cardByPartner.set("s-card-pin-self", 90);
+
+    const s = await listCompanySettlements(testPrisma, adminUser);
+    // The mock returns total_payments_amount 999_999, amount_by_cash 777_777 and
+    // amount_by_manual 555_555 on every call. If any of those is ever substituted for (or added
+    // to) amount_by_card, these numbers move. DO NOT "fix" this test by updating the figures:
+    // cash the building took directly never passed through Qonshu, so it is not ours to settle.
+    expect(s.rows.find((r) => r.accountId === acc.id)!.collected).toBe(1200);
+    expect(s.rows.find((r) => r.accountId === selfAcc.id)!.collected).toBe(90);
+    expect(s.totals.collected).toBe(1200);
+    expect(s.totals.selfCollected).toBe(90);
+    // And it is read off the AGGREGATE, with no payment rows dragged across the wire - summing
+    // `method === "CARD"` payments out of a paged list would silently truncate a busy building.
+    expect(fetchPartnerStats).toHaveBeenCalledWith(expect.objectContaining({ page: 1, pageSize: 1 }));
+  });
+
   // --- period resolution -------------------------------------------------------------------
 
   describe("resolveSettlementPeriod", () => {
-    it("defaults to the whole current UTC month", () => {
+    // BAKU months (UTC+4), not UTC ones — the business is in Baku and the user chose Baku billing
+    // periods. Every period on this path must share one timezone: the page resolves Baku presets,
+    // so leaving these two helpers on UTC meant the same "this month" disagreed between the page,
+    // the API and the dashboard, and sent the wrong calendar date upstream.
+    it("defaults to the whole current BAKU month", () => {
       const p = resolveSettlementPeriod({}, new Date("2026-02-17T09:30:00.000Z"));
-      expect(p.from.toISOString()).toBe("2026-02-01T00:00:00.000Z");
-      expect(p.to.toISOString()).toBe("2026-02-28T23:59:59.999Z"); // 2026 is not a leap year
+      // 1 Feb 00:00 Baku = 31 Jan 20:00Z; 28 Feb 23:59:59.999 Baku = 28 Feb 19:59:59.999Z.
+      expect(p.from.toISOString()).toBe("2026-01-31T20:00:00.000Z");
+      expect(p.to.toISOString()).toBe("2026-02-28T19:59:59.999Z"); // 2026 is not a leap year
     });
 
-    it("takes inclusive YYYY-MM-DD bounds", () => {
+    it("takes inclusive YYYY-MM-DD bounds as BAKU days", () => {
       const p = resolveSettlementPeriod({ from: "2026-03-01", to: "2026-03-31" });
-      expect(p.from.toISOString()).toBe("2026-03-01T00:00:00.000Z");
-      expect(p.to.toISOString()).toBe("2026-03-31T23:59:59.999Z");
+      expect(p.from.toISOString()).toBe("2026-02-28T20:00:00.000Z");
+      expect(p.to.toISOString()).toBe("2026-03-31T19:59:59.999Z");
+    });
+
+    it("round-trips through isoDate: a Baku period names the Baku dates upstream", () => {
+      // The two must compose — this is the pairing that was broken. Resolving "March" and then
+      // formatting it for the partner API must give back exactly March's calendar dates.
+      const p = resolveSettlementPeriod({}, new Date("2026-03-17T09:30:00.000Z"));
+      expect(p.from.toISOString().slice(0, 10)).toBe("2026-02-28"); // the raw UTC date is NOT March
+      expect(new Date(p.from.getTime() + 4 * 3_600_000).toISOString().slice(0, 10)).toBe("2026-03-01");
+      expect(new Date(p.to.getTime() + 4 * 3_600_000).toISOString().slice(0, 10)).toBe("2026-03-31");
     });
 
     it("throws rather than widening on a bad or inverted pair", () => {

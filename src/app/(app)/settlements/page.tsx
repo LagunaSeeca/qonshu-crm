@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Landmark, ArrowDownCircle, ArrowUpCircle } from "lucide-react";
@@ -17,15 +18,65 @@ import {
 import { AddSettlementEntry } from "./AddSettlementEntry";
 import { PageHeader } from "@/components/PageHeader";
 import { formatMoney } from "@/lib/money";
+import { Badge } from "@/components/ui/badge";
+import { FilterBar } from "@/components/FilterBar";
+import { resolvePeriodPreset, isPeriodPreset } from "@/lib/period-presets";
+import { accountScopeWhere } from "@/lib/tenant/scope";
 
-export default async function SettlementsPage() {
+type Sp = Record<string, string | string[] | undefined>;
+const first = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+
+const STATUS_OPTIONS = [
+  { value: "all", label: "All" },
+  { value: "owed", label: "Owed" },
+  { value: "settled", label: "Settled" },
+];
+
+// Self-collecting buildings hold their own money, so Qonshu owes them nothing. "—" already means
+// "upstream unknown" on this page, and 0 would read as "settled", so a SELF row's Owed uses this
+// distinct muted marker instead. Transferred is NOT marked this way: it is a real, known figure
+// even for a SELF building (see the table cell comment below).
+const NA = <span className="text-muted-foreground font-normal" title="Not applicable: this building collects its own money">n/a</span>;
+
+export default async function SettlementsPage({ searchParams }: { searchParams: Promise<Sp> }) {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
   // A MEMBER can reach this by bookmark/history/KPI link; bounce instead of letting the guard throw a 500.
   if (!can(user, "view_settlements")) redirect("/dashboard");
 
-  const { totals, rows } = await listCompanySettlements(prisma, user);
+  const sp = await searchParams;
+  const rawPeriod = first(sp.period);
+  const q = first(sp.q)?.trim() || undefined;
+  const building = first(sp.building) || undefined;
+  const rawStatus = first(sp.status);
+  const status = rawStatus === "owed" || rawStatus === "settled" ? rawStatus : undefined;
+
+  // Periods are Baku local time. A bad range (e.g. from after to) must render a message, not crash.
+  let period: { from: Date; to: Date } | null = null;
+  try {
+    period = resolvePeriodPreset({
+      preset: isPeriodPreset(rawPeriod) ? rawPeriod : undefined,
+      from: first(sp.from),
+      to: first(sp.to),
+    });
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e;
+  }
+
+  // Building picker options come from the caller's whole scope, not the filtered rows, so
+  // narrowing to one building doesn't remove the others from the dropdown.
+  const scopedAccounts = await prisma.account.findMany({
+    where: accountScopeWhere(user),
+    select: { id: true, name: true, collectionMode: true },
+    orderBy: { name: "asc" },
+  });
+  const buildingOptions = scopedAccounts.map((a) => ({ value: a.id, label: a.name }));
+  const transferTargets = scopedAccounts.filter((a) => a.collectionMode !== "SELF").map((a) => ({ id: a.id, name: a.name }));
+
+  const result = period ? await listCompanySettlements(prisma, user, period, { q, accountId: building, status }) : null;
+  const totals = result?.totals;
+  const rows = result?.rows ?? [];
 
   // Collected comes from the partner API per request and can legitimately be UNKNOWN (upstream
   // down, key rejected, no link). The service omits the key in that case rather than sending 0,
@@ -40,11 +91,23 @@ export default async function SettlementsPage() {
         subtitle="Company-wide bank-balance and cash-transfer registry"
         action={
           can(user, "write_settlements") && (
-            <AddSettlementEntry accounts={rows.map((r) => ({ id: r.accountId, name: r.accountName }))} />
+            <AddSettlementEntry accounts={transferTargets} />
           )
         }
       />
 
+      <Suspense fallback={null}>
+        <FilterBar showPeriod showSearch buildingOptions={buildingOptions} statusOptions={STATUS_OPTIONS} />
+      </Suspense>
+
+      {!totals ? (
+        <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3">
+          <p className="text-sm font-medium text-foreground">Invalid date range</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Check that both dates are valid and that the start is not after the end.
+          </p>
+        </div>
+      ) : (<>
       {/* Partial-data disclosure. Without this the totals below are understated by however much
           the unreachable accounts had collected, while still reading as authoritative. Transferred
           is NOT affected — those are our own DB rows and always known — which is also why
@@ -91,12 +154,27 @@ export default async function SettlementsPage() {
         </Card>
       </div>
 
+      {/* Deliberately NOT part of the Collected card: this is card money the self-collecting
+          buildings took themselves. Qonshu never held it, so adding it to Collected would
+          overstate what Qonshu holds and owes. */}
+      {totals.selfCollected > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Collected by self-collecting buildings:{" "}
+          <span className="tabular-nums font-medium text-foreground">{formatMoney(totals.selfCollected)}</span>
+          {" "}(not included in the totals above; Qonshu never held this money)
+        </p>
+      )}
+
       {/* Registry by partner */}
       {rows.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center rounded-lg border border-dashed border-border">
           <Landmark className="size-8 mb-2 opacity-40 text-muted-foreground" />
-          <p className="text-muted-foreground text-sm">No accounts yet</p>
-          <p className="text-xs text-muted-foreground mt-1">Settlement balances will appear once accounts have entries</p>
+          <p className="text-muted-foreground text-sm">
+            {q || building || status ? "No buildings match these filters" : "No accounts yet"}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            {q || building || status ? "Try clearing the search or status filter" : "Settlement balances will appear once accounts have entries"}
+          </p>
         </div>
       ) : (
         <div className="rounded-lg border border-border overflow-x-auto">
@@ -125,16 +203,29 @@ export default async function SettlementsPage() {
                         {r.accountName}
                       </Link>
                     )}
+                    {r.collectionMode === "SELF" && (
+                      <Badge variant="secondary" className="ml-2 align-middle">Self-collecting</Badge>
+                    )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{money(r.collected)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{formatMoney(r.transferred)}</TableCell>
-                  <TableCell className="text-right tabular-nums font-medium">{money(r.owed)}</TableCell>
+                  {/*
+                    Transferred is a real figure for a SELF row too — the service returns it
+                    because transfer rows are history, and a building may have been settled
+                    through Qonshu before switching to self-collection. Only Owed is inapplicable.
+                  */}
+                  <TableCell className="text-right tabular-nums">
+                    {formatMoney(r.transferred)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums font-medium">
+                    {r.collectionMode === "SELF" ? NA : money(r.remaining ?? r.owed)}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </div>
       )}
+      </>)}
     </div>
   );
 }

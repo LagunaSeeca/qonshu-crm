@@ -273,6 +273,16 @@ enum AskStatus {
   RESOLVED
 }
 
+// WHO HOLDS THE RESIDENTS' MONEY for a building. QONSHU: payments land in Qonshu's bank account
+// and Qonshu settles up with the building, so "owed to the building" is a real number. SELF: the
+// building collects its own money, so there is nothing to transfer to it and "owed" is
+// meaningless (UIs and reports must not show one). Defaults to QONSHU, the original behaviour,
+// so every existing account keeps its current meaning with no backfill.
+enum CollectionMode {
+  QONSHU
+  SELF
+}
+
 model Account {
   id                      String                    @id @default(cuid())
   companyId               String
@@ -364,6 +374,13 @@ model Account {
   sourceLeadId            String?                   @unique
   createdAt               DateTime                  @default(now())
   updatedAt               DateTime                  @updatedAt
+  // See CollectionMode above. Do not infer this from settlement history; it is an explicit choice.
+  collectionMode          CollectionMode            @default(QONSHU)
+  // The flat monthly amount this building has agreed to pay Qonshu. NULL = no agreed rate, and
+  // such a building is SKIPPED when monthly ServiceFee rows are generated (never generated as 0).
+  // Same Decimal shape as ServiceFee.amount; a generated fee copies this value, so changing the
+  // rate later does not rewrite fees already issued.
+  monthlyServiceFee       Decimal?
   activities              AccountActivity[]
   tasks                   AccountTask[]
   asks                    AccountAsk[]

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -60,6 +61,13 @@ const STATUS_NOTE: Record<Exclude<SettlementStatus, "ok">, string> = {
   unavailable: "Partner API unavailable",
 };
 
+const MODE_LABELS: Record<string, string> = {
+  QONSHU: "Qonshu collects",
+  SELF: "Building collects (self-collecting)",
+};
+
+const NA = <span className="text-muted-foreground">n/a</span>;
+
 export function Settlement({ accountId, canWrite = false, initialData }: Props) {
   const router = useRouter();
 
@@ -71,6 +79,7 @@ export function Settlement({ accountId, canWrite = false, initialData }: Props) 
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [modeSaving, setModeSaving] = useState(false);
 
   async function load() {
     try {
@@ -91,6 +100,29 @@ export function Settlement({ accountId, canWrite = false, initialData }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function handleModeChange(mode: "QONSHU" | "SELF") {
+    if (!data || mode === data.collectionMode) return;
+    setModeSaving(true);
+    try {
+      const res = await fetch(`/api/accounts/${accountId}/collection-mode`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ collectionMode: mode }),
+      });
+      if (!res.ok) {
+        toast.error(res.status === 403 ? "You don't have permission to change this." : "Failed to change collection mode.");
+        return;
+      }
+      toast.success(mode === "SELF" ? "Marked as self-collecting." : "Qonshu now collects for this building.");
+      await load();
+      router.refresh();
+    } catch {
+      toast.error("Failed to change collection mode.");
+    } finally {
+      setModeSaving(false);
+    }
+  }
+
   async function handleAddEntry(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -106,6 +138,14 @@ export function Settlement({ accountId, canWrite = false, initialData }: Props) 
         }),
       });
       if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        if (res.status === 422 && body?.error === "self_collecting") {
+          // Race: someone flipped the building to self-collecting after this tab loaded.
+          toast.error("This building now collects its own money, so transfers can't be recorded.");
+          await load();
+          router.refresh();
+          return;
+        }
         toast.error("Failed to add entry. Please try again.");
         return;
       }
@@ -141,9 +181,40 @@ export function Settlement({ accountId, canWrite = false, initialData }: Props) 
   }
 
   const transfers = data?.transfers ?? [];
+  const isSelf = data?.collectionMode === "SELF";
 
   return (
     <div className="space-y-6">
+      {data && (isSelf || canWrite) && (
+        <div className="flex flex-wrap items-center gap-3">
+          {isSelf && <Badge variant="secondary">Self-collecting</Badge>}
+          {isSelf && (
+            <p className="text-xs text-muted-foreground">
+              This building collects its own money. Qonshu holds nothing and owes nothing.
+            </p>
+          )}
+          {canWrite && (
+            <div className="flex items-center gap-2 sm:ml-auto">
+              <Label htmlFor="collection-mode" className="text-xs text-muted-foreground">Collection mode</Label>
+              <Select
+                items={MODE_LABELS}
+                value={data.collectionMode}
+                disabled={modeSaving}
+                onValueChange={(v) => { if (v === "QONSHU" || v === "SELF") void handleModeChange(v); }}
+              >
+                <SelectTrigger id="collection-mode" size="sm" className="w-64">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="QONSHU">{MODE_LABELS.QONSHU}</SelectItem>
+                  <SelectItem value="SELF">{MODE_LABELS.SELF}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Balance tiles */}
       {!data ? (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" aria-busy="true" aria-label="Loading settlement">
@@ -175,8 +246,15 @@ export function Settlement({ accountId, canWrite = false, initialData }: Props) 
             <ArrowUpCircle className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
+            {/*
+              Transferred is shown even for a SELF building, and is NOT "n/a". The service returns
+              it for SELF precisely because transfer rows are real history — a building may have
+              been settled through Qonshu before it switched to collecting its own money, and the
+              Transfers table below lists those rows. Printing "n/a" over a card whose own table
+              shows entries contradicts itself. Only Remaining/Owed are inapplicable for SELF.
+            */}
             <div className="text-xl font-bold tabular-nums">{formatMoney(data.transferred)}</div>
-            <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+            {<div className="mt-3 space-y-1 text-xs text-muted-foreground">
               <div className="flex items-center justify-between">
                 <span>Bank transfer</span>
                 <span className="tabular-nums">{formatMoney(data.transferredByMethod.BANK_TRANSFER)}</span>
@@ -189,7 +267,7 @@ export function Settlement({ accountId, canWrite = false, initialData }: Props) 
                 <span>Manual</span>
                 <span className="tabular-nums">{formatMoney(data.transferredByMethod.MANUAL)}</span>
               </div>
-            </div>
+            </div>}
           </CardContent>
         </Card>
         <Card size="sm">
@@ -198,7 +276,9 @@ export function Settlement({ accountId, canWrite = false, initialData }: Props) 
             <Landmark className="size-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            {data.remaining !== undefined ? (
+            {isSelf ? (
+              <div className="text-2xl font-bold">{NA}</div>
+            ) : data.remaining !== undefined ? (
               <div className="text-2xl font-bold tabular-nums text-foreground">{formatMoney(data.remaining)}</div>
             ) : (
               <div className="text-sm text-muted-foreground">Unavailable until Collected can be read</div>
@@ -209,7 +289,7 @@ export function Settlement({ accountId, canWrite = false, initialData }: Props) 
       )}
 
       {/* Add entry (admin only) */}
-      {canWrite && (
+      {canWrite && !isSelf && (
         <Card>
           <CardHeader className="border-b border-border pb-4">
             <CardTitle className="text-base font-semibold">Add Transfer</CardTitle>

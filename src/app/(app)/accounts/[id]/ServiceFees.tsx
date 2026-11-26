@@ -44,6 +44,10 @@ type FeesData = {
 type Props = {
   accountId: string;
   isAdmin?: boolean;
+  /** `write_settlements` (SUPER_ADMIN): may set the monthly rate and create fees. Pricing is owner-only. */
+  canPrice?: boolean;
+  /** The building's current rate as an exact string ("1234.50"), or null when none is agreed. */
+  initialRate?: string | null;
   initialData?: FeesData;
 };
 
@@ -69,7 +73,7 @@ function StatusBadge({ status }: { status: FeeStatus }) {
   );
 }
 
-export function ServiceFees({ accountId, isAdmin = false, initialData }: Props) {
+export function ServiceFees({ accountId, isAdmin = false, canPrice = false, initialRate = null, initialData }: Props) {
   const router = useRouter();
 
   const [data, setData] = useState<FeesData | null>(initialData ?? null);
@@ -80,6 +84,11 @@ export function ServiceFees({ accountId, isAdmin = false, initialData }: Props) 
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  // The rate stays a STRING end to end ("1234.50"); it is never passed through Number() to be sent.
+  const [rate, setRate] = useState<string | null>(initialRate);
+  const [rateDraft, setRateDraft] = useState(initialRate ?? "");
+  const [rateSaving, setRateSaving] = useState(false);
 
   async function load() {
     try {
@@ -100,6 +109,38 @@ export function ServiceFees({ accountId, isAdmin = false, initialData }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function saveRate(next: string | null) {
+    setRateSaving(true);
+    try {
+      const res = await fetch(`/api/accounts/${accountId}/service-fee-rate`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ monthlyServiceFee: next }),
+      });
+      if (res.status === 403) {
+        toast.error("Only the owner (super admin) can set what a building is billed. Recording a payment is still allowed.");
+        return;
+      }
+      if (res.status === 400) {
+        toast.error("Enter a positive amount with at most 2 decimals, e.g. 120 or 120.50.");
+        return;
+      }
+      if (!res.ok) {
+        toast.error("Failed to save the monthly rate. Please try again.");
+        return;
+      }
+      const saved = (await res.json()) as { monthlyServiceFee: string | null };
+      setRate(saved.monthlyServiceFee);
+      setRateDraft(saved.monthlyServiceFee ?? "");
+      toast.success(saved.monthlyServiceFee ? "Monthly rate saved." : "Monthly rate cleared.");
+      router.refresh();
+    } catch {
+      toast.error("Failed to save the monthly rate. Please try again.");
+    } finally {
+      setRateSaving(false);
+    }
+  }
+
   async function handleAddFee(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -109,7 +150,10 @@ export function ServiceFees({ accountId, isAdmin = false, initialData }: Props) 
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           periodMonth: periodMonth ? `${periodMonth}-01` : undefined,
-          amount: Number(amount),
+          // Sent as the typed string, NOT Number(amount): the route validates it with
+          // FeeAmountSchema and it lands in a Prisma Decimal column. Converting here would
+          // round-trip the amount through a float for no reason.
+          amount: amount.trim(),
           dueDate: dueDate || undefined,
           note: note || undefined,
         }),
@@ -238,8 +282,56 @@ export function ServiceFees({ accountId, isAdmin = false, initialData }: Props) 
       </div>
       )}
 
-      {/* Add fee (admin only) */}
-      {isAdmin && (
+      {/* Monthly rate (owner only) */}
+      {canPrice && (
+        <Card>
+          <CardHeader className="border-b border-border pb-4">
+            <CardTitle className="text-base font-semibold">Monthly service fee</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4 space-y-3">
+            <p className="text-sm text-muted-foreground">
+              {rate === null
+                ? "No rate set. This building is not billed automatically."
+                : `Currently ${formatMoney(Number(rate), { decimals: 2 })} per month.`}
+            </p>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const v = rateDraft.trim();
+                if (v) void saveRate(v);
+              }}
+              className="flex flex-wrap items-end gap-3"
+            >
+              <div className="space-y-1.5">
+                <Label htmlFor="monthlyRate">Rate per month</Label>
+                <Input
+                  id="monthlyRate"
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="e.g. 120.50"
+                  value={rateDraft}
+                  onChange={(e) => setRateDraft(e.target.value)}
+                  className="w-40 tabular-nums"
+                />
+              </div>
+              <Button type="submit" size="sm" disabled={rateSaving || !rateDraft.trim() || rateDraft.trim() === rate}>
+                {rateSaving ? "Saving…" : "Save rate"}
+              </Button>
+              {rate !== null && (
+                <Button type="button" size="sm" variant="outline" disabled={rateSaving} onClick={() => void saveRate(null)}>
+                  Clear rate
+                </Button>
+              )}
+            </form>
+            <p className="text-xs text-muted-foreground">
+              Changing the rate affects future months only. Fees already generated keep their amount.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Add fee (owner only: creating a fee sets an amount) */}
+      {canPrice && (
         <Card>
           <CardHeader className="border-b border-border pb-4">
             <CardTitle className="text-base font-semibold">Add Service Fee</CardTitle>

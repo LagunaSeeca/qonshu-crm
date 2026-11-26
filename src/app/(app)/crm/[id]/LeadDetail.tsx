@@ -48,6 +48,7 @@ type Lead = {
   stageId: string;
   lostReason: string | null;
   ownerId?: string;
+  teamId?: string;
 };
 
 type Props = {
@@ -59,6 +60,8 @@ type Props = {
   members: Member[];
   /** People this viewer may reassign the lead to. Only used when `isAdmin`. */
   owners?: { id: string; name: string; teamId: string | null; teamName: string | null }[];
+  /** SUPER_ADMIN only: the teams to choose from when the owner takes the lead THEMSELVES. */
+  teams?: { id: string; name: string }[];
   /** Only admins (team admin / owner) may change the owner; a member never sees the picker. */
   isAdmin?: boolean;
   /** The owner sees several teams, so the picker groups people by team. */
@@ -121,7 +124,7 @@ export function moveResultToast(
   };
 }
 
-export function LeadDetail({ lead, stages, activities, tasks, attachments, members, owners = [], isAdmin = false, groupOwners = false }: Props) {
+export function LeadDetail({ lead, stages, activities, tasks, attachments, members, owners = [], teams = [], isAdmin = false, groupOwners = false }: Props) {
   const router = useRouter();
 
   // Lead fields
@@ -133,6 +136,12 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
   const [priority, setPriority] = useState(lead.priority);
   const [stageId, setStageId] = useState(lead.stageId);
   const [ownerId, setOwnerId] = useState(lead.ownerId ?? "");
+  // The one owner option with no team of its own is the super admin naming THEMSELVES. A lead
+  // always belongs to a team, so that choice asks for one; it defaults to the team the lead is
+  // already in, which is also what the server falls back to when no teamId is posted — picking
+  // the current owner again can therefore never transfer the lead as a side effect.
+  const [teamChoice, setTeamChoice] = useState(lead.teamId ?? "");
+  const needsTeamChoice = owners.some((o) => o.id === ownerId && o.teamId === null);
   const [saving, setSaving] = useState(false);
 
   async function handleSave(e: React.FormEvent) {
@@ -141,7 +150,12 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
     const res = await fetch(`/api/leads/${lead.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title, contactName, email: email || null, phone: phone || null, companyName, priority, ...(isAdmin && ownerId && ownerId !== lead.ownerId ? { ownerId } : {}) }),
+      body: JSON.stringify({
+        title, contactName, email: email || null, phone: phone || null, companyName, priority,
+        ...(isAdmin && ownerId && ownerId !== lead.ownerId
+          ? { ownerId, ...(needsTeamChoice && teamChoice ? { teamId: teamChoice } : {}) }
+          : {}),
+      }),
     });
     setSaving(false);
     if (!res.ok) {
@@ -362,6 +376,22 @@ export function LeadDetail({ lead, stages, activities, tasks, attachments, membe
                     </SelectTrigger>
                     <SelectContent>
                       <OwnerSelectItems owners={owners} grouped={groupOwners} />
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {isAdmin && needsTeamChoice && teams.length > 0 && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="ownerTeamId">Team</Label>
+                  <Select items={Object.fromEntries(teams.map((t) => [t.id, t.name]))} value={teamChoice} onValueChange={(val) => { if (val) setTeamChoice(val); }}>
+                    <SelectTrigger id="ownerTeamId" className="w-full">
+                      <SelectValue placeholder="Choose a team…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {teams.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>

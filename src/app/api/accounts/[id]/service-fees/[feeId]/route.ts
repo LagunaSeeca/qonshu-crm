@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/db/client";
 import { getSessionUser } from "@/lib/auth/session";
 import { assertRole } from "@/lib/auth/guards";
-import { markFeePaid, markFeeUnpaid, updateServiceFee, deleteServiceFee } from "@/lib/tenant/service-fees";
+import { markFeePaid, markFeeUnpaid, updateServiceFee, deleteServiceFee, FeeAmountSchema } from "@/lib/tenant/service-fees";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
 
 const PatchBody = z.union([
@@ -14,7 +14,7 @@ const PatchBody = z.union([
   }),
   z.object({ action: z.literal("markUnpaid") }),
   z.object({
-    amount: z.number().positive().optional(),
+    amount: FeeAmountSchema.optional(),
     dueDate: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
     periodMonth: z.string().optional(),
@@ -42,7 +42,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       return NextResponse.json(fee);
     }
 
-    const data: Partial<{ amount: number; dueDate: Date | null; note: string | null; periodMonth: Date }> = {};
+    const data: Partial<{ amount: string; dueDate: Date | null; note: string | null; periodMonth: Date }> = {};
     if ("amount" in d && d.amount !== undefined) data.amount = d.amount;
     if ("dueDate" in d && d.dueDate !== undefined) {
       if (d.dueDate === null) data.dueDate = null;

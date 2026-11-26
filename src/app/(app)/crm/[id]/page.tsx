@@ -29,7 +29,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     listTasks(prisma, user, id),
     listAttachments(prisma, user, id),
     // Only an admin can reassign, so only an admin needs the picker list.
-    admin ? loadOwnerOptions(user, teams) : Promise.resolve([]),
+    admin ? loadOwnerOptions(user, teams, { includeSuperAdmins: true }) : Promise.resolve([]),
   ]);
   // Activity authors can be anyone who touched the lead (including people the viewer cannot assign
   // to), so their names are looked up directly rather than taken from the picker list.
@@ -51,6 +51,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         stageId: lead.stageId,
         lostReason: lead.lostReason ?? null,
         ownerId: lead.ownerId,
+        teamId: lead.teamId,
       }}
       stages={stages.map((s) => ({ id: s.id, name: s.name, type: s.type }))}
       activities={activities.map((a) => ({
@@ -75,6 +76,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
       }))}
       members={authors.map((m) => ({ id: m.id, name: m.name ?? m.email }))}
       owners={owners}
+      teams={teams}
       isAdmin={admin}
       groupOwners={user.role === "SUPER_ADMIN"}
     />

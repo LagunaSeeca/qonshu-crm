@@ -189,16 +189,47 @@ export type CreateAccountOptions = {
 //
 // companyId follows the TEAM, not the actor: a SUPER_ADMIN has companyId null (see scope.ts), so
 // taking it from the session would write null for exactly the role that may act across teams.
+//
+// ONE EXCEPTION, AND IT IS NOT A WIDER OWNABLE_ROLES: converting a lead the SUPER_ADMIN owns.
+// A super admin may own a LEAD (scope.ts resolveLeadOwner) but may still never be NAMED as an
+// account manager through a request — OWNABLE_ROLES refuses it, which is what keeps the owner out
+// of the account and task pickers and out of updateAccount's reassignment path. On CONVERSION the
+// manager is not a request field at all: it is the lead's own owner, already validated when the
+// lead was created or reassigned. `opts.teamId` is set ONLY by lead conversion (no route schema
+// accepts it), which is what marks that path — see CreateAccountOptions above.
 async function resolveOwnership(
   db: PrismaClient, user: SessionUser, data: NewAccountData, opts?: CreateAccountOptions,
 ): Promise<{ owner: AssignableOwner; companyId: string }> {
-  const resolved = await resolveAssignableOwner(db, user, data.accountManagerId);
+  const converted = opts?.teamId && data.accountManagerId
+    ? await loadSuperAdminLeadOwner(db, data.accountManagerId, opts.teamId)
+    : null;
+  const resolved = converted ?? await resolveAssignableOwner(db, user, data.accountManagerId);
   const teamId = opts?.teamId ?? resolved.teamId;
   const team = await db.team.findUnique({ where: { id: teamId }, select: { companyId: true } });
   // Fail closed rather than fall back to user.companyId: a teamId with no team is a data bug, and
   // guessing the company would plant the row in whichever company the fallback happened to name.
   if (!team) throw new ForbiddenError("team not found");
   return { owner: { ownerId: resolved.ownerId, teamId }, companyId: team.companyId };
+}
+
+// NULL for every id that is not an ACTIVE SUPER_ADMIN of the converting team's company, so every
+// other owner falls through to the unchanged resolveAssignableOwner path. A super admin that has
+// been deactivated, or that belongs to another company, is a refusal rather than a fall-through:
+// falling through would only produce the same refusal with a more confusing message.
+async function loadSuperAdminLeadOwner(
+  db: PrismaClient, ownerId: string, teamId: string,
+): Promise<AssignableOwner | null> {
+  const row = await db.user.findUnique({
+    where: { id: ownerId },
+    select: { id: true, role: true, status: true, companyId: true },
+  });
+  if (!row || row.role !== "SUPER_ADMIN") return null;
+  if (row.status !== "ACTIVE") throw new ForbiddenError("owner is not active");
+  const team = await db.team.findUnique({ where: { id: teamId }, select: { companyId: true } });
+  if (!team || !row.companyId || team.companyId !== row.companyId) {
+    throw new ForbiddenError("owner is not assignable");
+  }
+  return { ownerId: row.id, teamId };
 }
 
 // ONE attempt, INSIDE the caller's transaction: claim the building, insert, and — only if a key was

@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Download, FileBarChart } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -34,6 +35,8 @@ export type PartnerRow = {
   collected?: number;
   transferred?: number;
   owed?: number;
+  // Absent `owed` means "unknown" for QONSHU but "not applicable" for SELF (nothing is owed).
+  collectionMode?: "QONSHU" | "SELF";
 };
 
 export type Report = {
@@ -74,6 +77,14 @@ function SummaryRow({
     </div>
   );
 }
+
+// Same marker and wording as the settlements page: a self-collecting building owes nothing, which
+// is not the same as "unknown" (retrieval failed) or 0 (settled).
+const NA = (
+  <span className="text-muted-foreground font-normal" title="Not applicable: this building collects its own money">
+    n/a
+  </span>
+);
 
 function buildQuery(period: PeriodType, from: string, to: string, accountId: string): URLSearchParams {
   const sp = new URLSearchParams({ period });
@@ -292,7 +303,13 @@ export function ReportView({ accounts, initialReport }: Props) {
             </div>
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Finance</h3>
-              {k.finance.collected !== undefined && <SummaryRow label="Collected" value={formatMoney(k.finance.collected)} />}
+              {k.finance.collected !== undefined && <SummaryRow label="Collected (Qonshu-held)" value={formatMoney(k.finance.collected)} />}
+              {k.finance.selfCollected !== undefined && k.finance.selfCollected > 0 && (
+                <SummaryRow
+                  label="Collected by self-collecting buildings (separate; not included above)"
+                  value={formatMoney(k.finance.selfCollected)}
+                />
+              )}
               {k.finance.transferred !== undefined && <SummaryRow label="Transferred" value={formatMoney(k.finance.transferred)} />}
               {k.finance.owed !== undefined && <SummaryRow label="Owed" value={formatMoney(k.finance.owed)} emphasize />}
               <SummaryRow label="Service fees outstanding" value={formatMoney(k.finance.serviceFeesOutstanding)} />
@@ -320,7 +337,7 @@ export function ReportView({ accounts, initialReport }: Props) {
                     <TableHead className="font-semibold text-foreground">Partner</TableHead>
                     <TableHead className="text-right font-semibold text-foreground">Payments</TableHead>
                     <TableHead className="text-right font-semibold text-foreground">Payments Amount</TableHead>
-                    {showCash && <TableHead className="text-right font-semibold text-foreground">Collected</TableHead>}
+                    {showCash && <TableHead className="text-right font-semibold text-foreground">Collected (Qonshu-held)</TableHead>}
                     {showCash && <TableHead className="text-right font-semibold text-foreground">Transferred</TableHead>}
                     {showCash && <TableHead className="text-right font-semibold text-foreground">Owed</TableHead>}
                   </TableRow>
@@ -328,14 +345,19 @@ export function ReportView({ accounts, initialReport }: Props) {
                 <TableBody>
                   {rows.map((r) => (
                     <TableRow key={r.accountId}>
-                      <TableCell className="font-medium">{r.accountName}</TableCell>
+                      <TableCell className="font-medium">
+                        {r.accountName}
+                        {r.collectionMode === "SELF" && (
+                          <Badge variant="secondary" className="ml-2 align-middle">Self-collecting</Badge>
+                        )}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">{r.paymentsCount.toLocaleString()}</TableCell>
                       <TableCell className="text-right tabular-nums">{formatMoney(r.paymentsAmount)}</TableCell>
                       {showCash && (
                         <>
                           <TableCell className="text-right tabular-nums">{cash(r.collected)}</TableCell>
                           <TableCell className="text-right tabular-nums">{cash(r.transferred)}</TableCell>
-                          <TableCell className="text-right tabular-nums font-medium">{cash(r.owed)}</TableCell>
+                          <TableCell className="text-right tabular-nums font-medium">{r.collectionMode === "SELF" ? NA : cash(r.owed)}</TableCell>
                         </>
                       )}
                     </TableRow>

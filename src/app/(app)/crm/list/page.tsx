@@ -21,7 +21,7 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
   const [stagesByTeam, ownStages, owners, leads] = await Promise.all([
     isSuper ? loadStagesByTeam(user, teams) : Promise.resolve(undefined),
     isSuper ? Promise.resolve([]) : loadOwnStages(user),
-    loadOwnerOptions(user, teams),
+    loadOwnerOptions(user, teams, { includeSuperAdmins: true }),
     listLeadCards(prisma, user, { q: sp.q, stageId: sp.stageId }),
   ]);
   const stages = stagesByTeam
@@ -97,6 +97,7 @@ export default async function CrmListPage({ searchParams }: { searchParams: Prom
             stages={ownStages}
             stagesByTeam={stagesByTeam}
             owners={owners}
+            teams={teams}
             currentUserId={user.id}
             role={user.role}
           />

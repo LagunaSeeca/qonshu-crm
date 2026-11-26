@@ -88,7 +88,20 @@ export async function listUsers(
 //   COMPANY_ADMIN  its own team's active admins and members
 //   MEMBER         itself, and nothing else — a member's rows are always its own
 //   PARTNER_VIEWER nothing: partners cannot own records
-export async function listAssignableUsers(db: PrismaClient, user: SessionUser): Promise<User[]> {
+//
+// `includeSuperAdmins` is OPT-IN AND LEAD-ONLY. Accounts and Tasks are fed by this same function,
+// and a SUPER_ADMIN must not be offered as an account manager or a task assignee (scope.ts
+// OWNABLE_ROLES still refuses one), so the DEFAULT behaviour must not change. The flag adds the
+// ACTIVE SUPER_ADMINs of the actor's own company, and only when the ACTOR IS a SUPER_ADMIN with a
+// concrete company context — matching resolveLeadOwner, which accepts the super admin as a lead
+// owner only when it names ITSELF. A COMPANY_ADMIN passing the flag gets nothing extra, and a
+// super admin whose own companyId is null gets nothing extra either (its scope is `{}`, so
+// widening the role filter there would list every super admin on the platform).
+export async function listAssignableUsers(
+  db: PrismaClient,
+  user: SessionUser,
+  opts: { includeSuperAdmins?: boolean } = {},
+): Promise<User[]> {
   if (user.role === "PARTNER_VIEWER") throw new ForbiddenError("partners cannot own records");
 
   // No team/company read at all: a member's only assignable user is itself, so the picker is a
@@ -107,8 +120,14 @@ export async function listAssignableUsers(db: PrismaClient, user: SessionUser): 
     if (!user.teamId) throw new ForbiddenError("COMPANY_ADMIN is not on a team");
     scope = { companyId: user.companyId, teamId: user.teamId };
   }
+  // TEAM_ROLES itself is NEVER mutated — it is shared with scope.ts's OWNABLE_ROLES and with
+  // setUserTeam. The extra role is added to a per-call copy.
+  const roles: Role[] = [...TEAM_ROLES];
+  if (opts.includeSuperAdmins && user.role === "SUPER_ADMIN" && user.companyId) {
+    roles.push("SUPER_ADMIN");
+  }
   return db.user.findMany({
-    where: { ...scope, status: "ACTIVE", role: { in: TEAM_ROLES } },
+    where: { ...scope, status: "ACTIVE", role: { in: roles } },
     orderBy: { createdAt: "asc" },
   });
 }

@@ -40,6 +40,16 @@ export type PartnerRow = {
   collected?: number;
   transferred?: number;
   owed?: number;
+  /**
+   * Which side holds this building's money. Present on the same terms as the three figures above.
+   *
+   * THIS IS WHY A BLANK `owed` IS NOT ALWAYS "UNKNOWN". For a SELF building Qonshu holds nothing
+   * and therefore owes nothing, so the settlement service omits `owed` BY DESIGN rather than
+   * because a fetch failed — two very different absences that would otherwise render identically.
+   * A consumer showing `owed` must show this alongside it, or a reader will take the blank for
+   * zero owed on a building that simply is not settled through Qonshu at all.
+   */
+  collectionMode?: "QONSHU" | "SELF";
 };
 
 // One row per individual payment, flattened across every configured account (paginated live).
@@ -327,6 +337,7 @@ export async function getReport(
       ...(settlements && s
         ? {
             transferred: s.transferred,
+            collectionMode: s.collectionMode,
             ...(s.collected !== undefined ? { collected: s.collected } : {}),
             ...(s.owed !== undefined ? { owed: s.owed } : {}),
           }
@@ -396,22 +407,39 @@ export function toCsv(report: Report): string {
     `Installs Android,${esc(k.partners.installsAndroid)}`,
     ...(withSettlements
       ? [
-          `Collected,${esc(k.finance.collected!)}`,
+          // "Qonshu-held", not a bare "Collected": the figure excludes self-collecting buildings,
+          // so an unqualified label invites a month-on-month comparison that reads a building
+          // switching to SELF as lost revenue.
+          `Collected (Qonshu-held),${esc(k.finance.collected!)}`,
           `Transferred,${esc(k.finance.transferred!)}`,
           `Owed,${esc(k.finance.owed!)}`,
+          `Collected by self-collecting buildings,${esc(k.finance.selfCollected ?? 0)}`,
         ]
       : []),
     `Service fees outstanding,${esc(k.finance.serviceFeesOutstanding)}`,
     "",
     withSettlements
-      ? "Partner,Payments,Payments Amount,Collected,Transferred,Owed"
+      ? "Partner,Payments,Payments Amount,Collected,Transferred,Owed,Settled via"
       : "Partner,Payments,Payments Amount",
     ...report.partnerRows.map((r) =>
       [
         r.accountName,
         r.paymentsCount,
         r.paymentsAmount,
-        ...(withSettlements ? [cashCell(r.collected), cashCell(r.transferred), cashCell(r.owed)] : []),
+        ...(withSettlements
+          ? [
+              cashCell(r.collected),
+              cashCell(r.transferred),
+              cashCell(r.owed),
+              // Disambiguates the blank `owed` above: "Self-collecting" means nothing is owed by
+              // design, whereas a blank with "Qonshu" means the card total could not be fetched.
+              r.collectionMode === "SELF"
+                ? "Self-collecting"
+                : r.collectionMode === "QONSHU"
+                  ? "Qonshu"
+                  : "",
+            ]
+          : []),
       ]
         .map(esc)
         .join(","),

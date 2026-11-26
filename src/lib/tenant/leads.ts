@@ -1,6 +1,6 @@
 import type { PrismaClient, Lead, Priority, Prisma, Stage } from "@prisma/client";
 import { ForbiddenError, NotFoundError, isAdmin, type SessionUser } from "@/lib/auth/guards";
-import { leadScopeWhere, resolveAssignableOwner } from "./scope";
+import { leadScopeWhere, resolveLeadOwner } from "./scope";
 import { assertBuildingUnclaimed, BuildingClaimedError, normalizeBuildingName } from "./building-claim";
 import { removeLeadDir } from "@/lib/files/storage";
 import { convertLeadToAccount } from "./lead-conversion";
@@ -24,6 +24,11 @@ export type CreateLeadInput = {
   source?: string;
   priority?: Priority;
   ownerId?: string;
+  // READ ONLY WHEN THE SUPER ADMIN NAMES ITSELF AS THE OWNER. Lead.teamId is NOT NULL and the
+  // owner has no team, so that one case must say which team's book the lead lands in. For every
+  // other actor resolveLeadOwner drops this value and the team keeps following the validated
+  // owner — a COMPANY_ADMIN or MEMBER cannot move a lead with a forged teamId.
+  teamId?: string;
   expectedCloseDate?: Date | null;
 };
 
@@ -44,7 +49,7 @@ export async function createLead(db: PrismaClient, user: SessionUser, data: Crea
   return db.$transaction(async (tx) => {
     // The owner decides the team, the team decides the company. Never read a teamId from the
     // request: scope.ts validates the owner against the database and returns the pair.
-    const { ownerId, teamId } = await resolveAssignableOwner(tx, user, data.ownerId);
+    const { ownerId, teamId } = await resolveLeadOwner(tx, user, data.ownerId, data.teamId);
     const team = await tx.team.findUnique({ where: { id: teamId }, select: { companyId: true } });
     if (!team) throw new NotFoundError("team not found");
     const companyId = team.companyId;
@@ -159,6 +164,10 @@ export type UpdateLeadInput = Partial<{
   source: string | null;
   priority: Priority;
   ownerId: string;
+  // Same rule as on create, plus one: OMITTED MEANS "KEEP THE LEAD'S CURRENT TEAM". The fallback
+  // is found.teamId, never a default team, so a super admin re-saving their own lead without
+  // naming a team cannot transfer it as a side effect.
+  teamId: string;
   expectedCloseDate: Date | null;
 }>;
 
@@ -204,7 +213,9 @@ export async function updateLead(
       // The TEAM FOLLOWS THE OWNER. scope.ts returns the pair precisely so they cannot drift:
       // a COMPANY_ADMIN is confined to its own team, a SUPER_ADMIN may name any team's member,
       // and that is what makes the cross-team transfer below reachable only by a super admin.
-      const assigned = await resolveAssignableOwner(tx, user, data.ownerId);
+      // When the super admin names ITSELF the pair is (self, the named team) and the team
+      // defaults to the lead's current one, so no transfer happens unless one was asked for.
+      const assigned = await resolveLeadOwner(tx, user, data.ownerId, data.teamId ?? found.teamId);
       update.ownerId = assigned.ownerId;
       if (assigned.teamId !== found.teamId) {
         await transferTeam(tx, found, assigned.teamId, assigned.ownerId, user, update);

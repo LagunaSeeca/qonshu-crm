@@ -21,8 +21,17 @@ export async function loadTeams(user: SessionUser): Promise<TeamOption[]> {
 
 // Who the viewer may assign a record to, with team names attached for the SUPER_ADMIN's grouped
 // picker. A MEMBER gets exactly themselves; a team admin gets their own team.
-export async function loadOwnerOptions(user: SessionUser, teams: TeamOption[]): Promise<OwnerOption[]> {
-  const users = await listAssignableUsers(prisma, user);
+//
+// `includeSuperAdmins` is for the LEAD owner pickers ONLY (CRM list + lead detail). A super admin
+// may own a lead but still may NOT manage an account or hold a task, so the Accounts and Work
+// pages must keep calling this without the flag. The extra option arrives with `teamId: null`,
+// which is what makes the caller ask for a team — see LeadCreate / LeadDetail.
+export async function loadOwnerOptions(
+  user: SessionUser,
+  teams: TeamOption[],
+  opts: { includeSuperAdmins?: boolean } = {},
+): Promise<OwnerOption[]> {
+  const users = await listAssignableUsers(prisma, user, opts);
   const teamName = new Map(teams.map((t) => [t.id, t.name]));
   return users.map((u) => ({
     id: u.id,

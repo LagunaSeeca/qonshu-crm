@@ -30,11 +30,19 @@ const Create = z.object({
   source: z.string().optional(),
   priority: z.enum(["LOW","MEDIUM","HIGH"]).optional(),
   ownerId: z.string().optional(), expectedCloseDate: z.string().datetime().optional(),
+  // Honoured ONLY when the SUPER_ADMIN names itself as the owner (see resolveLeadOwner in
+  // scope.ts); dropped for every other actor, so it cannot be used to plant a lead in another
+  // team's book.
+  teamId: z.string().optional(),
 });
 export async function POST(req: NextRequest) {
   try {
     const user = await getSessionUser(); if (!user) throw new UnauthorizedError();
-    assertRole(user, ["COMPANY_ADMIN", "MEMBER"]);
+    // SUPER_ADMIN is here because the owner may now hold a lead of its own (and has always been
+    // able to create one on a team member's behalf — resolveLeadOwner makes it name the owner
+    // explicitly). It is NOT a wider grant: who the lead may be assigned to, and which team it
+    // lands in, are still decided by scope.ts against the database.
+    assertRole(user, ["SUPER_ADMIN", "COMPANY_ADMIN", "MEMBER"]);
     const d = Create.parse(await req.json());
     const lead = await createLead(prisma, user, { ...d, email: d.email || undefined, expectedCloseDate: d.expectedCloseDate ? new Date(d.expectedCloseDate) : null });
     return NextResponse.json(lead, { status: 201 });

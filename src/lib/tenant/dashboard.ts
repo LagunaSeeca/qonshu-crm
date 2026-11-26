@@ -17,9 +17,23 @@ export type DashboardStats = {
   // reports.ts omits `payments`. A member still gets every other (general) statistic, and service
   // fees are CRM billing rather than settlement/cash data, so they stay.
   finance: {
+    /**
+     * Card money that landed in QONSHU'S OWN ACCOUNT — it EXCLUDES self-collecting buildings
+     * (Account.collectionMode === "SELF"), whose residents' money never reaches Qonshu. So this
+     * is "cash we are holding", not "cash our buildings took". A consumer must NOT label it a
+     * bare "Collected": the figure DROPS the moment a building is switched to SELF, and a reader
+     * comparing months would read that as lost revenue. Show `selfCollected` beside it.
+     */
     collected?: number;
     transferred?: number;
     owed?: number;
+    /**
+     * Card money SELF-collecting buildings took themselves, over the same period. Deliberately
+     * NOT additive with `collected` (different pockets) — never sum the two into one "total
+     * collected" tile. It is here because those buildings still owe Qonshu a service fee, so the
+     * figure is the base that fee is justified against.
+     */
+    selfCollected?: number;
     serviceFeesOutstanding: number;
   };
 };
@@ -121,6 +135,7 @@ export async function getDashboardStats(
             collected: settlements.totals.collected,
             transferred: settlements.totals.transferred,
             owed: settlements.totals.owed,
+            selfCollected: settlements.totals.selfCollected,
           }
         : {}),
       serviceFeesOutstanding: serviceFees.totals.outstanding,

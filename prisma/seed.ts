@@ -152,6 +152,20 @@ async function main() {
     accountsCreated++;
   }
 
+  // 5b. Money model: every demo building has an agreed monthly rate, and one collects its own
+  // money (SELF) so the "nothing owed" path has data. Written here, not in createAccountWithLogin,
+  // so it also lands on accounts from a previous seed run. Re-runs are no-ops.
+  await prisma.account.updateMany({
+    where: { companyId: company.id, monthlyServiceFee: null },
+    // A STRING, not 500: money is a decimal string everywhere on the way in (see FeeAmountSchema
+    // and setServiceFeeRate). The seed was the last number-valued write left on this path.
+    data: { monthlyServiceFee: "500" },
+  });
+  await prisma.account.updateMany({
+    where: { companyId: company.id, name: "Bina Residence" },
+    data: { collectionMode: "SELF" },
+  });
+
   // 6. Settlements, field values and service fees via the lib functions, once per account
   // (skipped when the account already carries them).
   const accounts = await prisma.account.findMany({ where: { companyId: company.id, teamId }, orderBy: { name: "asc" } });
@@ -194,7 +208,7 @@ async function main() {
       for (const monthsAgo of [2, 1, 0]) {
         const d = new Date();
         const periodMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - monthsAgo, 1));
-        const fee = await addServiceFee(prisma, actor, acc.id, { periodMonth, amount: 500 });
+        const fee = await addServiceFee(prisma, actor, acc.id, { periodMonth, amount: "500" });
         // Two older months paid, current month left unpaid.
         if (monthsAgo > 0) {
           await markFeePaid(prisma, actor, fee.id, { method: "BANK_TRANSFER", paidAt: new Date(periodMonth.getTime() + 3 * DAY) });

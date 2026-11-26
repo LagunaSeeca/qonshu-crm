@@ -26,6 +26,9 @@ const Patch = z.object({
   companyName: z.string().trim().min(1).optional(), source: z.string().nullable().optional(),
   priority: z.enum(["LOW","MEDIUM","HIGH"]).optional(),
   ownerId: z.string().optional(), expectedCloseDate: z.string().datetime().nullable().optional(),
+  // See the POST route: only read when the SUPER_ADMIN names itself as the owner. Omitted, the
+  // lead keeps the team it already has.
+  teamId: z.string().optional(),
 });
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {

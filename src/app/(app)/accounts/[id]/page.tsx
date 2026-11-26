@@ -49,6 +49,7 @@ export default async function AccountDetailPage({ params }: { params: Promise<{ 
         primaryContactName: account.primaryContactName ?? null,
         primaryContactEmail: account.primaryContactEmail ?? null,
         primaryContactPhone: account.primaryContactPhone ?? null,
+        monthlyServiceFee: account.monthlyServiceFee ? account.monthlyServiceFee.toFixed(2) : null,
         externalPartnerKey: account.partnerLinkConfirmedAt ? account.externalPartnerKey : null,
         partnerLinkPending:
           account.externalPartnerKey !== null && account.partnerLinkConfirmedAt === null,

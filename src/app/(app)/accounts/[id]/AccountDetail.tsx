@@ -60,6 +60,8 @@ type Account = {
   externalPartnerKey: string | null;
   // A link is recorded but not yet confirmed by the owner, so it grants nothing.
   partnerLinkPending: boolean;
+  /** Agreed monthly service fee as an exact string ("1234.50"), or null. */
+  monthlyServiceFee?: string | null;
 };
 
 type Props = {
@@ -779,7 +781,7 @@ export function AccountDetail({ account, members, activities, tasks, asks, attac
 
           {/* Service fees panel */}
           <div hidden={activeTab !== "serviceFees"}>
-            <ServiceFees accountId={account.id} isAdmin={isAdmin} />
+            <ServiceFees accountId={account.id} isAdmin={isAdmin} canPrice={canWriteSettlements} initialRate={account.monthlyServiceFee ?? null} />
           </div>
 
           {/* Objects panel */}

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { Role } from "@prisma/client";
 import { ForbiddenError, type SessionUser } from "@/lib/auth/guards";
-import { leadScopeWhere, accountScopeWhere, resolveAssignableOwner } from "./scope";
+import { leadScopeWhere, accountScopeWhere, resolveAssignableOwner, resolveLeadOwner } from "./scope";
 
 // PURE UNIT, no database. leadScopeWhere/accountScopeWhere take no db at all, and
 // resolveAssignableOwner gets a hand-made user reader — so every rule, including the
@@ -287,6 +287,133 @@ describe("resolveAssignableOwner", () => {
     const sa = session("SUPER_ADMIN");
     await expect(
       resolveAssignableOwner(reader(member("ob2", { role: "ONBOARDING", teamId: null })), sa, "ob2"),
+    ).rejects.toThrow(ForbiddenError);
+  });
+});
+
+// ===================== resolveLeadOwner — THE SUPER ADMIN AS A LEAD OWNER =====================
+//
+// The ONLY widening in this area: a SUPER_ADMIN may name ITSELF as the owner of a LEAD, with an
+// explicit team. Everything else — who else may name it, what an account manager may be — must be
+// exactly as before, which is what the delegation tests at the end of this block pin.
+
+type TeamRow = { id: string; companyId: string };
+type LeadReader = Parameters<typeof resolveLeadOwner>[0];
+
+// A reader with a Team delegate as well as a User one. resolveLeadOwner validates the NAMED team
+// against the database, because a teamId is client input that decides which book a lead lands in.
+function leadReader(rows: Row[], teams: TeamRow[] = [{ id: T1, companyId: CO }]): LeadReader {
+  return {
+    user: {
+      findUnique: async ({ where }: { where: { id: string } }) => rows.find((r) => r.id === where.id) ?? null,
+    },
+    team: {
+      findUnique: async ({ where }: { where: { id: string } }) => teams.find((t) => t.id === where.id) ?? null,
+    },
+  } as unknown as LeadReader;
+}
+
+// The owner as it really exists: a SUPER_ADMIN row DOES carry a companyId (prisma/seed.ts); only
+// its teamId is null. That missing team is the whole problem this function solves.
+const superAdminRow = (id: string, over: Partial<Row> = {}): Row =>
+  ({ id, role: "SUPER_ADMIN", status: "ACTIVE", companyId: CO, teamId: null, ...over });
+
+describe("resolveLeadOwner — SUPER_ADMIN lead ownership", () => {
+  const sa = (over: Partial<SessionUser> = {}) =>
+    session("SUPER_ADMIN", { id: "sa1", companyId: CO, ...over });
+
+  it("the super admin may own a lead by naming ITSELF and a team in its own company", async () => {
+    await expect(
+      resolveLeadOwner(leadReader([superAdminRow("sa1")]), sa(), "sa1", T1),
+    ).resolves.toEqual({ ownerId: "sa1", teamId: T1 });
+  });
+
+  it("refuses the super admin naming itself with NO team", async () => {
+    // Lead.teamId is NOT NULL and the owner has no team of its own, so there is no sane default.
+    // A silent one would park the lead in whichever team a later line happened to pick.
+    await expect(
+      resolveLeadOwner(leadReader([superAdminRow("sa1")]), sa(), "sa1"),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it("refuses a team that belongs to another company", async () => {
+    const reader = leadReader([superAdminRow("sa1")], [{ id: T2, companyId: "other" }]);
+    await expect(resolveLeadOwner(reader, sa(), "sa1", T2)).rejects.toThrow(ForbiddenError);
+    // And a team id that does not exist at all is the same refusal, not a fallback.
+    await expect(resolveLeadOwner(reader, sa(), "sa1", "ghost-team")).rejects.toThrow(ForbiddenError);
+  });
+
+  it("refuses an INACTIVE super admin", async () => {
+    await expect(
+      resolveLeadOwner(leadReader([superAdminRow("sa1", { status: "INACTIVE" })]), sa(), "sa1", T1),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it("refuses when the ROW disagrees with the session (forged or stale)", async () => {
+    // Session claims SUPER_ADMIN of CO; the row says otherwise. The row wins.
+    await expect(
+      resolveLeadOwner(leadReader([superAdminRow("sa1", { companyId: "other" })]), sa(), "sa1", T1),
+    ).rejects.toThrow(ForbiddenError);
+    await expect(
+      resolveLeadOwner(leadReader([superAdminRow("sa1", { role: "COMPANY_ADMIN", teamId: T2 })]), sa(), "sa1", T1),
+    ).rejects.toThrow(ForbiddenError);
+    await expect(resolveLeadOwner(leadReader([]), sa(), "sa1", T1)).rejects.toThrow(ForbiddenError);
+  });
+
+  it("refuses a super admin with no company context at all", async () => {
+    // The unscoped owner session (companyId null) still fails closed, exactly as every other
+    // super-admin read in this module does.
+    await expect(
+      resolveLeadOwner(leadReader([superAdminRow("sa1")]), sa({ companyId: null }), "sa1", T1),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it("refuses a super admin naming a DIFFERENT super admin, including one from another company", async () => {
+    // Only self. Anybody else goes down the unchanged path and hits OWNABLE_ROLES.
+    await expect(
+      resolveLeadOwner(leadReader([superAdminRow("sa2")]), sa(), "sa2", T1),
+    ).rejects.toThrow(ForbiddenError);
+    await expect(
+      resolveLeadOwner(leadReader([superAdminRow("sa2", { companyId: "other" })]), sa(), "sa2", T1),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it("a COMPANY_ADMIN naming the super admin is REFUSED, with the usual non-assignable message", async () => {
+    const admin = session("COMPANY_ADMIN", { id: "a1" });
+    await expect(
+      resolveLeadOwner(leadReader([superAdminRow("sa1")]), admin, "sa1", T1),
+    ).rejects.toThrow("a SUPER_ADMIN cannot own records");
+  });
+
+  it("a MEMBER naming the super admin gets the existing behaviour: itself", async () => {
+    // Unchanged and deliberately NOT an error: every create form posts the field, and a member
+    // tampering with it must get a value with no effect rather than something to probe.
+    const m = session("MEMBER", { id: "m1" });
+    await expect(resolveLeadOwner(leadReader([superAdminRow("sa1")]), m, "sa1", T2))
+      .resolves.toEqual({ ownerId: "m1", teamId: T1 });
+  });
+
+  it("the teamId argument is INERT for everyone but the self-naming super admin", async () => {
+    // The forged-teamId bug this whole area exists to prevent: a team admin cannot use the new
+    // argument to put a lead anywhere but its own team.
+    const admin = session("COMPANY_ADMIN", { id: "a1" });
+    await expect(resolveLeadOwner(leadReader([member("m2")]), admin, "m2", T2))
+      .resolves.toEqual({ ownerId: "m2", teamId: T1 });
+    await expect(resolveLeadOwner(leadReader([]), admin, undefined, T2))
+      .resolves.toEqual({ ownerId: "a1", teamId: T1 });
+  });
+
+  it("delegates every other case to resolveAssignableOwner unchanged", async () => {
+    const saSess = session("SUPER_ADMIN", { id: "sa1", companyId: CO });
+    // A super admin naming a real team member still inherits THAT member's team.
+    await expect(resolveLeadOwner(leadReader([member("m6", { teamId: T2 })]), saSess, "m6"))
+      .resolves.toEqual({ ownerId: "m6", teamId: T2 });
+    // Partners and onboarding staff are refused before any query, as before.
+    await expect(
+      resolveLeadOwner(leadReader([]), session("PARTNER_VIEWER", { accountId: "a1" }), "m1", T1),
+    ).rejects.toThrow(ForbiddenError);
+    await expect(
+      resolveLeadOwner(leadReader([]), session("ONBOARDING", { companyId: CO }), "m1", T1),
     ).rejects.toThrow(ForbiddenError);
   });
 });

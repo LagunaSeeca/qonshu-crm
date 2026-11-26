@@ -22,18 +22,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-type EntryType = "COLLECTED" | "TRANSFER";
 type EntryMethod = "CASH" | "BANK_TRANSFER" | "MANUAL";
 type AccountOption = { id: string; name: string };
 
-const TYPE_LABELS: Record<string, string> = { COLLECTED: "Collected", TRANSFER: "Transfer" };
 const METHOD_LABELS: Record<string, string> = { CASH: "Cash", BANK_TRANSFER: "Bank account", MANUAL: "Manual" };
 
 export function AddSettlementEntry({ accounts }: { accounts: AccountOption[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
-  const [type, setType] = useState<EntryType>("COLLECTED");
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<EntryMethod>("CASH");
   const [occurredAt, setOccurredAt] = useState("");
@@ -44,7 +41,6 @@ export function AddSettlementEntry({ accounts }: { accounts: AccountOption[] }) 
 
   function reset() {
     setAccountId(accounts[0]?.id ?? "");
-    setType("COLLECTED");
     setAmount("");
     setMethod("CASH");
     setOccurredAt("");
@@ -63,7 +59,7 @@ export function AddSettlementEntry({ accounts }: { accounts: AccountOption[] }) 
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          type,
+          type: "TRANSFER",
           amount: Number(amount),
           method,
           occurredAt: occurredAt || new Date().toISOString(),
@@ -71,7 +67,12 @@ export function AddSettlementEntry({ accounts }: { accounts: AccountOption[] }) 
         }),
       });
       if (!res.ok) {
-        toast.error("Failed to add entry. Please try again.");
+        const body = await res.json().catch(() => null);
+        toast.error(
+          body?.error === "self_collecting"
+            ? "This building collects its own money, so transfers can't be recorded."
+            : "Failed to add entry. Please try again.",
+        );
         return;
       }
       toast.success("Entry added.");
@@ -109,19 +110,7 @@ export function AddSettlementEntry({ accounts }: { accounts: AccountOption[] }) 
             </Select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label>Type</Label>
-              <Select items={TYPE_LABELS} value={type} onValueChange={(v) => { if (v) setType(v as EntryType); }}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="COLLECTED">Collected</SelectItem>
-                  <SelectItem value="TRANSFER">Transfer</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+          <div className="space-y-3">
             <div className="space-y-1.5">
               <Label htmlFor="se-amount">Amount <span className="text-destructive">*</span></Label>
               <Input

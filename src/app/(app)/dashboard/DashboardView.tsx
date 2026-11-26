@@ -46,7 +46,9 @@ export type DashboardStats = {
   // caller without view_settlements (a MEMBER) — omitted, not 0, because 0 would read as "collected
   // nothing". Optional here so that case is representable; the UI must not render a placeholder.
   // serviceFeesOutstanding is CRM billing data, not settlement data, and is always present.
-  finance: { collected?: number; transferred?: number; owed?: number; serviceFeesOutstanding: number };
+  // selfCollected: card takings of self-collecting buildings. A DIFFERENT pocket from `collected`
+  // (Qonshu never held it) — never add the two. Absent for a caller without settlement visibility.
+  finance: { collected?: number; selfCollected?: number; transferred?: number; owed?: number; serviceFeesOutstanding: number };
 };
 
 type Props = { initialStats: DashboardStats; initialPeriod: PeriodType };
@@ -255,7 +257,17 @@ export function DashboardView({ initialStats, initialPeriod }: Props) {
           {/* Each cash card exists only when the service supplied the figure; /settlements refuses
               members, so the link goes with the card. No placeholder card for a hidden value. */}
           {stats.finance.collected !== undefined && (
-            <KpiCard label="Collected" value={formatMoney(stats.finance.collected)} icon={ArrowDownCircle} href="/settlements" />
+            <KpiCard
+              label="Collected (Qonshu-held)"
+              value={formatMoney(stats.finance.collected)}
+              icon={ArrowDownCircle}
+              hint={
+                stats.finance.selfCollected !== undefined && stats.finance.selfCollected > 0
+                  ? `Excludes ${formatMoney(stats.finance.selfCollected)} collected by self-collecting buildings (separate; do not add)`
+                  : undefined
+              }
+              href="/settlements"
+            />
           )}
           {stats.finance.transferred !== undefined && (
             <KpiCard label="Transferred" value={formatMoney(stats.finance.transferred)} icon={ArrowUpCircle} href="/settlements" />

@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
 import { ForbiddenError, NotFoundError } from "@/lib/auth/guards";
 import { BuildingClaimedError } from "@/lib/tenant/building-claim";
+import { SelfCollectingError } from "@/lib/tenant/settlements";
 export { ForbiddenError, NotFoundError };
 
 export class UnauthorizedError extends Error {}
@@ -27,6 +28,11 @@ export function errorResponse(e: unknown): NextResponse {
   // rather than the bare "conflict" a unique-index violation would produce.
   if (e instanceof BuildingClaimedError)
     return NextResponse.json({ error: "building_claimed", message: e.message }, { status: 409 });
+  // A well-formed request that the account's state makes impossible (a transfer against a
+  // self-collecting building): 422, carrying the machine-readable reason so the UI can explain it
+  // instead of showing a bare "forbidden" the caller's role does not actually warrant.
+  if (e instanceof SelfCollectingError)
+    return NextResponse.json({ error: e.reason, message: e.message }, { status: 422 });
   if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
     return NextResponse.json({ error: "conflict" }, { status: 409 });
   }

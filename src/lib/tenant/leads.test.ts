@@ -6,7 +6,8 @@ import { buildingKey, makeTeam, makeTeamWithUsers, makeUser, su, uniq } from "@/
 import { BuildingClaimedError } from "./building-claim";
 import { listStages, seedTeamStages } from "./stages";
 import { addTask } from "./tasks";
-import { createLead, getLead, listLeads, updateLead, type CreateLeadInput } from "./leads";
+import { createLead, getLead, listLeads, moveLeadStage, updateLead, type CreateLeadInput } from "./leads";
+import { createAccount, updateAccount } from "./accounts";
 
 async function teamFixture(companyId?: string) {
   const t = await makeTeamWithUsers(companyId ? { companyId } : {});
@@ -329,5 +330,163 @@ describe("updateLead cross-team transfer", () => {
     expect(after.teamId).toBe(a.team.id);
     expect(after.ownerId).toBe(a.member.id);
     expect(await testPrisma.activity.count({ where: { leadId: lead.id, kind: "STAGE_CHANGE" } })).toBe(0);
+  });
+});
+
+// ============== THE SUPER ADMIN AS A LEAD OWNER ==============
+//
+// The product rule, and the whole of it: ONLY the SUPER_ADMIN may name THEMSELVES as a lead owner,
+// and the lead still has to say which team it belongs to. Nothing else gets wider — in particular
+// a SUPER_ADMIN is still not a legal `accountManagerId`, which the last test in this block pins.
+
+// A real super-admin ROW: companyId SET (prisma/seed.ts does this; leadScopeWhere throws without
+// it) and teamId null. makeUser forces companyId null for the role, which models the unscoped
+// platform owner rather than the seeded one, so it is corrected here.
+async function makeOwnerUser(companyId: string, over: { status?: "ACTIVE" | "INACTIVE" } = {}) {
+  const u = await makeUser("SUPER_ADMIN");
+  return testPrisma.user.update({
+    where: { id: u.id },
+    data: { companyId, status: over.status ?? "ACTIVE" },
+  });
+}
+
+describe("a SUPER_ADMIN owning a lead", () => {
+  beforeEach(resetDb);
+  afterAll(() => testPrisma.$disconnect());
+
+  it("creates a lead owned by itself when it names its own company's team", async () => {
+    const t = await teamFixture();
+    const owner = await makeOwnerUser(t.companyId);
+    const lead = await createLead(testPrisma, su(owner), input(t, { ownerId: owner.id, teamId: t.team.id }));
+
+    expect(lead.ownerId).toBe(owner.id);
+    // The team is what was NAMED — the owner has none to derive it from — and the company follows
+    // the team, as for every other lead.
+    expect(lead.teamId).toBe(t.team.id);
+    expect(lead.companyId).toBe(t.companyId);
+  });
+
+  it("refuses the super admin naming itself with no team, or with another company's team", async () => {
+    const t = await teamFixture();
+    const far = await teamFixture();
+    const owner = await makeOwnerUser(t.companyId);
+
+    await expect(createLead(testPrisma, su(owner), input(t, { ownerId: owner.id })))
+      .rejects.toThrow(ForbiddenError);
+    await expect(createLead(testPrisma, su(owner), input(t, { ownerId: owner.id, teamId: far.team.id })))
+      .rejects.toThrow(ForbiddenError);
+    expect(await testPrisma.lead.count()).toBe(0);
+  });
+
+  it("refuses an INACTIVE super admin, and a super admin from another company", async () => {
+    const t = await teamFixture();
+    const inactive = await makeOwnerUser(t.companyId, { status: "INACTIVE" });
+    await expect(createLead(testPrisma, su(inactive), input(t, { ownerId: inactive.id, teamId: t.team.id })))
+      .rejects.toThrow(ForbiddenError);
+
+    // A super admin of ANOTHER company, acting with a forged company context: the ROW is what is
+    // checked, so the session's claim buys nothing.
+    const far = await teamFixture();
+    const stranger = await makeOwnerUser(far.companyId);
+    await expect(
+      createLead(testPrisma, saIn(t.companyId, su(stranger)), input(t, { ownerId: stranger.id, teamId: t.team.id })),
+    ).rejects.toThrow(ForbiddenError);
+    expect(await testPrisma.lead.count()).toBe(0);
+  });
+
+  it("a MEMBER posting the super admin's id still owns the lead itself", async () => {
+    const t = await teamFixture();
+    const owner = await makeOwnerUser(t.companyId);
+    // UNCHANGED BEHAVIOUR, deliberately not an error: a supplied ownerId is ignored for a member,
+    // so a tampered field is a value with no effect rather than something to probe.
+    const lead = await createLead(testPrisma, t.suMember, input(t, { ownerId: owner.id, teamId: t.team.id }));
+    expect(lead.ownerId).toBe(t.member.id);
+    expect(lead.teamId).toBe(t.team.id);
+  });
+
+  it("a COMPANY_ADMIN posting the super admin's id is REFUSED", async () => {
+    const t = await teamFixture();
+    const owner = await makeOwnerUser(t.companyId);
+    // The same refusal any other non-assignable role gets — OWNABLE_ROLES is untouched.
+    await expect(createLead(testPrisma, t.suAdmin, input(t, { ownerId: owner.id, teamId: t.team.id })))
+      .rejects.toThrow("a SUPER_ADMIN cannot own records");
+    expect(await testPrisma.lead.count()).toBe(0);
+  });
+
+  it("is visible to that team's COMPANY_ADMIN and invisible to another team's MEMBER", async () => {
+    const a = await teamFixture();
+    const b = await teamFixture(a.companyId);
+    const owner = await makeOwnerUser(a.companyId);
+    const lead = await createLead(testPrisma, su(owner), input(a, { ownerId: owner.id, teamId: a.team.id }));
+
+    expect((await getLead(testPrisma, a.suAdmin, lead.id))?.id).toBe(lead.id);
+    // Not its own lead -> not in a member's book, even in the same team.
+    expect(await getLead(testPrisma, a.suMember, lead.id)).toBeNull();
+    // Another team sees nothing at all, admin or member.
+    expect(await getLead(testPrisma, b.suAdmin, lead.id)).toBeNull();
+    expect(await getLead(testPrisma, b.suMember, lead.id)).toBeNull();
+  });
+
+  it("an update with no teamId keeps the lead's current team", async () => {
+    const a = await teamFixture();
+    await teamFixture(a.companyId);
+    const owner = await makeOwnerUser(a.companyId);
+    const lead = await createLead(testPrisma, su(owner), input(a, { ownerId: owner.id, teamId: a.team.id }));
+
+    // Re-posting the same owner is not a reassignment at all; posting it after a change of some
+    // other field must not transfer the lead as a side effect either.
+    const saved = await updateLead(testPrisma, su(owner), lead.id, { title: "renamed", ownerId: owner.id });
+    expect(saved.teamId).toBe(a.team.id);
+    expect(saved.ownerId).toBe(owner.id);
+    expect(await testPrisma.activity.count({ where: { leadId: lead.id, kind: "STAGE_CHANGE" } })).toBe(0);
+  });
+
+  it("the team admin may take a super-admin-owned lead back, and the super admin may hand it over", async () => {
+    const t = await teamFixture();
+    const owner = await makeOwnerUser(t.companyId);
+    const lead = await createLead(testPrisma, su(owner), input(t, { ownerId: owner.id, teamId: t.team.id }));
+
+    const handed = await updateLead(testPrisma, su(owner), lead.id, { ownerId: t.member.id });
+    expect(handed.ownerId).toBe(t.member.id);
+    expect(handed.teamId).toBe(t.team.id);
+    // And back the other way is refused for the team admin: only the owner may name the owner.
+    await expect(updateLead(testPrisma, t.suAdmin, lead.id, { ownerId: owner.id }))
+      .rejects.toThrow("a SUPER_ADMIN cannot own records");
+  });
+
+  it("converts normally when won: the super admin becomes the account's manager", async () => {
+    const t = await teamFixture();
+    const owner = await makeOwnerUser(t.companyId);
+    const lead = await createLead(testPrisma, su(owner), input(t, {
+      ownerId: owner.id, teamId: t.team.id, companyName: "Owner Tower",
+    }));
+
+    const res = await moveLeadStage(testPrisma, su(owner), lead.id, t.won.id);
+    expect(res.reason).toBeUndefined();
+    expect(res.autoConverted).toBe(true);
+
+    const account = await testPrisma.account.findUniqueOrThrow({ where: { sourceLeadId: lead.id } });
+    expect(account.accountManagerId).toBe(owner.id);
+    // The building belongs to the team that won it, not to the teamless owner.
+    expect(account.teamId).toBe(t.team.id);
+    expect(account.companyId).toBe(t.companyId);
+  });
+
+  it("STILL refuses a SUPER_ADMIN as an accountManagerId — the shared allowlist was not widened", async () => {
+    const t = await teamFixture();
+    const owner = await makeOwnerUser(t.companyId);
+
+    // CREATE: named through a request, the owner is not an ownable account manager.
+    await expect(createAccount(testPrisma, su(owner), { name: uniq("Building "), accountManagerId: owner.id }))
+      .rejects.toThrow("a SUPER_ADMIN cannot own records");
+    await expect(createAccount(testPrisma, t.suAdmin, { name: uniq("Building "), accountManagerId: owner.id }))
+      .rejects.toThrow("a SUPER_ADMIN cannot own records");
+
+    // UPDATE: reassigning an existing account to the owner is refused the same way.
+    const acc = await createAccount(testPrisma, t.suAdmin, { name: uniq("Building ") });
+    await expect(updateAccount(testPrisma, su(owner), acc.id, { accountManagerId: owner.id }))
+      .rejects.toThrow("a SUPER_ADMIN cannot own records");
+    expect((await testPrisma.account.findUniqueOrThrow({ where: { id: acc.id } })).accountManagerId)
+      .toBe(t.admin.id);
   });
 });

@@ -47,4 +47,31 @@ describe("ReportView", () => {
     // No payment-detail table: the only table is the partner table.
     expect(screen.getAllByRole("table")).toHaveLength(1);
   });
+  it("SELF row shows n/a + badge for Owed, never 'unknown'; QONSHU absent owed stays 'unknown'", () => {
+    const r = {
+      ...report,
+      kpis: { ...report.kpis, finance: { ...report.kpis.finance, selfCollected: 9000 } },
+      partnerRows: [
+        { accountId: "s1", accountName: "SelfBuilding", paymentsCount: 1, paymentsAmount: 100, collected: 0, transferred: 0, collectionMode: "SELF" as const },
+        { accountId: "q1", accountName: "QonshuBuilding", paymentsCount: 1, paymentsAmount: 100, collected: 0, transferred: 0, collectionMode: "QONSHU" as const },
+      ],
+    };
+    render(<ReportView accounts={[]} initialReport={r} />);
+    expect(screen.getByText("Self-collecting")).toBeInTheDocument();
+    expect(screen.getAllByText("n/a")).toHaveLength(1);
+    // Only the QONSHU row's missing owed is "unknown" (Owed cell); SELF row never is.
+    const selfRow = screen.getByText("SelfBuilding").closest("tr")!;
+    expect(selfRow.textContent).not.toMatch(/unknown/);
+    const qRow = screen.getByText("QonshuBuilding").closest("tr")!;
+    expect(qRow.textContent).toMatch(/unknown/);
+  });
+  it("labels Collected as Qonshu-held and shows self-collected separately only when > 0", () => {
+    const { unmount } = render(<ReportView accounts={[]} initialReport={report} />);
+    expect(screen.getAllByText("Collected (Qonshu-held)").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/self-collecting buildings/)).not.toBeInTheDocument();
+    unmount();
+    const r = { ...report, kpis: { ...report.kpis, finance: { ...report.kpis.finance, selfCollected: 9000 } } };
+    render(<ReportView accounts={[]} initialReport={r} />);
+    expect(screen.getByText(/Collected by self-collecting buildings/)).toBeInTheDocument();
+  });
 });

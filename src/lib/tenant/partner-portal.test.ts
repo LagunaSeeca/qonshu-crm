@@ -4,7 +4,7 @@ import { makeTeam, makeUser, su, buildingKey, confirmedPartnerLink } from "@/tes
 import { getAccount, listAccounts } from "./accounts";
 import { getCompanyAnalytics } from "./company-analytics";
 import { listCompanySettlements } from "./settlements";
-import { listCompanyServiceFees, addServiceFee } from "./service-fees";
+import { listCompanyServiceFees } from "./service-fees";
 import { leadScopeWhere, accountScopeWhere } from "./scope";
 import { createUser, InvalidUserRoleError } from "./users";
 import { ForbiddenError } from "@/lib/auth/guards";
@@ -63,8 +63,9 @@ async function seed(slug: string) {
   }
 
   // Service fees on both accounts.
-  await addServiceFee(testPrisma, adminUser, acc1.id, { periodMonth: new Date("2026-07-01"), amount: 100 });
-  await addServiceFee(testPrisma, adminUser, acc2.id, { periodMonth: new Date("2026-07-01"), amount: 3000 });
+  // Written straight to the table: creating a fee is a pricing write (SUPER_ADMIN-only), and this file seeds read-scope cases.
+  await testPrisma.serviceFee.create({ data: { companyId: c.id, accountId: acc1.id, periodMonth: new Date("2026-07-01T00:00:00Z"), amount: 100, createdById: admin.id } });
+  await testPrisma.serviceFee.create({ data: { companyId: c.id, accountId: acc2.id, periodMonth: new Date("2026-07-01T00:00:00Z"), amount: 3000, createdById: admin.id } });
 
   return { c, team, admin, member, adminUser, memberUser, acc1, acc2, partnerUser, partnerUserNoAccount };
 }

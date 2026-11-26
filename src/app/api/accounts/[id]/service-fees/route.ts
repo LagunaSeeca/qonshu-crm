@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/db/client";
 import { getSessionUser } from "@/lib/auth/session";
-import { assertRole } from "@/lib/auth/guards";
-import { getAccountServiceFees, addServiceFee } from "@/lib/tenant/service-fees";
+import { assertCan } from "@/lib/auth/guards";
+import { getAccountServiceFees, addServiceFee, FeeAmountSchema } from "@/lib/tenant/service-fees";
 import { errorResponse, UnauthorizedError } from "@/lib/http";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -15,14 +15,21 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
 const Body = z.object({
   periodMonth: z.string().min(1),
-  amount: z.number().positive(),
+  // FeeAmountSchema, not z.number(): creating a fee SETS a price, and the amount reaches a Prisma
+  // Decimal column. A JSON number would be parsed as a float first, which is where a cent goes
+  // missing. A client still sending a number is now rejected (400) rather than silently coerced.
+  amount: FeeAmountSchema,
   dueDate: z.string().optional(),
   note: z.string().optional(),
 });
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getSessionUser(); if (!user) throw new UnauthorizedError();
-    assertRole(user, ["COMPANY_ADMIN"]);
+    // Creating a fee row is PRICING, which is owner-only. This used to be
+    // assertRole(["COMPANY_ADMIN"]), which no longer matches the service: addServiceFee asserts
+    // write_settlements (SUPER_ADMIN). Leaving the stale admin gate here meant a COMPANY_ADMIN got
+    // past the route only to be refused one call later — same outcome, misleading read.
+    assertCan(user, "write_settlements");
     const d = Body.parse(await req.json());
     const periodMonth = new Date(d.periodMonth);
     if (isNaN(periodMonth.getTime())) return NextResponse.json({ error: "invalid_date" }, { status: 400 });

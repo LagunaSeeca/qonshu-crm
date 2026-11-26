@@ -25,6 +25,7 @@ import {
 
 type Stage = { id: string; name: string };
 type Owner = { id: string; name: string; teamId: string | null; teamName: string | null };
+type Team = { id: string; name: string };
 
 const PRIORITY_LABELS: Record<string, string> = { LOW: "Low", MEDIUM: "Medium", HIGH: "High" };
 
@@ -35,11 +36,13 @@ type Props = {
   stagesByTeam?: Record<string, Stage[]>;
   /** People the viewer may assign to (listAssignableUsers). Unused for a MEMBER, who owns what they create. */
   owners?: Owner[];
+  /** SUPER_ADMIN only: the teams to choose from when the owner picks THEMSELVES (they have no team). */
+  teams?: Team[];
   currentUserId: string;
   role: string;
 };
 
-export function LeadCreate({ stages, stagesByTeam, owners = [], currentUserId, role }: Props) {
+export function LeadCreate({ stages, stagesByTeam, owners = [], teams = [], currentUserId, role }: Props) {
   const router = useRouter();
   const isSuper = role === "SUPER_ADMIN";
   // A member always owns what they create — no picker at all (the server ignores a supplied owner).
@@ -54,15 +57,22 @@ export function LeadCreate({ stages, stagesByTeam, owners = [], currentUserId, r
   const [phone, setPhone] = useState("");
   const [stageChoice, setStageChoice] = useState("");
   const [ownerId, setOwnerId] = useState(defaultOwner);
+  const [teamChoice, setTeamChoice] = useState("");
   const [priority, setPriority] = useState("MEDIUM");
   const [loading, setLoading] = useState(false);
 
-  const ownerTeamId = owners.find((o) => o.id === ownerId)?.teamId ?? null;
+  // The only option with no team of its own is the super admin naming THEMSELVES, and a lead
+  // always belongs to a team — so that choice brings up a team picker, and the stage list (and
+  // the posted teamId) follow it. Everyone else's team comes from the chosen owner, as before.
+  const selectedOwner = owners.find((o) => o.id === ownerId);
+  const needsTeamChoice = !!selectedOwner && selectedOwner.teamId === null;
+  const ownerTeamId = needsTeamChoice ? (teamChoice || null) : (selectedOwner?.teamId ?? null);
   const stageList: Stage[] = isSuper ? (ownerTeamId ? (stagesByTeam?.[ownerTeamId] ?? []) : []) : stages;
   // The chosen stage only counts while it is still in the list (the owner changing team swaps the list).
   const stageId = stageList.some((s) => s.id === stageChoice) ? stageChoice : (stageList[0]?.id ?? "");
 
   const ownerItems = Object.fromEntries(owners.map((m) => [m.id, m.name]));
+  const teamItems = Object.fromEntries(teams.map((t) => [t.id, t.name]));
   const stageItems = Object.fromEntries(stageList.map((s) => [s.id, s.name]));
 
   function reset() {
@@ -72,15 +82,21 @@ export function LeadCreate({ stages, stagesByTeam, owners = [], currentUserId, r
     setPhone("");
     setStageChoice("");
     setOwnerId(defaultOwner);
+    setTeamChoice("");
     setPriority("MEDIUM");
   }
 
   const needsOwner = showOwnerPicker && !ownerId;
+  const needsTeam = needsTeamChoice && !teamChoice;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (needsOwner) {
       toast.error("Choose who owns this lead");
+      return;
+    }
+    if (needsTeam) {
+      toast.error("Choose which team this lead belongs to");
       return;
     }
     setLoading(true);
@@ -97,6 +113,8 @@ export function LeadCreate({ stages, stagesByTeam, owners = [], currentUserId, r
           phone: phone || undefined,
           stageId,
           ownerId: showOwnerPicker ? ownerId : undefined,
+          // Sent only for the teamless owner; the server ignores it for anybody else.
+          teamId: needsTeamChoice ? teamChoice : undefined,
           priority,
         }),
       });
@@ -188,12 +206,29 @@ export function LeadCreate({ stages, stagesByTeam, owners = [], currentUserId, r
               </Select>
             </div>
           )}
+          {needsTeamChoice && (
+            <div className="space-y-1.5">
+              <Label htmlFor="lc-team">
+                Team <span className="text-destructive">*</span>
+              </Label>
+              <Select items={teamItems} value={teamChoice} onValueChange={(v) => { if (v !== null) setTeamChoice(v); }}>
+                <SelectTrigger id="lc-team">
+                  <SelectValue placeholder="Choose a team" />
+                </SelectTrigger>
+                <SelectContent>
+                  {teams.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="lc-stage">Stage</Label>
               <Select items={stageItems} value={stageId} onValueChange={(v) => { if (v !== null) setStageChoice(v); }}>
                 <SelectTrigger id="lc-stage">
-                  <SelectValue placeholder={isSuper && !ownerId ? "Choose an owner first" : "Select stage"} />
+                  <SelectValue placeholder={isSuper && !ownerTeamId ? "Choose an owner first" : "Select stage"} />
                 </SelectTrigger>
                 <SelectContent>
                   {stageList.map((s) => (

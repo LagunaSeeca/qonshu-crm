@@ -247,9 +247,8 @@ describe("ONBOARDING: the building and the residents, never the money", () => {
   it("a MEMBER's financial figures are the real ones, not an emptied shell", async () => {
     const w = await world();
     // Proving the gate did not quietly turn a member's reads into zeros.
-    await addServiceFee(testPrisma, w.suMember, w.mine.id, {
-      periodMonth: new Date("2026-01-01T00:00:00Z"), amount: 300,
-    });
+    // Seeded directly: creating a fee is a pricing write (SUPER_ADMIN-only); this test is about reads.
+    await testPrisma.serviceFee.create({ data: { companyId: w.mine.companyId, accountId: w.mine.id, periodMonth: new Date("2026-01-01T00:00:00Z"), amount: 300, createdById: w.suMember.id } });
     const fees = await getAccountServiceFees(testPrisma, w.suMember, w.mine.id);
     expect(fees.totalBilled).toBe(300);
     expect((await listCompanyServiceFees(testPrisma, w.suMember)).totals.billed).toBe(300);
@@ -313,7 +312,7 @@ describe("ONBOARDING: the building and the residents, never the money", () => {
         return setAccountFieldValue(testPrisma, w.suOnboarder, w.mine.id, def.id, "v");
       }],
       ["upsertInstallSnapshot", () => upsertInstallSnapshot(testPrisma, w.suOnboarder, w.mine.id, { capturedOn: new Date("2026-02-01T00:00:00Z"), iosInstalls: 1, androidInstalls: 1 })],
-      ["addServiceFee", () => addServiceFee(testPrisma, w.suOnboarder, w.mine.id, { periodMonth: new Date("2026-01-01T00:00:00Z"), amount: 1 })],
+      ["addServiceFee", () => addServiceFee(testPrisma, w.suOnboarder, w.mine.id, { periodMonth: new Date("2026-01-01T00:00:00Z"), amount: "1" })],
     ];
     for (const [name, call] of writes) {
       expect(await caught(call), `${name} must refuse ONBOARDING`).toBeInstanceOf(ForbiddenError);
@@ -332,9 +331,7 @@ describe("ONBOARDING: the building and the residents, never the money", () => {
     const w = await world();
     const task = await addAccountTask(testPrisma, w.suMember, w.mine.id, { title: "real" });
     const ask = await addAsk(testPrisma, w.suMember, w.mine.id, { title: "real" });
-    const fee = await addServiceFee(testPrisma, w.suMember, w.mine.id, {
-      periodMonth: new Date("2026-01-01T00:00:00Z"), amount: 10,
-    });
+    const fee = await testPrisma.serviceFee.create({ data: { companyId: w.mine.companyId, accountId: w.mine.id, periodMonth: new Date("2026-01-01T00:00:00Z"), amount: 10, createdById: w.suMember.id } });
     // The capability is hoisted ABOVE the child lookup precisely so these pairs match: otherwise
     // "403 for a real id, 404 for a fake one" is an id-probing oracle over every account task,
     // ask and invoice in the org, for exactly the role being kept out.

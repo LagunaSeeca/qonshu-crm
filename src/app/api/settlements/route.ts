@@ -16,6 +16,17 @@ export async function GET(req: NextRequest) {
     } catch {
       return NextResponse.json({ error: "invalid_period" }, { status: 400 });
     }
-    return NextResponse.json(await listCompanySettlements(prisma, user, period));
+    // `status` is validated rather than cast: an unrecognized value must not silently behave as
+    // "no filter", which would show the caller every row when they asked for one bucket.
+    const rawStatus = sp.get("status");
+    let status: "owed" | "settled" | undefined;
+    if (rawStatus === "owed" || rawStatus === "settled") status = rawStatus;
+    else if (rawStatus !== null) return NextResponse.json({ error: "invalid_status" }, { status: 400 });
+    const filters = {
+      q: sp.get("q") ?? undefined,
+      accountId: sp.get("accountId") ?? undefined,
+      status,
+    };
+    return NextResponse.json(await listCompanySettlements(prisma, user, period, filters));
   } catch (e) { return errorResponse(e); }
 }

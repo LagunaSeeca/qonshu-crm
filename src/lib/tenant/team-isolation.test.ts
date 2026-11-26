@@ -482,8 +482,8 @@ describe("team isolation", () => {
       },
       {
         name: "updateServiceFee",
-        run: (_w, a, k, x) => updateServiceFee(testPrisma, a, x[k].editFee, { amount: 999 }),
-        mutated: async (_w, k, x) => (await testPrisma.serviceFee.findUniqueOrThrow({ where: { id: x[k].editFee } })).amount.toNumber() === 999,
+        run: (_w, a, k, x) => updateServiceFee(testPrisma, a, x[k].editFee, { note: "edited" }),
+        mutated: async (_w, k, x) => (await testPrisma.serviceFee.findUniqueOrThrow({ where: { id: x[k].editFee } })).note === "edited",
       },
       {
         name: "deleteServiceFee",
@@ -519,7 +519,7 @@ describe("team isolation", () => {
         ["reopenAsk", () => reopenAsk(testPrisma, w.S.m1, ghost), () => reopenAsk(testPrisma, w.S.m1, x.m2.resolvedAsk)],
         ["markFeePaid", () => markFeePaid(testPrisma, w.S.m1, ghost, {}), () => markFeePaid(testPrisma, w.S.m1, w.fees.m2.id, {})],
         ["markFeeUnpaid", () => markFeeUnpaid(testPrisma, w.S.m1, ghost), () => markFeeUnpaid(testPrisma, w.S.m1, x.m2.paidFee)],
-        ["updateServiceFee", () => updateServiceFee(testPrisma, w.S.m1, ghost, { amount: 1 }), () => updateServiceFee(testPrisma, w.S.m1, x.m2.editFee, { amount: 1 })],
+        ["updateServiceFee", () => updateServiceFee(testPrisma, w.S.m1, ghost, { note: "x" }), () => updateServiceFee(testPrisma, w.S.m1, x.m2.editFee, { note: "x" })],
         ["deleteServiceFee", () => deleteServiceFee(testPrisma, w.S.m1, ghost), () => deleteServiceFee(testPrisma, w.S.m1, x.m2.delFee)],
       ];
       for (const [name, missing, foreign] of pairs) {

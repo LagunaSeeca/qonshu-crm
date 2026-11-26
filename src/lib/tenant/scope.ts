@@ -184,6 +184,10 @@ export type AssignableOwner = { ownerId: string; teamId: string };
 // $transaction can resolve the owner under the same transaction as the write.
 type UserReader = Pick<PrismaClient, "user">;
 
+// resolveLeadOwner also has to validate a NAMED team (the super admin has none of its own), so it
+// needs the Team delegate on top of what resolveAssignableOwner reads.
+type LeadOwnerReader = UserReader & Pick<PrismaClient, "team">;
+
 const OWNABLE_ROLES: readonly string[] = ["COMPANY_ADMIN", "MEMBER"];
 
 // Who a new Lead/Account may be assigned to, and the team the row therefore belongs to. The
@@ -242,12 +246,66 @@ export async function resolveAssignableOwner(
   throw new ForbiddenError(`role ${user.role} cannot assign owners`);
 }
 
+// LEAD-ONLY: the super admin may own a LEAD, and nothing else.
+//
+// WHY A SEPARATE FUNCTION INSTEAD OF A WIDER OWNABLE_ROLES. OWNABLE_ROLES is shared by Accounts
+// (accountManagerId) and Tasks. Adding SUPER_ADMIN to it would make the owner assignable as an
+// account manager and a task assignee too — roles the rest of the system does not model for a
+// teamless user, and which accounts.test.ts correctly forbids. So this wraps
+// resolveAssignableOwner with exactly ONE extra branch and leaves the shared allowlist alone.
+//
+// THE BRANCH IS AS NARROW AS THE PRODUCT DECISION:
+//   * the acting user must BE the candidate (`ownerId === user.id`) and be a SUPER_ADMIN. A
+//     COMPANY_ADMIN or MEMBER posting the super admin's id never reaches here — it falls through
+//     to resolveAssignableOwner and gets the existing treatment for a non-assignable id (ignored
+//     for a MEMBER, who always owns its own rows; `a SUPER_ADMIN cannot own records` for an admin).
+//   * the ROW is re-read and must be an ACTIVE SUPER_ADMIN in the SAME company as the session, so
+//     a stale or forged session cannot carry the branch.
+//   * Lead.teamId is NOT NULL and a super admin has no team, so the team must be NAMED and must
+//     belong to that same company. Never defaulted: a silent fallback would park the lead in
+//     whichever team a later line happened to pick, and `teamId` is the key the whole lead scope
+//     turns on.
+//
+// `teamId` is read ON THIS BRANCH ONLY. For every other actor the argument is dropped before
+// resolveAssignableOwner is called, so a forged teamId from a COMPANY_ADMIN or MEMBER still cannot
+// move a lead between teams — the team keeps following the validated owner.
+export async function resolveLeadOwner(
+  db: LeadOwnerReader,
+  user: SessionUser,
+  ownerId?: string,
+  teamId?: string,
+): Promise<AssignableOwner> {
+  if (user.role === "SUPER_ADMIN" && ownerId && ownerId === user.id) {
+    const companyId = requireCompany(user);
+    const self = await db.user.findUnique({
+      where: { id: ownerId },
+      select: { id: true, role: true, status: true, companyId: true },
+    });
+    // Same one-message rule as loadOwnable: "not assignable" covers missing, wrong role and
+    // wrong company alike.
+    if (!self) throw new ForbiddenError("owner is not assignable");
+    if (self.status !== "ACTIVE") throw new ForbiddenError("owner is not active");
+    if (self.role !== "SUPER_ADMIN" || self.companyId !== companyId) {
+      throw new ForbiddenError("owner is not assignable");
+    }
+    if (!teamId) throw new ForbiddenError("a super admin owning a lead must name the team");
+    const team = await db.team.findUnique({ where: { id: teamId }, select: { id: true, companyId: true } });
+    if (!team || team.companyId !== companyId) throw new ForbiddenError("team is not in your company");
+    return { ownerId: self.id, teamId: team.id };
+  }
+  return resolveAssignableOwner(db, user, ownerId);
+}
+
 // One primary-key lookup, three fail-closed checks. Notably this is what stops a SUPER_ADMIN, an
 // ONBOARDING user or a PARTNER_VIEWER from ever becoming an owner: none of those roles is in
 // OWNABLE_ROLES, so none can be named — a super admin and an onboarding user have no team for the
 // row to belong to, and a partner login must never appear in a team's book. (OWNABLE_ROLES is
 // unchanged by the ONBOARDING work: it was already an allowlist of two, so the new role is excluded
 // by construction. The pickers are consistent — users.ts TEAM_ROLES is the same pair.)
+//
+// ONE SANCTIONED EXCEPTION, and it does NOT live here: resolveLeadOwner above lets a SUPER_ADMIN
+// name ITSELF as the owner of a LEAD, with an explicit team. That branch never calls this
+// function, precisely so OWNABLE_ROLES keeps meaning "who may manage an account or hold a task".
 async function loadOwnable(db: UserReader, ownerId: string) {
   const row = await db.user.findUnique({
     where: { id: ownerId },
