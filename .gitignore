@@ -42,3 +42,6 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
+
+# Claude Code local overrides — personal, and has held credentials in allow rules
+.claude/settings.local.json
